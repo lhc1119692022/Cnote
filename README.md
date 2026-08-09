@@ -30,13 +30,18 @@ Cnote 是一个开源的知识工作流应用，专为个人知识工作者和�
 
 ## 🚀 快速开始
 
+### Web 应用开发
+
 ```bash
 # 克隆项目
 git clone https://github.com/yourusername/cnote.git
-cd cnote
+cd cnote/web
 
 # 安装依赖
 npm install
+
+# 配置环境变量（可选）
+cp .env.example .env
 
 # 启动开发服务器
 npm run dev
@@ -45,17 +50,37 @@ npm run dev
 npm run build
 ```
 
+### Cloudflare Workers 部署
+
+```bash
+cd workers
+
+# 安装依赖
+npm install
+
+# 本地开发
+npm run dev
+
+# 部署到 Cloudflare
+npm run deploy
+
+# 部署 scraper worker
+wrangler deploy --config wrangler-scraper.toml
+```
+
+访问 http://localhost:5173 开始使用。
+
 ## 📖 开发计划
 
 - [x] Phase 0: 项目清理和初始化
-- [ ] Phase 1: 基础架构搭建 (3-5 天)
-- [ ] Phase 2: Flow 编辑器 (5-7 天)
-- [ ] Phase 3: 节点组件 (7-10 天)
-- [ ] Phase 4: AI 集成 + Proxy (5-7 天)
-- [ ] Phase 5: 数据流引擎 (4-5 天)
-- [ ] Phase 6: 功能模块 (4-5 天)
-- [ ] Phase 7: API 开放 (3-4 天)
-- [ ] Phase 8: 测试和优化 (3-4 天)
+- [x] Phase 1: 基础架构搭建
+- [x] Phase 2: Flow 编辑器
+- [x] Phase 3: 节点组件
+- [x] Phase 4: AI 集成
+- [x] Phase 5: 数据流引擎
+- [x] Phase 6: 功能模块 (模板、内容库、输出历史)
+- [x] Phase 7: API 开发 (Cloudflare Workers)
+- [ ] Phase 8: 测试和优化
 
 详细开发计划见：[CNOTE_TECHNICAL_ARCHITECTURE.md](./CNOTE_TECHNICAL_ARCHITECTURE.md)
 
@@ -63,17 +88,27 @@ npm run build
 
 ```
 cnote/
-├── web/                    # 前端应用
+├── web/                    # Web 应用
 │   ├── src/
 │   │   ├── components/    # React 组件
-│   │   ├── stores/        # Zustand 状态
-│   │   ├── lib/           # 工具函数
-│   │   ├── types/         # TypeScript 类型
-│   │   └── i18n/          # 国际化
-│   └── public/            # 静态资源
-├── proxy/                 # Cloudflare Workers Proxy
-├── desktop/               # Electron 桌面端（后续）
-└── docs/                  # 文档
+│   │   │   ├── flow/     # Flow 编辑器组件
+│   │   │   ├── settings/ # 设置组件
+│   │   │   └── ui/       # UI 基础组件
+│   │   ├── pages/        # 页面组件
+│   │   ├── stores/       # Zustand 状态管理
+│   │   ├── lib/          # 工具库
+│   │   │   ├── api/      # AI API 客户端
+│   │   │   ├── flow/     # Flow 执行引擎
+│   │   │   └── scraper/  # Web scraper 客户端
+│   │   ├── config/       # 配置文件
+│   │   └── types/        # TypeScript 类型
+│   └── public/           # 静态资源
+├── workers/              # Cloudflare Workers
+│   ├── src/
+│   │   ├── proxy.ts     # AI API 代理
+│   │   └── scraper.ts   # 网页抓取
+│   └── wrangler.toml    # Workers 配置
+└── docs/                # 文档
 ```
 
 ## 🤝 贡献
