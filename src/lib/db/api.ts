@@ -28,6 +28,11 @@ export const sourcesApi = {
   delete: (id: string) => db.delete(sources).where(eq(sources.id, id)).run(),
 };
 
+// 导出单独的函数以便组件使用
+export const getAllSources = sourcesApi.getAll;
+export const createSource = sourcesApi.create;
+export const deleteSource = sourcesApi.delete;
+
 // Flows API
 export const flowsApi = {
   getAll: () => db.select().from(flows).all(),

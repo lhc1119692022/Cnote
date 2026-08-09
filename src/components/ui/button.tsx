@@ -2,7 +2,7 @@ import React from "react";
 
 export interface ButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
   variant?: "default" | "secondary" | "outline" | "ghost";
-  size?: "default" | "sm" | "lg";
+  size?: "default" | "sm" | "lg" | "icon";
 }
 
 export const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
@@ -20,6 +20,7 @@ export const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
       default: "h-10 px-4 py-2",
       sm: "h-8 px-3 text-sm",
       lg: "h-12 px-6 text-lg",
+      icon: "h-9 w-9",
     };
 
     const classes = `${baseStyles} ${variants[variant]} ${sizes[size]} ${className}`;

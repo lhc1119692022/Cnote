@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Plus, Search, Trash2, FileText, Link as LinkIcon, Video, Globe } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -8,6 +8,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
 import { Card } from "@/components/ui/card";
+import { createSource, deleteSource, getAllSources } from "@/lib/db/api";
 
 type SourceType = "text" | "url" | "web" | "youtube" | "pdf" | "image" | "video" | "table";
 
@@ -42,6 +43,27 @@ export function SourcesManager() {
   const [content, setContent] = useState("");
   const [url, setUrl] = useState("");
 
+  // 加载所有内容源
+  useEffect(() => {
+    const loadSources = async () => {
+      try {
+        const allSources = await getAllSources();
+        const mappedSources: Source[] = allSources.map((s) => ({
+          id: s.id,
+          type: s.type as SourceType,
+          title: s.title,
+          rawText: s.content,
+          meta: s.metadata ? JSON.parse(s.metadata) : undefined,
+          createdAt: s.createdAt,
+        }));
+        setSources(mappedSources);
+      } catch (error) {
+        console.error("加载内容源失败:", error);
+      }
+    };
+    loadSources();
+  }, []);
+
   // 搜索过滤
   const filteredSources = sources.filter(source => {
     if (!searchQuery) return true;
@@ -65,16 +87,61 @@ export function SourcesManager() {
       return;
     }
 
+    let rawText = selectedType === "text" ? content : undefined;
+    const meta: Source["meta"] = {};
+
+    // 根据类型处理内容
+    if (selectedType === "youtube" && url.trim()) {
+      meta.url = url;
+      // 提取YouTube字幕
+      try {
+        const response = await fetch(`/api/youtube/transcript?url=${encodeURIComponent(url)}`);
+        if (response.ok) {
+          const data = await response.json();
+          rawText = data.transcript;
+        }
+      } catch (error) {
+        console.error("获取YouTube字幕失败:", error);
+      }
+    } else if (selectedType === "web" && url.trim()) {
+      meta.url = url;
+      // 抓取网页内容
+      try {
+        const response = await fetch(`/api/web/scrape?url=${encodeURIComponent(url)}`);
+        if (response.ok) {
+          const data = await response.json();
+          rawText = data.content;
+        }
+      } catch (error) {
+        console.error("抓取网页内容失败:", error);
+      }
+    } else if (selectedType === "url") {
+      meta.url = url;
+    }
+
     const newSource: Source = {
       id: Date.now().toString(),
       type: selectedType,
       title: title || `${selectedType} 内容`,
-      rawText: selectedType === "text" ? content : undefined,
-      meta: selectedType !== "text" ? { url } : undefined,
+      rawText,
+      meta,
       createdAt: new Date(),
     };
 
-    setSources([...sources, newSource]);
+    // 保存到数据库
+    try {
+      const sourceToSave = {
+        type: selectedType,
+        title: title || `${selectedType} 内容`,
+        content: rawText || "",
+        metadata: JSON.stringify(meta),
+      };
+      const saved = await createSource(sourceToSave);
+      setSources([...sources, { ...newSource, id: saved.id }]);
+    } catch (error) {
+      console.error("保存内容源失败:", error);
+      setSources([...sources, newSource]);
+    }
 
     // 重置表单
     setIsDialogOpen(false);
@@ -85,9 +152,15 @@ export function SourcesManager() {
   };
 
   // 删除内容源
-  const handleDeleteSource = (id: string) => {
+  const handleDeleteSource = async (id: string) => {
     if (confirm("确定要删除这个内容源吗？")) {
-      setSources(sources.filter(s => s.id !== id));
+      try {
+        await deleteSource(id);
+        setSources(sources.filter(s => s.id !== id));
+      } catch (error) {
+        console.error("删除内容源失败:", error);
+        setSources(sources.filter(s => s.id !== id));
+      }
     }
   };
 

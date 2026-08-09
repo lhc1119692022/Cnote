@@ -2,9 +2,6 @@
 const nextConfig = {
   reactStrictMode: true,
 
-  // 输出为独立应用（用于 Electron）
-  output: 'export',
-
   // 图片优化配置
   images: {
     unoptimized: true,
