@@ -47,6 +47,14 @@ npm run dev
 
 访问 http://localhost:3000
 
+### Windows 桌面快捷方式
+
+```bash
+npm run shortcut:create
+```
+
+运行后会在当前用户桌面创建 `Cnote` 快捷方式。双击快捷方式会启动开发服务器，并在服务就绪后自动打开浏览器。
+
 ### 构建
 
 ```bash
@@ -155,4 +163,3 @@ MIT License
 
 ---
 
-**注意**: 本项目从 Creatos 项目恢复重写而来，已完全移除 License 验证系统，可自由使用和修改。

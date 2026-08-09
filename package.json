@@ -13,7 +13,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "next lint",
+    "shortcut:create": "pwsh -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/create-desktop-shortcut.ps1"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^2.0.57",
