@@ -11,8 +11,45 @@ export function getDatabase() {
     const dbPath = process.env.DATABASE_PATH || path.join(process.cwd(), "cnote.db");
     const sqlite = new Database(dbPath);
     db = drizzle(sqlite, { schema });
+
+    // 运行数据库迁移
+    initDatabase(sqlite);
   }
   return db;
+}
+
+function initDatabase(sqlite: Database.Database) {
+  // 创建内容库表
+  sqlite.exec(`
+    CREATE TABLE IF NOT EXISTS content_library (
+      id TEXT PRIMARY KEY,
+      title TEXT NOT NULL,
+      type TEXT NOT NULL,
+      content TEXT NOT NULL,
+      metadata TEXT,
+      tags TEXT,
+      category TEXT,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    )
+  `);
+
+  // 创建模板库表
+  sqlite.exec(`
+    CREATE TABLE IF NOT EXISTS template_library (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      description TEXT,
+      category TEXT NOT NULL,
+      nodes TEXT NOT NULL,
+      edges TEXT NOT NULL,
+      thumbnail TEXT,
+      tags TEXT,
+      is_built_in INTEGER DEFAULT 0,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    )
+  `);
 }
 
 export { schema };

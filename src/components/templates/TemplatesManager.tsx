@@ -73,8 +73,16 @@ export function TemplatesManager() {
 
   // 应用模板
   const handleApplyTemplate = (template: Template) => {
-    console.log("应用模板:", template);
-    // TODO: 创建新流程并应用模板
+    // 将模板数据存储到 sessionStorage
+    const templateData = {
+      nodes: [],
+      edges: [],
+      name: template.name,
+    };
+    sessionStorage.setItem("templateData", JSON.stringify(templateData));
+
+    // 跳转到新建流程页面
+    window.location.href = "/dashboard/flows";
   };
 
   // 复制模板

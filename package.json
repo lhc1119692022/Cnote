@@ -122,7 +122,7 @@
     "next-safe-action": "^7.10.4",
     "next-themes": "^0.4.4",
     "nuqs": "^2.5.1",
-    "pdfjs-dist": "^5.4.296",
+    "pdfjs-dist": "^5.7.284",
     "postgres": "^3.4.5",
     "prettier": "^3.4.2",
     "radix-ui": "^1.4.2",

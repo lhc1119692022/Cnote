@@ -11,7 +11,7 @@ import { getAllFlows, deleteFlow } from "@/lib/db/flows-api";
 interface Flow {
   id: string;
   name: string;
-  description?: string;
+  description?: string | null;
   nodes: string;
   edges: string;
   createdAt: Date;
@@ -98,11 +98,8 @@ export default function FlowsManager() {
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           {filteredFlows.map((flow) => (
-            <Card
-              key={flow.id}
-              className="p-4 hover:shadow-lg transition-shadow cursor-pointer"
-              onClick={() => handleOpenFlow(flow)}
-            >
+            <div key={flow.id} onClick={() => handleOpenFlow(flow)}>
+              <Card className="p-4 hover:shadow-lg transition-shadow cursor-pointer">
               <div className="flex items-start justify-between mb-3">
                 <div className="flex-1">
                   <h3 className="font-semibold text-lg mb-1">{flow.name}</h3>
@@ -135,6 +132,7 @@ export default function FlowsManager() {
                 </span>
               </div>
             </Card>
+            </div>
           ))}
         </div>
       )}
@@ -146,7 +144,7 @@ export default function FlowsManager() {
             <DialogTitle>删除流程</DialogTitle>
           </DialogHeader>
           <p className="text-muted-foreground">
-            确定要删除流程 "{selectedFlow?.name}" 吗？此操作无法撤销。
+            确定要删除流程 &quot;{selectedFlow?.name}&quot; 吗？此操作无法撤销。
           </p>
           <DialogFooter>
             <Button variant="outline" onClick={() => setShowDeleteDialog(false)}>

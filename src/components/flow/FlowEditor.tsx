@@ -15,15 +15,29 @@ import ReactFlow, {
 } from "reactflow";
 import "reactflow/dist/style.css";
 import { Button } from "@/components/ui/button";
-import { Plus, Play, Save, FileText, Bot, Globe, FileOutput } from "lucide-react";
+import { Input } from "@/components/ui/input";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
+import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Textarea } from "@/components/ui/textarea";
+import { Plus, Play, Save, FileText, Bot, Globe, FileOutput, Download, FileUp, Square, FileType } from "lucide-react";
 import { AINode, AINodeData } from "./nodes/AINode";
 import { ContentNode, ContentNodeData } from "./nodes/ContentNode";
 import { BrowserNode, BrowserNodeData } from "./nodes/BrowserNode";
 import { OutputNode, OutputNodeData } from "./nodes/OutputNode";
+import { GroupNode, GroupNodeData } from "./nodes/GroupNode";
+import { PDFNode, PDFNodeData } from "./nodes/PDFNode";
 import { createFlow, updateFlow } from "@/lib/db/flows-api";
+import {
+  exportFlowAsPNG,
+  exportFlowAsJSON,
+  exportFlowAsFullPackage,
+  importFlowPackage,
+  saveFlowAsTemplate,
+} from "@/lib/flow-export";
 
 // 节点类型定义
-export type NodeType = "ai" | "content" | "browser" | "output";
+export type NodeType = "ai" | "content" | "browser" | "output" | "group" | "pdf";
 
 // 初始节点
 const initialNodes: Node[] = [];
@@ -44,6 +58,27 @@ export function FlowEditor({ flowId, initialData }: FlowEditorProps = {}) {
   const [isRunning, setIsRunning] = useState(false);
   const [currentFlowId, setCurrentFlowId] = useState(flowId);
   const [flowName, setFlowName] = useState(initialData?.name || "未命名流程");
+  const [isPresentationMode, setIsPresentationMode] = useState(false);
+  const [focusedNodeId, setFocusedNodeId] = useState<string | null>(null);
+
+  // 从 sessionStorage 加载模板数据
+  useEffect(() => {
+    const templateData = sessionStorage.getItem("templateData");
+    if (templateData && !flowId) {
+      try {
+        const { nodes: templateNodes, edges: templateEdges, name } = JSON.parse(templateData);
+        if (templateNodes && templateEdges) {
+          setNodes(templateNodes);
+          setEdges(templateEdges);
+          setFlowName(name || "未命名流程");
+        }
+        // 清除 sessionStorage
+        sessionStorage.removeItem("templateData");
+      } catch (error) {
+        console.error("加载模板数据失败:", error);
+      }
+    }
+  }, [flowId, setNodes, setEdges]);
 
   // 定义自定义节点类型
   const nodeTypes: NodeTypes = useMemo(
@@ -52,6 +87,8 @@ export function FlowEditor({ flowId, initialData }: FlowEditorProps = {}) {
       content: ContentNode,
       browser: BrowserNode,
       output: OutputNode,
+      group: GroupNode,
+      pdf: PDFNode,
     }),
     []
   );
@@ -111,11 +148,20 @@ export function FlowEditor({ flowId, initialData }: FlowEditorProps = {}) {
           ...(type === "ai" && { model: "gpt-4", contextVariables: {} }),
           ...(type === "browser" && { url: "", content: "" }),
           ...(type === "output" && { content: "" }),
+          ...(type === "group" && { description: "", color: "#f0f0f0" }),
+          ...(type === "pdf" && { source: "file", text: "", pages: 0 }),
         },
         position: {
           x: Math.random() * 400 + 100,
           y: Math.random() * 400 + 100,
         },
+        ...(type === "group" && {
+          style: {
+            width: 400,
+            height: 300,
+            zIndex: -1,
+          },
+        }),
       };
       setNodes((nds) => [...nds, newNode]);
     },
@@ -346,8 +392,92 @@ export function FlowEditor({ flowId, initialData }: FlowEditorProps = {}) {
     }
   }, [nodes, edges, flowName, currentFlowId]);
 
+  // 导出相关状态
+  const [showExportDialog, setShowExportDialog] = useState(false);
+  const [showImportDialog, setShowImportDialog] = useState(false);
+  const [showSaveTemplateDialog, setShowSaveTemplateDialog] = useState(false);
+  const [templateFormData, setTemplateFormData] = useState({
+    name: "",
+    category: "内容处理",
+    description: "",
+  });
+
+  // 导出为PNG
+  const handleExportPNG = async () => {
+    try {
+      await exportFlowAsPNG("flow-canvas", `${flowName}.png`);
+      setShowExportDialog(false);
+    } catch (error) {
+      console.error("导出PNG失败:", error);
+    }
+  };
+
+  // 导出为JSON
+  const handleExportJSON = () => {
+    exportFlowAsJSON(nodes, edges, `${flowName}.json`);
+    setShowExportDialog(false);
+  };
+
+  // 导出为完整包
+  const handleExportFullPackage = () => {
+    exportFlowAsFullPackage(nodes, edges, flowName, `${flowName}-package.json`);
+    setShowExportDialog(false);
+  };
+
+  // 导入Flow
+  const handleImportFlow = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    try {
+      const flowData = await importFlowPackage(file);
+      setNodes(flowData.nodes);
+      setEdges(flowData.edges);
+      setFlowName(flowData.name);
+      setShowImportDialog(false);
+    } catch (error) {
+      console.error("导入Flow失败:", error);
+    }
+  };
+
+  // 保存为模板
+  const handleSaveAsTemplate = async () => {
+    try {
+      await saveFlowAsTemplate(
+        nodes,
+        edges,
+        templateFormData.name,
+        templateFormData.category,
+        templateFormData.description
+      );
+      setShowSaveTemplateDialog(false);
+      setTemplateFormData({ name: "", category: "内容处理", description: "" });
+    } catch (error) {
+      console.error("保存模板失败:", error);
+    }
+  };
+
+  // 键盘快捷键
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "f" || event.key === "F") {
+        setIsPresentationMode(false);
+        setFocusedNodeId(null);
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, []);
+
+  // 节点双击处理
+  const handleNodeDoubleClick = useCallback((_event: React.MouseEvent, node: Node) => {
+    setIsPresentationMode(true);
+    setFocusedNodeId(node.id);
+  }, []);
+
   return (
-    <div className="flex flex-1 flex-col h-screen">
+    <div className="flex flex-1 flex-col h-screen" id="flow-canvas">
       {/* 顶部工具栏 */}
       <div className="flex items-center justify-between border-b border-border bg-card px-4 py-3">
         <div className="flex items-center gap-2">
@@ -385,11 +515,29 @@ export function FlowEditor({ flowId, initialData }: FlowEditorProps = {}) {
           <Button
             variant="outline"
             size="sm"
+            onClick={() => addNode("pdf", "PDF节点")}
+            className="gap-2"
+          >
+            <FileType className="h-4 w-4" />
+            PDF
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
             onClick={() => addNode("output", "输出节点")}
             className="gap-2"
           >
             <FileOutput className="h-4 w-4" />
             输出
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => addNode("group", "分组")}
+            className="gap-2"
+          >
+            <Square className="h-4 w-4" />
+            分组
           </Button>
 
           <div className="w-px h-6 bg-border mx-2" />
@@ -402,6 +550,24 @@ export function FlowEditor({ flowId, initialData }: FlowEditorProps = {}) {
           >
             <Save className="h-4 w-4" />
             保存
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setShowExportDialog(true)}
+            className="gap-2"
+          >
+            <Download className="h-4 w-4" />
+            导出
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setShowImportDialog(true)}
+            className="gap-2"
+          >
+            <FileUp className="h-4 w-4" />
+            导入
           </Button>
           <Button
             size="sm"
@@ -423,6 +589,7 @@ export function FlowEditor({ flowId, initialData }: FlowEditorProps = {}) {
           onNodesChange={onNodesChange}
           onEdgesChange={onEdgesChange}
           onConnect={onConnect}
+          onNodeDoubleClick={handleNodeDoubleClick}
           nodeTypes={nodeTypes}
           fitView
           className="bg-background"
@@ -431,7 +598,168 @@ export function FlowEditor({ flowId, initialData }: FlowEditorProps = {}) {
           <Controls />
           <MiniMap />
         </ReactFlow>
+
+        {/* 演示模式遮罩 */}
+        {isPresentationMode && focusedNodeId && (
+          <div
+            className="fixed inset-0 bg-black/80 z-50 flex items-center justify-center"
+            onClick={() => {
+              setIsPresentationMode(false);
+              setFocusedNodeId(null);
+            }}
+          >
+            <div className="bg-card p-8 rounded-lg max-w-4xl max-h-[80vh] overflow-auto">
+              {nodes.find((n) => n.id === focusedNodeId)?.data && (
+                <div>
+                  <h2 className="text-2xl font-bold mb-4">
+                    {nodes.find((n) => n.id === focusedNodeId)?.data.label}
+                  </h2>
+                  <pre className="text-sm whitespace-pre-wrap">
+                    {JSON.stringify(
+                      nodes.find((n) => n.id === focusedNodeId)?.data,
+                      null,
+                      2
+                    )}
+                  </pre>
+                  <p className="text-sm text-muted-foreground mt-4">
+                    按 F 键返回全局视图
+                  </p>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
       </div>
+
+      {/* 导出对话框 */}
+      <Dialog open={showExportDialog} onOpenChange={setShowExportDialog}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>导出工作流</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3">
+            <Button
+              variant="outline"
+              className="w-full justify-start"
+              onClick={handleExportPNG}
+            >
+              <Download className="h-4 w-4 mr-2" />
+              导出为 PNG 图片
+            </Button>
+            <Button
+              variant="outline"
+              className="w-full justify-start"
+              onClick={handleExportJSON}
+            >
+              <Download className="h-4 w-4 mr-2" />
+              导出为 JSON（结构）
+            </Button>
+            <Button
+              variant="outline"
+              className="w-full justify-start"
+              onClick={handleExportFullPackage}
+            >
+              <Download className="h-4 w-4 mr-2" />
+              导出为完整包（含数据）
+            </Button>
+            <Button
+              variant="outline"
+              className="w-full justify-start"
+              onClick={() => {
+                setShowExportDialog(false);
+                setShowSaveTemplateDialog(true);
+              }}
+            >
+              <Save className="h-4 w-4 mr-2" />
+              保存为模板
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* 导入对话框 */}
+      <Dialog open={showImportDialog} onOpenChange={setShowImportDialog}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>导入工作流</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            <p className="text-sm text-muted-foreground">
+              选择之前导出的工作流包文件（JSON格式）
+            </p>
+            <Input
+              type="file"
+              accept=".json"
+              onChange={handleImportFlow}
+            />
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* 保存为模板对话框 */}
+      <Dialog open={showSaveTemplateDialog} onOpenChange={setShowSaveTemplateDialog}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>保存为模板</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <Label htmlFor="template-name">模板名称</Label>
+              <Input
+                id="template-name"
+                placeholder="例如: YouTube视频总结"
+                value={templateFormData.name}
+                onChange={(e) =>
+                  setTemplateFormData({ ...templateFormData, name: e.target.value })
+                }
+              />
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="template-category">分类</Label>
+              <Select
+                value={templateFormData.category}
+                onValueChange={(value) =>
+                  setTemplateFormData({ ...templateFormData, category: value })
+                }
+              >
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="内容处理">内容处理</SelectItem>
+                  <SelectItem value="视频处理">视频处理</SelectItem>
+                  <SelectItem value="翻译">翻译</SelectItem>
+                  <SelectItem value="营销">营销</SelectItem>
+                  <SelectItem value="研究分析">研究分析</SelectItem>
+                  <SelectItem value="其他">其他</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="template-description">描述</Label>
+              <Textarea
+                id="template-description"
+                placeholder="简要描述这个模板的用途..."
+                value={templateFormData.description}
+                onChange={(e) =>
+                  setTemplateFormData({ ...templateFormData, description: e.target.value })
+                }
+                rows={3}
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowSaveTemplateDialog(false)}>
+              取消
+            </Button>
+            <Button onClick={handleSaveAsTemplate} disabled={!templateFormData.name}>
+              保存
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
