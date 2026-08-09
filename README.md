@@ -1,165 +1,95 @@
-# Cnote - 开源内容创作工作流工具
+# Cnote
 
-基于 Next.js 15 和 React 19 构建的内容创作和处理平台。
+**Web 优先的知识工作流应用 - 基于 Vite + React 19**
 
-## ✨ 功能特性
+## 🎯 项目简介
 
-### 核心功能
+Cnote 是一个开源的知识工作流应用，专为个人知识工作者和内容创作者设计。通过可视化的流程编排，连接内容输入、AI 处理和内容输出，实现高效的研究辅助、多源写作和内容迭代。
 
-- **内容源管理** - 支持文本、网页、YouTube 视频等多种内容源
-- **工作流编辑器** - 可视化流程编辑，支持多种节点类型
-- **模板库** - 内置多种常用模板，快速开始创作
-- **输出管理** - 统一管理所有生成的内容
-- **风格配置** - 自定义写作风格和语调
-- **API 管理** - 集成多个 AI 服务提供商
+### 核心特性
 
-### 技术特性
+- 🎨 **无限画布** - 基于 React Flow 的可视化工作流编辑器
+- 🤖 **AI 集成** - 支持 Anthropic Claude、OpenAI GPT、Google Gemini 等主流模型
+- 📝 **富文本编辑** - 完整的内容创作和编辑能力
+- 🌐 **Web 优先** - 纯静态部署，GitHub Pages 即可运行
+- 💾 **本地存储** - 基于 IndexedDB，无需服务器
+- 🔐 **隐私优先** - API Key 加密存储，数据完全本地化
+- 🌍 **国际化** - 中英文双语支持
 
-- ⚡️ Next.js 15 App Router
-- ⚛️ React 19 with Server Components
-- 🎨 Tailwind CSS + Radix UI
-- 📊 ReactFlow 工作流编辑器
-- 💾 Better-SQLite3 + Drizzle ORM
-- 🌐 国际化支持 (中文/英文)
-- 🎯 TypeScript 严格模式
-- 📦 静态导出，可直接部署
+### 技术栈
+
+- **构建工具**: Vite 7
+- **前端框架**: React 19
+- **路由**: React Router 7
+- **状态管理**: Zustand 5
+- **本地存储**: LocalForage (IndexedDB)
+- **UI 框架**: TailwindCSS 4 + shadcn/ui
+- **流程图**: React Flow
+- **富文本**: TipTap
+- **国际化**: i18next
 
 ## 🚀 快速开始
 
-### 环境要求
-
-- Node.js 20.20.0 或更高版本
-- npm 或 pnpm
-
-### 安装
-
 ```bash
-# 克隆仓库
+# 克隆项目
 git clone https://github.com/yourusername/cnote.git
 cd cnote
 
 # 安装依赖
-npm install --legacy-peer-deps
+npm install
 
 # 启动开发服务器
 npm run dev
-```
 
-访问 http://localhost:3000
-
-### Windows 桌面快捷方式
-
-```bash
-npm run shortcut:create
-```
-
-运行后会在当前用户桌面创建 `Cnote` 快捷方式。双击快捷方式会启动开发服务器，并在服务就绪后自动打开浏览器。
-
-### 构建
-
-```bash
-# 构建静态网站
+# 构建生产版本
 npm run build
-
-# 预览构建结果
-npm run preview
 ```
 
+## 📖 开发计划
+
+- [x] Phase 0: 项目清理和初始化
+- [ ] Phase 1: 基础架构搭建 (3-5 天)
+- [ ] Phase 2: Flow 编辑器 (5-7 天)
+- [ ] Phase 3: 节点组件 (7-10 天)
+- [ ] Phase 4: AI 集成 + Proxy (5-7 天)
+- [ ] Phase 5: 数据流引擎 (4-5 天)
+- [ ] Phase 6: 功能模块 (4-5 天)
+- [ ] Phase 7: API 开放 (3-4 天)
+- [ ] Phase 8: 测试和优化 (3-4 天)
+
+详细开发计划见：[CNOTE_TECHNICAL_ARCHITECTURE.md](./CNOTE_TECHNICAL_ARCHITECTURE.md)
 
 ## 📁 项目结构
 
 ```
 cnote/
-├── src/
-│   ├── app/                    # Next.js App Router
-│   │   └── [locale]/          # 国际化路由
-│   │       └── (protected)/   # 受保护路由
-│   │           └── dashboard/ # 主应用页面
-│   ├── components/            # React 组件
-│   │   ├── flow/             # 工作流编辑器
-│   │   ├── sources/          # 内容源管理
-│   │   ├── outputs/          # 输出管理
-│   │   ├── templates/        # 模板管理
-│   │   ├── settings/         # 设置页面
-│   │   └── ui/               # 基础 UI 组件
-│   ├── lib/                   # 工具库
-│   │   ├── db/               # 数据库层
-│   │   └── i18n/             # 国际化
-│   └── styles/               # 全局样式
-├── public/                    # 静态资源
-└── package.json
+├── web/                    # 前端应用
+│   ├── src/
+│   │   ├── components/    # React 组件
+│   │   ├── stores/        # Zustand 状态
+│   │   ├── lib/           # 工具函数
+│   │   ├── types/         # TypeScript 类型
+│   │   └── i18n/          # 国际化
+│   └── public/            # 静态资源
+├── proxy/                 # Cloudflare Workers Proxy
+├── desktop/               # Electron 桌面端（后续）
+└── docs/                  # 文档
 ```
-
-## 🎨 核心组件
-
-### 内容源管理 (SourcesManager)
-- 支持文本、URL、YouTube、网页等多种内容类型
-- 搜索和过滤功能
-- 内容预览和管理
-
-### 工作流编辑器 (FlowEditor)
-- 基于 ReactFlow 的可视化编辑器
-- 支持多种节点类型 (AI对话、网页抓取、输出等)
-- 节点连接和流程执行
-
-### 模板库 (TemplatesManager)
-- 内置常用模板
-- 按分类浏览
-- 一键应用模板
-
-### 输出管理 (OutputsManager)
-- 查看所有生成内容
-- 导出为 TXT 格式
-- 搜索和过滤
-
-### API Keys 管理 (ApiKeysManager)
-- 支持 OpenAI、Anthropic、Google AI、DeepSeek 等
-- 密钥加密存储
-- 可见性控制
-
-### 写作风格 (StyleProfilesManager)
-- 自定义语调和风格
-- 内置常用风格配置
-- 目标受众设定
-
-## 🗄️ 数据库
-
-使用 Better-SQLite3 + Drizzle ORM，数据存储在本地 SQLite 数据库。
-
-### 数据表
-
-- `sources` - 内容源
-- `flows` - 工作流
-- `outputs` - 输出结果
-- `api_keys` - API 密钥
-- `style_profiles` - 风格配置
-- `templates` - 模板
-
-## 🌐 国际化
-
-支持中文和英文界面，语言文件位于 `src/lib/i18n/locales/`。
-
-## 🛠️ 技术栈
-
-- **框架**: Next.js 15.2.8
-- **UI**: React 19, Tailwind CSS, Radix UI
-- **工作流**: ReactFlow 11
-- **数据库**: Better-SQLite3, Drizzle ORM
-- **AI SDK**: @ai-sdk/anthropic, openai, google, deepseek
-- **类型检查**: TypeScript 5.x
-- **包管理**: npm with --legacy-peer-deps
-
-## 📝 License
-
-MIT License
 
 ## 🤝 贡献
 
-欢迎提交 Issue 和 Pull Request！
+欢迎贡献！请查看 [贡献指南](./CONTRIBUTING.md)。
 
-## 📮 联系方式
+## 📄 许可证
 
-如有问题或建议，请提交 Issue。
+[MIT License](./LICENSE)
+
+## 🔗 相关链接
+
+- [技术架构文档](./CNOTE_TECHNICAL_ARCHITECTURE.md)
+- [提取数据参考](./extracted-data/)
+- [问题反馈](https://github.com/yourusername/cnote/issues)
 
 ---
 
+**从 Creatos 的理念出发，构建开放的未来** 🚀

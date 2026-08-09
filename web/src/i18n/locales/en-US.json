@@ -1,0 +1,103 @@
+{
+  "app": {
+    "name": "Cnote",
+    "tagline": "Knowledge Workflow Application"
+  },
+  "common": {
+    "save": "Save",
+    "cancel": "Cancel",
+    "delete": "Delete",
+    "edit": "Edit",
+    "add": "Add",
+    "create": "Create",
+    "search": "Search",
+    "loading": "Loading...",
+    "success": "Success",
+    "error": "Error",
+    "confirm": "Confirm",
+    "close": "Close",
+    "back": "Back",
+    "next": "Next",
+    "previous": "Previous",
+    "finish": "Finish"
+  },
+  "nav": {
+    "dashboard": "Dashboard",
+    "flows": "Flows",
+    "templates": "Templates",
+    "sources": "Library",
+    "outputs": "Outputs",
+    "settings": "Settings"
+  },
+  "flow": {
+    "newFlow": "New Flow",
+    "untitled": "Untitled Flow",
+    "nodes": "Nodes",
+    "connections": "Connections",
+    "run": "Run",
+    "stop": "Stop",
+    "export": "Export",
+    "import": "Import",
+    "saveAsTemplate": "Save as Template",
+    "addNode": "Add Node"
+  },
+  "node": {
+    "content": "Content",
+    "ai": "AI",
+    "browser": "Browser",
+    "sticky": "Sticky",
+    "editor": "Editor",
+    "output": "Output"
+  },
+  "content": {
+    "mode": {
+      "text": "Text",
+      "image": "Image",
+      "video": "Video",
+      "table": "Table",
+      "youtube": "YouTube",
+      "pdf": "PDF"
+    }
+  },
+  "settings": {
+    "general": "General",
+    "providers": "AI Providers",
+    "language": "Language",
+    "theme": "Theme",
+    "about": "About"
+  },
+  "provider": {
+    "add": "Add Provider",
+    "edit": "Edit Provider",
+    "builtin": "Built-in",
+    "custom": "Custom",
+    "name": "Name",
+    "baseUrl": "Base URL",
+    "apiKey": "API Key",
+    "protocol": "Protocol",
+    "models": "Models",
+    "testConnection": "Test Connection",
+    "fetchModels": "Fetch Models",
+    "connectionSuccess": "Connection successful",
+    "connectionFailed": "Connection failed",
+    "enabled": "Enabled",
+    "disabled": "Disabled",
+    "reset": "Reset",
+    "resetBuiltin": "Reset Built-in Providers"
+  },
+  "template": {
+    "useTemplate": "Use Template",
+    "noTemplates": "No templates",
+    "usageCount": "Usage count"
+  },
+  "library": {
+    "saveToLibrary": "Save to Library",
+    "noSources": "No content",
+    "addManually": "Add manually"
+  },
+  "output": {
+    "saveOutput": "Save Output",
+    "noOutputs": "No outputs",
+    "wordCount": "Word count"
+  }
+}
