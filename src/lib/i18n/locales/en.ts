@@ -1,0 +1,83 @@
+const en = {
+  common: {
+    save: "Save",
+    cancel: "Cancel",
+    delete: "Delete",
+    edit: "Edit",
+    create: "Create",
+    search: "Search",
+    loading: "Loading...",
+    error: "Error",
+    success: "Success",
+  },
+  nav: {
+    dashboard: "Dashboard",
+    flows: "Flows",
+    sources: "Sources",
+    outputs: "Outputs",
+    templates: "Templates",
+    settings: "Settings",
+  },
+  dashboard: {
+    title: "Dashboard",
+    welcome: "Welcome back to Cnote, manage your notes and workflows.",
+    quickStats: "Quick Stats",
+    quickActions: "Quick Actions",
+    flows: "Flows",
+    sources: "Sources",
+    outputs: "Outputs",
+  },
+  flows: {
+    title: "Flows",
+    description: "Create and manage your content processing workflows",
+    createNew: "New Flow",
+    emptyState: {
+      title: "No flows yet",
+      description: "Create your first workflow to automate content processing",
+      action: "Create Flow",
+    },
+  },
+  sources: {
+    title: "Sources",
+    description: "Manage your text, web, video content sources",
+    addContent: "Add Content",
+    emptyState: {
+      title: "No sources yet",
+      description: "Add text, web links, YouTube videos or upload files as content sources",
+      action: "Add Source",
+    },
+  },
+  outputs: {
+    title: "Outputs",
+    description: "Manage and view generated content outputs",
+    emptyState: {
+      title: "No outputs yet",
+      description: "Generated content from workflows will appear here",
+      action: "Create Flow",
+    },
+  },
+  templates: {
+    title: "Templates",
+    description: "Use preset templates to quickly start creating content",
+    blogPost: "Blog Post",
+    studyNotes: "Study Notes",
+    videoScript: "Video Script",
+    dataAnalysis: "Data Analysis",
+    creativeWriting: "Creative Writing",
+    businessDoc: "Business Document",
+  },
+  settings: {
+    title: "Settings",
+    description: "Configure application and account settings",
+    general: "General Settings",
+    language: "Language",
+    theme: "Theme",
+    apiKeys: "API Keys",
+    styleProfiles: "Style Profiles",
+    about: "About",
+    version: "Version",
+    license: "License",
+  },
+};
+
+export default en;
