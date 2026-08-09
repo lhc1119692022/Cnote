@@ -73,7 +73,12 @@ export function Dashboard() {
               <a href="#templates" className="text-[#6e6e73] hover:text-[#1d1d1f]">模板</a>
               <a href="#sources" className="text-[#6e6e73] hover:text-[#1d1d1f]">内容库</a>
               <a href="#outputs" className="text-[#6e6e73] hover:text-[#1d1d1f]">输出历史</a>
-              <a href="#settings" className="text-[#6e6e73] hover:text-[#1d1d1f]">设置</a>
+              <button
+                onClick={() => navigate('/settings/api-keys')}
+                className="text-[#6e6e73] hover:text-[#1d1d1f]"
+              >
+                设置
+              </button>
             </nav>
           </div>
         </div>
