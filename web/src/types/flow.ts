@@ -1,5 +1,9 @@
 import { Node, Edge } from 'reactflow';
 
+// 类型别名用于 Flow 执行引擎
+export type FlowNode = Node
+export type FlowEdge = Edge
+
 // 节点类型
 export type NodeType =
   | 'content'

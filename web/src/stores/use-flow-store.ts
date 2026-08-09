@@ -5,6 +5,7 @@ import { applyNodeChanges, applyEdgeChanges } from 'reactflow'
 import type { Node, Edge, OnNodesChange, OnEdgesChange } from 'reactflow'
 import { localForageStorage } from '@/lib/localforage-storage'
 import type { Flow } from '@/types/flow'
+import { FlowExecutor, type ExecutionContext } from '@/lib/flow'
 
 interface FlowState {
   // 当前 Flow
@@ -25,6 +26,10 @@ interface FlowState {
 
   // 画布状态
   isLocked: boolean
+
+  // 执行状态
+  isExecuting: boolean
+  executionContexts: Map<string, ExecutionContext>
 
   // 操作方法
   createFlow: (name: string, description?: string) => Flow
@@ -65,6 +70,10 @@ interface FlowState {
   exportFlowAsJSON: () => string
   importFlowFromJSON: (json: string) => void
 
+  // Flow 执行
+  executeFlow: (aiClient?: any) => Promise<void>
+  stopExecution: () => void
+
   // 初始化
   initialize: () => Promise<void>
 }
@@ -81,6 +90,8 @@ export const useFlowStore = create<FlowState>()(
       historyIndex: -1,
       maxHistory: 50,
       isLocked: false,
+      isExecuting: false,
+      executionContexts: new Map(),
 
       // 创建新 Flow
       createFlow: (name, description) => {
@@ -415,6 +426,45 @@ export const useFlowStore = create<FlowState>()(
         if (flows.length === 0) {
           get().createFlow('我的第一个 Flow', '开始你的创作之旅')
         }
+      },
+
+      // 执行 Flow
+      executeFlow: async (aiClient) => {
+        const { nodes, edges } = get()
+        if (get().isExecuting) return
+
+        set({ isExecuting: true, executionContexts: new Map() })
+
+        try {
+          const executor = new FlowExecutor(
+            nodes.map((n) => ({ ...n, data: n.data || {} })),
+            edges.map((e) => ({ ...e, type: e.type || 'smoothstep' })),
+            aiClient
+          )
+
+          const result = await executor.execute()
+
+          set({
+            executionContexts: result.contexts,
+            isExecuting: false,
+          })
+
+          if (!result.success) {
+            console.error('Flow execution failed:', result.error)
+            alert(`执行失败: ${result.error}`)
+          } else {
+            alert('Flow 执行完成！')
+          }
+        } catch (error) {
+          console.error('Flow execution error:', error)
+          set({ isExecuting: false })
+          alert(`执行错误: ${error instanceof Error ? error.message : '未知错误'}`)
+        }
+      },
+
+      // 停止执行
+      stopExecution: () => {
+        set({ isExecuting: false })
       },
     }),
     {
