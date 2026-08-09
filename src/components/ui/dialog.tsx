@@ -69,3 +69,12 @@ export function DialogDescription({ children, className = "" }: DialogDescriptio
 export function DialogTrigger({ children, onClick }: { children: React.ReactNode; onClick?: () => void }) {
   return <div onClick={onClick}>{children}</div>;
 }
+
+export interface DialogFooterProps {
+  children: React.ReactNode;
+  className?: string;
+}
+
+export function DialogFooter({ children, className = "" }: DialogFooterProps) {
+  return <div className={`flex items-center justify-end gap-2 pt-4 ${className}`}>{children}</div>;
+}
