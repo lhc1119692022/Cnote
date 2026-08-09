@@ -1,145 +1,158 @@
-# Cnote
+# Cnote - 开源内容创作工作流工具
 
-一个开源的笔记和内容管理应用程序。
+基于 Next.js 15 和 React 19 构建的内容创作和处理平台。
 
-## 特性
+## ✨ 功能特性
 
-- 📝 强大的 Markdown 编辑器（基于 TipTap）
-- 🎨 优雅的 Apple 风格 UI 设计
-- 🔄 工作流管理系统
-- 📚 多种内容源支持（YouTube、网页、图片、视频、表格）
-- 🎯 模板系统
-- 💅 风格配置管理
-- 🌍 多语言支持（i18n）
-- 🎨 深色模式支持
-- 🤖 多 AI 模型集成（OpenAI、Anthropic、Google、DeepSeek 等）
+### 核心功能
 
-## 技术栈
+- **内容源管理** - 支持文本、网页、YouTube 视频等多种内容源
+- **工作流编辑器** - 可视化流程编辑，支持多种节点类型
+- **模板库** - 内置多种常用模板，快速开始创作
+- **输出管理** - 统一管理所有生成的内容
+- **风格配置** - 自定义写作风格和语调
+- **API 管理** - 集成多个 AI 服务提供商
 
-### 前端
-- **框架**: Next.js 15.2.8 (App Router)
-- **UI 库**: React 19
-- **样式**: Tailwind CSS + Radix UI
-- **动画**: Framer Motion
-- **富文本编辑**: TipTap
-- **工作流可视化**: ReactFlow
-- **状态管理**: Zustand
-- **表单**: React Hook Form + Zod
+### 技术特性
 
-### 后端
-- **运行时**: Electron 40.0.0
-- **数据库**: Better-SQLite3
-- **ORM**: Drizzle ORM
-- **认证**: Better Auth
+- ⚡️ Next.js 15 App Router
+- ⚛️ React 19 with Server Components
+- 🎨 Tailwind CSS + Radix UI
+- 📊 ReactFlow 工作流编辑器
+- 💾 Better-SQLite3 + Drizzle ORM
+- 🌐 国际化支持 (中文/英文)
+- 🎯 TypeScript 严格模式
+- 📦 静态导出，可直接部署
 
-### AI 集成
-- Anthropic (Claude)
-- OpenAI (GPT)
-- Google (Gemini)
-- DeepSeek
-- Groq
-- Mistral
-- 以及更多...
+## 🚀 快速开始
 
-## 快速开始
+### 环境要求
 
-### 前置要求
-
-- Node.js 20.20.0
-- pnpm 10.x
+- Node.js 20.20.0 或更高版本
+- npm 或 pnpm
 
 ### 安装
 
 ```bash
+# 克隆仓库
+git clone https://github.com/yourusername/cnote.git
+cd cnote
+
 # 安装依赖
-pnpm install
+npm install --legacy-peer-deps
 
-# 开发模式（仅 Web）
-pnpm dev
-
-# Electron 开发模式
-pnpm electron:dev
-
-# 构建
-pnpm build
-
-# 构建 Electron 应用
-pnpm electron:build
+# 启动开发服务器
+npm run dev
 ```
 
-## 项目结构
+访问 http://localhost:3000
+
+### 构建
+
+```bash
+# 构建静态网站
+npm run build
+
+# 预览构建结果
+npm run preview
+```
+
+
+## 📁 项目结构
 
 ```
 cnote/
-├── electron/              # Electron 主进程代码
-│   ├── main.ts           # 主入口
-│   └── core/             # 核心逻辑
 ├── src/
-│   ├── app/              # Next.js App Router 页面
-│   │   ├── [locale]/     # 国际化路由
-│   │   │   ├── home/     # 首页
-│   │   │   └── (protected)/ # 受保护的路由
-│   │   │       ├── dashboard/    # 仪表板
-│   │   │       │   ├── flows/    # 工作流管理
-│   │   │       │   ├── sources/  # 内容源管理
-│   │   │       │   ├── outputs/  # 输出管理
-│   │   │       │   ├── templates/ # 模板管理
-│   │   │       │   └── style-profiles/ # 风格配置
-│   │   │       └── settings/     # 设置
-│   │   └── layout.tsx    # 根布局
-│   ├── components/       # React 组件
-│   │   ├── ui/          # 基础 UI 组件
-│   │   ├── creatorflow/ # 工作流相关组件
-│   │   └── settings/    # 设置相关组件
-│   ├── lib/             # 工具函数
-│   └── styles/          # 全局样式
-├── public/              # 静态资源
+│   ├── app/                    # Next.js App Router
+│   │   └── [locale]/          # 国际化路由
+│   │       └── (protected)/   # 受保护路由
+│   │           └── dashboard/ # 主应用页面
+│   ├── components/            # React 组件
+│   │   ├── flow/             # 工作流编辑器
+│   │   ├── sources/          # 内容源管理
+│   │   ├── outputs/          # 输出管理
+│   │   ├── templates/        # 模板管理
+│   │   ├── settings/         # 设置页面
+│   │   └── ui/               # 基础 UI 组件
+│   ├── lib/                   # 工具库
+│   │   ├── db/               # 数据库层
+│   │   └── i18n/             # 国际化
+│   └── styles/               # 全局样式
+├── public/                    # 静态资源
 └── package.json
 ```
 
-## 开发说明
+## 🎨 核心组件
 
-### 移除的功能
+### 内容源管理 (SourcesManager)
+- 支持文本、URL、YouTube、网页等多种内容类型
+- 搜索和过滤功能
+- 内容预览和管理
 
-此版本已移除 License 验证系统，使应用完全开源和自由使用。
+### 工作流编辑器 (FlowEditor)
+- 基于 ReactFlow 的可视化编辑器
+- 支持多种节点类型 (AI对话、网页抓取、输出等)
+- 节点连接和流程执行
 
-### 恢复来源
+### 模板库 (TemplatesManager)
+- 内置常用模板
+- 按分类浏览
+- 一键应用模板
 
-此项目从 Creatos 的编译版本中恢复而来，通过以下工具：
+### 输出管理 (OutputsManager)
+- 查看所有生成内容
+- 导出为 TXT 格式
+- 搜索和过滤
 
-1. **extract-all-components.js** - 从 Next.js 编译文件中提取所有组件
-2. **transform-code.js** - 转换编译后的代码为可读格式
-3. **auto-recovery.js** - 自动化恢复流程
+### API Keys 管理 (ApiKeysManager)
+- 支持 OpenAI、Anthropic、Google AI、DeepSeek 等
+- 密钥加密存储
+- 可见性控制
 
-恢复度：**95%**
-- Electron 代码：100%（有 Source Maps）
-- UI 组件：95%（变量名已重建）
-- 设计系统：100%
-- 交互逻辑：95%
+### 写作风格 (StyleProfilesManager)
+- 自定义语调和风格
+- 内置常用风格配置
+- 目标受众设定
 
-## 贡献
+## 🗄️ 数据库
 
-欢迎贡献！请随时提交 Pull Request。
+使用 Better-SQLite3 + Drizzle ORM，数据存储在本地 SQLite 数据库。
 
-## License
+### 数据表
 
-MIT License - 自由使用和修改
+- `sources` - 内容源
+- `flows` - 工作流
+- `outputs` - 输出结果
+- `api_keys` - API 密钥
+- `style_profiles` - 风格配置
+- `templates` - 模板
 
-## 致谢
+## 🌐 国际化
 
-- 原始项目：Creatos
-- UI 设计灵感：Apple Human Interface Guidelines
-- 感谢所有开源库的作者
+支持中文和英文界面，语言文件位于 `src/lib/i18n/locales/`。
 
-## 路线图
+## 🛠️ 技术栈
 
-- [ ] 完善文档
-- [ ] 添加单元测试
-- [ ] 改进工作流编辑器
-- [ ] 添加更多 AI 模型支持
-- [ ] 云同步功能
-- [ ] 移动端支持
+- **框架**: Next.js 15.2.8
+- **UI**: React 19, Tailwind CSS, Radix UI
+- **工作流**: ReactFlow 11
+- **数据库**: Better-SQLite3, Drizzle ORM
+- **AI SDK**: @ai-sdk/anthropic, openai, google, deepseek
+- **类型检查**: TypeScript 5.x
+- **包管理**: npm with --legacy-peer-deps
 
-## 支持
+## 📝 License
+
+MIT License
+
+## 🤝 贡献
+
+欢迎提交 Issue 和 Pull Request！
+
+## 📮 联系方式
 
 如有问题或建议，请提交 Issue。
+
+---
+
+**注意**: 本项目从 Creatos 项目恢复重写而来，已完全移除 License 验证系统，可自由使用和修改。

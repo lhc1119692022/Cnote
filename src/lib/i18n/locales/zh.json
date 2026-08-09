@@ -1,0 +1,137 @@
+{
+  "zh": {
+    "common": {
+      "save": "保存",
+      "cancel": "取消",
+      "delete": "删除",
+      "edit": "编辑",
+      "add": "添加",
+      "search": "搜索",
+      "export": "导出",
+      "create": "创建"
+    },
+    "dashboard": {
+      "title": "仪表板",
+      "description": "欢迎使用 Cnote"
+    },
+    "sources": {
+      "title": "内容源",
+      "description": "管理您的文本、网页、视频等内容源",
+      "addContent": "添加内容",
+      "searchPlaceholder": "搜索内容源...",
+      "emptyTitle": "还没有内容源",
+      "emptyDescription": "添加文本、网页链接、YouTube 视频或上传文件作为内容源",
+      "addSource": "添加内容源",
+      "types": {
+        "text": "文本",
+        "url": "网址",
+        "youtube": "YouTube",
+        "web": "网页"
+      },
+      "dialog": {
+        "title": "添加内容源",
+        "description": "添加文本、网页链接或 YouTube 视频作为内容源",
+        "titleLabel": "标题（可选）",
+        "titlePlaceholder": "为这个内容源命名...",
+        "contentLabel": "文本内容",
+        "contentPlaceholder": "输入或粘贴文本内容...",
+        "urlLabel": "URL",
+        "urlPlaceholder": "https://...",
+        "webNote": "将自动抓取网页内容"
+      }
+    },
+    "flows": {
+      "title": "工作流",
+      "description": "创建和管理您的内容处理工作流",
+      "newFlow": "新建工作流",
+      "emptyTitle": "还没有工作流",
+      "emptyDescription": "创建您的第一个工作流来自动化内容处理流程",
+      "createFlow": "创建工作流",
+      "editor": {
+        "title": "流程编辑器",
+        "run": "运行",
+        "running": "运行中...",
+        "save": "保存",
+        "addAIChat": "AI 对话",
+        "addWebScrape": "网页抓取",
+        "addOutput": "输出"
+      }
+    },
+    "outputs": {
+      "title": "输出管理",
+      "description": "查看和管理工作流的执行结果",
+      "searchPlaceholder": "搜索输出...",
+      "emptyTitle": "还没有输出",
+      "emptyDescription": "运行工作流后，输出结果会显示在这里",
+      "exportTxt": "导出 TXT"
+    },
+    "templates": {
+      "title": "模板库",
+      "description": "使用预设模板快速创建工作流",
+      "searchPlaceholder": "搜索模板...",
+      "emptyTitle": "没有找到匹配的模板",
+      "emptyDescription": "尝试使用不同的搜索词或分类",
+      "useTemplate": "使用模板",
+      "builtIn": "内置",
+      "categories": {
+        "all": "全部",
+        "content": "内容处理",
+        "video": "视频处理",
+        "translation": "翻译",
+        "marketing": "营销"
+      }
+    },
+    "settings": {
+      "title": "设置",
+      "apiKeys": {
+        "title": "API Keys",
+        "description": "管理您的 AI 服务 API 密钥",
+        "addKey": "添加 Key",
+        "emptyTitle": "还没有 API Key",
+        "emptyDescription": "添加 AI 服务的 API Key 来使用工作流功能",
+        "addFirstKey": "添加第一个 Key",
+        "dialog": {
+          "title": "添加 API Key",
+          "description": "添加 AI 服务的 API 密钥以使用相关功能",
+          "serviceLabel": "服务",
+          "keyLabel": "API Key"
+        },
+        "services": {
+          "openai": "OpenAI",
+          "anthropic": "Anthropic (Claude)",
+          "google": "Google AI",
+          "deepseek": "DeepSeek",
+          "firecrawl": "Firecrawl"
+        }
+      },
+      "styleProfiles": {
+        "title": "写作风格",
+        "description": "配置和管理内容生成的写作风格",
+        "newStyle": "新建风格",
+        "emptyTitle": "还没有风格配置",
+        "emptyDescription": "创建风格配置以控制内容生成的语调和格式",
+        "builtIn": "内置",
+        "dialog": {
+          "titleAdd": "新建风格配置",
+          "titleEdit": "编辑风格配置",
+          "description": "配置写作风格以应用到内容生成流程",
+          "nameLabel": "配置名称",
+          "namePlaceholder": "例如：专业商务",
+          "descriptionLabel": "描述",
+          "descriptionPlaceholder": "简短描述这个风格",
+          "toneLabel": "语调",
+          "tonePlaceholder": "例如：专业、友好、严谨",
+          "styleLabel": "写作风格",
+          "stylePlaceholder": "描述具体的写作风格特点...",
+          "audienceLabel": "目标受众",
+          "audiencePlaceholder": "例如：商业决策者、普通读者"
+        },
+        "fields": {
+          "tone": "语调：",
+          "style": "风格：",
+          "audience": "受众："
+        }
+      }
+    }
+  }
+}
