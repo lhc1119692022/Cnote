@@ -71,7 +71,7 @@ interface FlowState {
   importFlowFromJSON: (json: string) => void
 
   // Flow 执行
-  executeFlow: (aiClient?: any) => Promise<void>
+  executeFlow: (aiClient?: any, scraperClient?: any) => Promise<void>
   stopExecution: () => void
 
   // 初始化
@@ -429,7 +429,7 @@ export const useFlowStore = create<FlowState>()(
       },
 
       // 执行 Flow
-      executeFlow: async (aiClient) => {
+      executeFlow: async (aiClient, scraperClient) => {
         const { nodes, edges } = get()
         if (get().isExecuting) return
 
@@ -439,7 +439,8 @@ export const useFlowStore = create<FlowState>()(
           const executor = new FlowExecutor(
             nodes.map((n) => ({ ...n, data: n.data || {} })),
             edges.map((e) => ({ ...e, type: e.type || 'smoothstep' })),
-            aiClient
+            aiClient,
+            scraperClient
           )
 
           const result = await executor.execute()

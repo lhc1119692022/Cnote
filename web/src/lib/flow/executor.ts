@@ -2,6 +2,7 @@ import type { FlowNode, FlowEdge } from '@/types/flow'
 import type { ChatMessage } from '@/lib/api'
 import { topologicalSort, getPredecessors } from './graph'
 import { AIClient } from '@/lib/api'
+import { ScraperClient } from '@/lib/scraper'
 
 /**
  * 节点执行上下文
@@ -33,12 +34,14 @@ export class FlowExecutor {
   private edges: FlowEdge[]
   private contexts: Map<string, ExecutionContext>
   private aiClient?: AIClient
+  private scraperClient?: ScraperClient
 
-  constructor(nodes: FlowNode[], edges: FlowEdge[], aiClient?: AIClient) {
+  constructor(nodes: FlowNode[], edges: FlowEdge[], aiClient?: AIClient, scraperClient?: ScraperClient) {
     this.nodes = nodes
     this.edges = edges
     this.contexts = new Map()
     this.aiClient = aiClient
+    this.scraperClient = scraperClient
   }
 
   /**
@@ -169,6 +172,14 @@ export class FlowExecutor {
       case 'text':
         return data.content || mergedInput
       case 'youtube':
+        // 使用 ScraperClient 提取 YouTube 字幕
+        if (this.scraperClient && data.content) {
+          const videoId = ScraperClient.extractVideoId(data.content)
+          if (videoId) {
+            const result = await this.scraperClient.fetchYouTubeSubtitles(videoId)
+            return result.subtitles + (mergedInput ? '\n\n' + mergedInput : '')
+          }
+        }
         return {
           type: 'youtube',
           url: data.content,
@@ -261,9 +272,17 @@ export class FlowExecutor {
       throw new Error('Browser node requires URL')
     }
 
-    // TODO: 实现实际的网页抓取逻辑
-    // 这里需要配合 Cloudflare Workers 实现
-    return `[Scraped content from ${url}]`
+    // 使用 ScraperClient 抓取网页内容
+    if (this.scraperClient) {
+      try {
+        const result = await this.scraperClient.scrapeWeb(url)
+        return `# ${result.title}\n\n${result.content}`
+      } catch (error) {
+        throw new Error(`Failed to scrape ${url}: ${error instanceof Error ? error.message : 'Unknown error'}`)
+      }
+    }
+
+    throw new Error('ScraperClient not configured')
   }
 
   /**

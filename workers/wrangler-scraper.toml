@@ -1,0 +1,7 @@
+name = "cnote-scraper"
+main = "src/scraper.ts"
+compatibility_date = "2024-12-01"
+
+[env.production]
+name = "cnote-scraper"
+route = "scraper.cnote.app/*"

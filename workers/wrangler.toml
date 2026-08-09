@@ -1,0 +1,10 @@
+name = "cnote-api-proxy"
+main = "src/proxy.ts"
+compatibility_date = "2024-12-01"
+
+[env.production]
+name = "cnote-api-proxy"
+route = "api.cnote.app/*"
+
+# Scraper worker configuration
+# Deploy separately: wrangler deploy --config wrangler-scraper.toml

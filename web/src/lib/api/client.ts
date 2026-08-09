@@ -33,13 +33,17 @@ export class AIClient {
 
     // 如果配置了需要代理，直接使用代理
     if (this.provider.needsProxy && this.proxyURL) {
-      return `${this.proxyURL}?target=${encodeURIComponent(fullURL)}`
+      // 使用 Cloudflare Worker 代理格式: /proxy/{provider}/{endpoint}
+      const providerName = this.provider.id.toLowerCase()
+      return `${this.proxyURL}/proxy/${providerName}${endpoint}`
     }
 
     // 自动检测 CORS
     const corsResult = await detectCORSCached(this.provider.baseURL)
     if (corsResult.needsProxy && this.proxyURL) {
-      return `${this.proxyURL}?target=${encodeURIComponent(fullURL)}`
+      // 使用 Cloudflare Worker 代理格式: /proxy/{provider}/{endpoint}
+      const providerName = this.provider.id.toLowerCase()
+      return `${this.proxyURL}/proxy/${providerName}${endpoint}`
     }
 
     return fullURL
