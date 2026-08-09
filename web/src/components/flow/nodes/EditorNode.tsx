@@ -1,0 +1,114 @@
+import { memo, useState } from 'react'
+import { Handle, Position, NodeProps } from 'reactflow'
+import { FileEdit, Save, X } from 'lucide-react'
+import { Button } from '@/components/ui/button'
+
+interface EditorNodeData {
+  label: string
+  content?: string
+  syntax?: 'plain' | 'markdown' | 'html' | 'json'
+}
+
+export const EditorNode = memo(({ data, selected }: NodeProps<EditorNodeData>) => {
+  const [content, setContent] = useState(data.content || '')
+  const [syntax, setSyntax] = useState<'plain' | 'markdown' | 'html' | 'json'>(
+    data.syntax || 'plain'
+  )
+  const [wordCount, setWordCount] = useState(0)
+
+  const handleContentChange = (value: string) => {
+    setContent(value)
+    setWordCount(value.trim().split(/\s+/).filter(Boolean).length)
+  }
+
+  return (
+    <div
+      className={`bg-white rounded-xl shadow-lg border-2 min-w-[400px] max-w-[500px] ${
+        selected ? 'border-[#34c759]' : 'border-[#d2d2d7]'
+      }`}
+    >
+      {/* 输入连接点 */}
+      <Handle
+        type="target"
+        position={Position.Left}
+        className="w-3 h-3 !bg-[#34c759] border-2 border-white"
+      />
+
+      {/* 头部 */}
+      <div className="flex items-center justify-between px-4 py-3 border-b border-[#d2d2d7]">
+        <div className="flex items-center gap-2">
+          <div className="w-8 h-8 rounded-lg bg-orange-100 flex items-center justify-center">
+            <FileEdit className="w-4 h-4 text-orange-600" />
+          </div>
+          <span className="font-medium text-[#1d1d1f]">{data.label}</span>
+        </div>
+
+        <div className="flex items-center gap-1">
+          <Button
+            variant="ghost"
+            size="icon"
+            className="w-6 h-6"
+            title="保存"
+          >
+            <Save className="w-4 h-4" />
+          </Button>
+          <Button variant="ghost" size="icon" className="w-6 h-6">
+            <X className="w-4 h-4" />
+          </Button>
+        </div>
+      </div>
+
+      {/* 语法选择 */}
+      <div className="flex gap-1 px-4 py-2 border-b border-[#d2d2d7]">
+        {(['plain', 'markdown', 'html', 'json'] as const).map((s) => (
+          <button
+            key={s}
+            onClick={() => setSyntax(s)}
+            className={`px-3 py-1.5 rounded-lg text-xs transition-colors ${
+              syntax === s
+                ? 'bg-[#34c759] text-white'
+                : 'bg-[#f2f2f7] text-[#6e6e73] hover:bg-[#e5e5ea]'
+            }`}
+          >
+            {s === 'plain' && '纯文本'}
+            {s === 'markdown' && 'Markdown'}
+            {s === 'html' && 'HTML'}
+            {s === 'json' && 'JSON'}
+          </button>
+        ))}
+      </div>
+
+      {/* 编辑器区域 */}
+      <div className="p-4">
+        <textarea
+          value={content}
+          onChange={(e) => handleContentChange(e.target.value)}
+          placeholder="在此编辑内容..."
+          className="w-full h-64 px-3 py-2 border border-[#d2d2d7] rounded-lg resize-none focus:outline-none focus:ring-2 focus:ring-[#34c759] text-sm font-mono"
+          spellCheck={false}
+        />
+      </div>
+
+      {/* 底部状态栏 */}
+      <div className="flex items-center justify-between px-4 py-2 border-t border-[#d2d2d7] bg-[#f2f2f7] rounded-b-xl">
+        <div className="flex items-center gap-4 text-xs text-[#8e8e93]">
+          <span>{wordCount} 词</span>
+          <span>{content.length} 字符</span>
+          <span>{content.split('\n').length} 行</span>
+        </div>
+        <Button variant="ghost" size="sm" className="text-xs h-7">
+          格式化
+        </Button>
+      </div>
+
+      {/* 输出连接点 */}
+      <Handle
+        type="source"
+        position={Position.Right}
+        className="w-3 h-3 !bg-[#34c759] border-2 border-white"
+      />
+    </div>
+  )
+})
+
+EditorNode.displayName = 'EditorNode'

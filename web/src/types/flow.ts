@@ -80,6 +80,7 @@ export interface OutputNodeData extends BaseNodeData {
 // Flow 定义
 export interface Flow {
   id: string;
+  name: string;
   title: string;
   description?: string;
   nodes: Node[];
