@@ -1,4 +1,5 @@
 import { Routes, Route, Navigate } from 'react-router-dom'
+import { useEffect } from 'react'
 import { Dashboard } from '@/pages/Dashboard'
 import { FlowEditor } from '@/components/flow/FlowEditor'
 import { TemplatesManager } from '@/pages/TemplatesManager'
@@ -7,6 +8,12 @@ import { OutputsManager } from '@/pages/OutputsManager'
 import { APIKeysManager } from '@/components/settings/APIKeysManager'
 
 function App() {
+  useEffect(() => {
+    const theme = localStorage.getItem('cnote-theme') || 'dark'
+    document.documentElement.classList.add(theme)
+    document.documentElement.style.colorScheme = theme
+  }, [])
+
   return (
     <Routes>
       <Route path="/" element={<Navigate to="/dashboard" replace />} />

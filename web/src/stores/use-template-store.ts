@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import { persist } from 'zustand/middleware'
+import { createJSONStorage, persist } from 'zustand/middleware'
 import { nanoid } from 'nanoid'
 import type { Node, Edge } from 'reactflow'
 import { localForageStorage } from '@/lib/localforage-storage'
@@ -224,7 +224,7 @@ export const useTemplateStore = create<TemplateState>()(
     }),
     {
       name: 'cnote-templates',
-      storage: localForageStorage as any,
+      storage: createJSONStorage(() => localForageStorage),
     }
   )
 )

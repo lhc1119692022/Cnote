@@ -48,24 +48,24 @@ export const ContentNode = memo(({ data, selected }: NodeProps<ContentNodeData>)
 
   return (
     <div
-      className={`bg-white rounded-xl shadow-lg border-2 min-w-[280px] max-w-[400px] ${
-        selected ? 'border-[#34c759]' : 'border-[#d2d2d7]'
+      className={`bg-card rounded-xl shadow-lg border-2 min-w-[280px] max-w-[400px] ${
+        selected ? 'border-primary' : 'border-border'
       }`}
     >
       {/* 输入连接点 */}
       <Handle
         type="target"
         position={Position.Left}
-        className="w-3 h-3 !bg-[#34c759] border-2 border-white"
+        className="w-3 h-3 !bg-primary border-2 border-white"
       />
 
       {/* 头部 */}
-      <div className="flex items-center justify-between px-4 py-3 border-b border-[#d2d2d7]">
+      <div className="flex items-center justify-between px-4 py-3 border-b border-border">
         <div className="flex items-center gap-2">
           <div className="w-8 h-8 rounded-lg bg-purple-100 flex items-center justify-center">
             {renderModeIcon(mode)}
           </div>
-          <span className="font-medium text-[#1d1d1f]">{data.label}</span>
+          <span className="font-medium text-foreground">{data.label}</span>
         </div>
 
         <Button variant="ghost" size="icon" className="w-6 h-6">
@@ -74,15 +74,15 @@ export const ContentNode = memo(({ data, selected }: NodeProps<ContentNodeData>)
       </div>
 
       {/* 模式选择 */}
-      <div className="flex gap-1 px-4 py-2 border-b border-[#d2d2d7] overflow-x-auto">
+      <div className="flex gap-1 px-4 py-2 border-b border-border overflow-x-auto">
         {(['text', 'image', 'video', 'table', 'youtube'] as ContentMode[]).map((m) => (
           <button
             key={m}
             onClick={() => setMode(m)}
             className={`flex items-center gap-1 px-3 py-1.5 rounded-lg text-sm transition-colors ${
               mode === m
-                ? 'bg-[#34c759] text-white'
-                : 'bg-[#f2f2f7] text-[#6e6e73] hover:bg-[#e5e5ea]'
+                ? 'bg-primary text-primary-foreground'
+                : 'bg-muted text-muted-foreground hover:bg-muted/70'
             }`}
           >
             {renderModeIcon(m)}
@@ -98,21 +98,21 @@ export const ContentNode = memo(({ data, selected }: NodeProps<ContentNodeData>)
             value={content}
             onChange={(e) => setContent(e.target.value)}
             placeholder="输入文本内容..."
-            className="w-full h-32 px-3 py-2 border border-[#d2d2d7] rounded-lg resize-none focus:outline-none focus:ring-2 focus:ring-[#34c759] text-sm"
+            className="w-full h-32 px-3 py-2 border border-border rounded-lg resize-none focus:outline-none focus:ring-2 focus:ring-ring text-sm"
           />
         )}
 
         {mode === 'image' && (
-          <div className="flex flex-col items-center justify-center h-32 border-2 border-dashed border-[#d2d2d7] rounded-lg">
-            <Image className="w-8 h-8 text-[#8e8e93] mb-2" />
-            <p className="text-sm text-[#8e8e93]">点击上传图片</p>
+          <div className="flex flex-col items-center justify-center h-32 border-2 border-dashed border-border rounded-lg">
+            <Image className="w-8 h-8 text-muted-foreground mb-2" />
+            <p className="text-sm text-muted-foreground">点击上传图片</p>
           </div>
         )}
 
         {mode === 'video' && (
-          <div className="flex flex-col items-center justify-center h-32 border-2 border-dashed border-[#d2d2d7] rounded-lg">
-            <Video className="w-8 h-8 text-[#8e8e93] mb-2" />
-            <p className="text-sm text-[#8e8e93]">点击上传视频</p>
+          <div className="flex flex-col items-center justify-center h-32 border-2 border-dashed border-border rounded-lg">
+            <Video className="w-8 h-8 text-muted-foreground mb-2" />
+            <p className="text-sm text-muted-foreground">点击上传视频</p>
           </div>
         )}
 
@@ -125,7 +125,7 @@ export const ContentNode = memo(({ data, selected }: NodeProps<ContentNodeData>)
                     {[0, 1, 2].map((col) => (
                       <td
                         key={col}
-                        className="border border-[#d2d2d7] px-2 py-1"
+                        className="border border-border px-2 py-1"
                       >
                         <input
                           type="text"
@@ -148,17 +148,17 @@ export const ContentNode = memo(({ data, selected }: NodeProps<ContentNodeData>)
               onChange={(e) => setContent(e.target.value)}
               placeholder="粘贴 YouTube 链接..."
             />
-            <div className="flex flex-col items-center justify-center h-24 bg-[#f2f2f7] rounded-lg">
-              <Youtube className="w-8 h-8 text-[#8e8e93] mb-1" />
-              <p className="text-xs text-[#8e8e93]">等待加载视频</p>
+            <div className="flex flex-col items-center justify-center h-24 bg-muted rounded-lg">
+              <Youtube className="w-8 h-8 text-muted-foreground mb-1" />
+              <p className="text-xs text-muted-foreground">等待加载视频</p>
             </div>
           </div>
         )}
       </div>
 
       {/* 底部操作 */}
-      <div className="flex items-center justify-between px-4 py-2 border-t border-[#d2d2d7] bg-[#f2f2f7] rounded-b-xl">
-        <span className="text-xs text-[#8e8e93]">
+      <div className="flex items-center justify-between px-4 py-2 border-t border-border bg-muted rounded-b-xl">
+        <span className="text-xs text-muted-foreground">
           {content.length} 字符
         </span>
         <Button variant="ghost" size="sm" className="text-xs h-7">
@@ -170,7 +170,7 @@ export const ContentNode = memo(({ data, selected }: NodeProps<ContentNodeData>)
       <Handle
         type="source"
         position={Position.Right}
-        className="w-3 h-3 !bg-[#34c759] border-2 border-white"
+        className="w-3 h-3 !bg-primary border-2 border-white"
       />
     </div>
   )

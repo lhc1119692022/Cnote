@@ -1,13 +1,16 @@
 import { useCallback, useEffect, useRef } from 'react'
+import { useParams } from 'react-router-dom'
 import ReactFlow, {
   Background,
   MiniMap,
   useReactFlow,
   ReactFlowProvider,
   type NodeTypes,
+  type Viewport,
 } from 'reactflow'
 import 'reactflow/dist/style.css'
 import { useFlowStore } from '@/stores/use-flow-store'
+import { captureFlowThumbnail } from '@/lib/flow/thumbnail'
 import { Toolbar } from './Toolbar'
 import { CanvasControls } from './CanvasControls'
 import {
@@ -34,6 +37,7 @@ const nodeTypes: NodeTypes = {
 }
 
 function FlowEditorInner() {
+  const { flowId } = useParams()
   const reactFlowInstance = useReactFlow()
   const reactFlowWrapper = useRef<HTMLDivElement>(null)
 
@@ -44,7 +48,26 @@ function FlowEditorInner() {
     onEdgesChange,
     addEdge: addEdgeToStore,
     isLocked,
+    currentFlow,
+    currentFlowId,
+    loadFlow,
+    saveCurrentFlow,
   } = useFlowStore()
+
+  useEffect(() => {
+    if (flowId) loadFlow(flowId)
+  }, [flowId, loadFlow])
+
+  // 生成画布缩略图
+  const generateThumbnail = useCallback(async () => {
+    if (nodes.length === 0) return undefined
+    return captureFlowThumbnail()
+  }, [nodes.length])
+
+  const saveWithThumbnail = useCallback(async (viewport?: Viewport) => {
+    const thumbnail = await generateThumbnail()
+    saveCurrentFlow(thumbnail, viewport || reactFlowInstance.getViewport())
+  }, [generateThumbnail, reactFlowInstance, saveCurrentFlow])
 
   // 连接节点时的回调
   const onConnect = useCallback(
@@ -84,9 +107,16 @@ function FlowEditorInner() {
 
   // 快捷键处理
   useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
+    const handleKeyDown = async (e: KeyboardEvent) => {
       const isMac = navigator.platform.toUpperCase().indexOf('MAC') >= 0
       const isCtrlOrCmd = isMac ? e.metaKey : e.ctrlKey
+
+      // Ctrl/Cmd + S: 保存
+      if (isCtrlOrCmd && e.key === 's') {
+        e.preventDefault()
+        await saveWithThumbnail()
+        return
+      }
 
       // Ctrl/Cmd + Z: 撤销
       if (isCtrlOrCmd && e.key === 'z' && !e.shiftKey) {
@@ -137,16 +167,35 @@ function FlowEditorInner() {
 
     document.addEventListener('keydown', handleKeyDown)
     return () => document.removeEventListener('keydown', handleKeyDown)
-  }, [reactFlowInstance])
+  }, [reactFlowInstance, saveWithThumbnail])
+
+  useEffect(() => {
+    if (nodes.length === 0) return
+    const timeoutId = window.setTimeout(() => {
+      saveWithThumbnail()
+    }, 800)
+    return () => window.clearTimeout(timeoutId)
+  }, [nodes, edges, saveWithThumbnail])
+
+  // 窗口关闭/刷新前自动保存
+  useEffect(() => {
+    const handleBeforeUnload = () => {
+      saveCurrentFlow(undefined, reactFlowInstance.getViewport())
+    }
+
+    window.addEventListener('beforeunload', handleBeforeUnload)
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload)
+  }, [reactFlowInstance, saveCurrentFlow])
 
   return (
-    <div className="relative h-screen w-screen bg-[#f2f2f7]">
+    <div className="relative h-screen w-screen bg-background">
       {/* 顶部工具栏 */}
       <Toolbar />
 
       {/* React Flow 画布 */}
       <div ref={reactFlowWrapper} className="h-full w-full">
         <ReactFlow
+          key={currentFlowId || flowId}
           nodes={nodes}
           edges={edges}
           onNodesChange={onNodesChange}
@@ -156,22 +205,24 @@ function FlowEditorInner() {
           nodesDraggable={!isLocked}
           nodesConnectable={!isLocked}
           elementsSelectable={!isLocked}
-          fitView
+          defaultViewport={currentFlow?.viewport}
+          fitView={!currentFlow?.viewport}
+          onMoveEnd={(_, viewport) => saveWithThumbnail(viewport)}
           minZoom={0.1}
           maxZoom={4}
           defaultEdgeOptions={{
             type: 'smoothstep',
             animated: false,
-            style: { stroke: '#34c759', strokeWidth: 2 },
+            style: { stroke: 'var(--primary)', strokeWidth: 2 },
           }}
         >
-          <Background color="#d2d2d7" gap={16} />
+          <Background color="var(--border)" gap={16} />
           <MiniMap
-            nodeColor="#34c759"
+            nodeColor="var(--primary)"
             maskColor="rgba(0, 0, 0, 0.1)"
             style={{
-              backgroundColor: 'white',
-              border: '1px solid #d2d2d7',
+              backgroundColor: 'var(--card)',
+              border: '1px solid var(--border)',
               borderRadius: '8px',
             }}
           />

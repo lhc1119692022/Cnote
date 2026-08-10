@@ -1,231 +1,91 @@
 import { useEffect, useState } from 'react'
-import { Trash2, Download, Search, FileText, Calendar } from 'lucide-react'
-import { useOutputStore } from '@/stores/use-output-store'
+import { Download, FileText, Search } from 'lucide-react'
+import { AppShell } from '@/components/layout/AppShell'
 import { Button } from '@/components/ui/button'
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
-import { Input } from '@/components/ui/input'
+import { useOutputStore } from '@/stores/use-output-store'
+import type { Output } from '@/types/flow'
+
+type OutputFormat = 'html' | 'markdown' | 'text'
 
 export function OutputsManager() {
-  const {
-    outputs,
-    deleteOutput,
-    searchOutputs,
-    getOutputsByFormat,
-    getTotalWordCount,
-    getOutputCount,
-    initialize,
-  } = useOutputStore()
+  const { outputs, deleteOutput, searchOutputs, getOutputsByFormat, getTotalWordCount, getOutputCount, initialize } = useOutputStore()
   const [searchQuery, setSearchQuery] = useState('')
-  const [selectedFormat, setSelectedFormat] = useState<'html' | 'markdown' | 'text' | null>(null)
+  const [selectedFormat, setSelectedFormat] = useState<OutputFormat | null>(null)
 
   useEffect(() => {
     initialize()
   }, [initialize])
 
-  // 筛选输出
   const filteredOutputs = searchQuery
     ? searchOutputs(searchQuery)
     : selectedFormat
-    ? getOutputsByFormat(selectedFormat)
-    : outputs
+      ? getOutputsByFormat(selectedFormat)
+      : outputs
 
-  // 删除输出
-  const handleDeleteOutput = (id: string) => {
-    if (confirm('确定要删除这个输出吗？')) {
-      deleteOutput(id)
-    }
-  }
-
-  // 下载输出
-  const handleDownloadOutput = (output: any) => {
+  const handleDownloadOutput = (event: React.MouseEvent, output: Output) => {
+    event.stopPropagation()
     const blob = new Blob([output.content], { type: 'text/plain;charset=utf-8' })
     const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = `${output.title}.${output.format === 'text' ? 'txt' : output.format}`
-    document.body.appendChild(a)
-    a.click()
-    document.body.removeChild(a)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = `${output.title}.${output.format === 'text' ? 'txt' : output.format}`
+    link.click()
     URL.revokeObjectURL(url)
   }
 
-  // 格式化日期
-  const formatDate = (timestamp: number) => {
-    const date = new Date(timestamp)
-    return date.toLocaleDateString('zh-CN', {
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit',
-      hour: '2-digit',
-      minute: '2-digit',
-    })
+  const handleDeleteOutput = (event: React.MouseEvent, id: string) => {
+    event.stopPropagation()
+    if (confirm('确定要删除这个输出吗？')) deleteOutput(id)
   }
 
-  // 格式化字数
-  const formatWordCount = (count: number) => {
-    if (count >= 10000) {
-      return `${(count / 10000).toFixed(1)}万`
-    }
-    return count.toString()
-  }
-
-  const totalWordCount = getTotalWordCount()
-  const outputCount = getOutputCount()
+  const formatCount = (count: number) => count >= 10000 ? `${(count / 10000).toFixed(1)}万` : count.toString()
 
   return (
-    <div className="min-h-screen bg-[#f2f2f7]">
-      {/* 顶部导航 */}
-      <header className="bg-white border-b border-[#d2d2d7]">
-        <div className="max-w-7xl mx-auto px-6 py-4">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <div className="w-10 h-10 bg-[#34c759] rounded-xl flex items-center justify-center">
-                <span className="text-xl text-white font-bold">C</span>
-              </div>
-              <h1 className="text-2xl font-bold text-[#1d1d1f]">Cnote</h1>
-            </div>
-
-            <nav className="flex items-center gap-6">
-              <a href="/dashboard" className="text-[#6e6e73] hover:text-[#1d1d1f]">
-                Flows
-              </a>
-              <a href="/templates" className="text-[#6e6e73] hover:text-[#1d1d1f]">
-                模板
-              </a>
-              <a href="/sources" className="text-[#6e6e73] hover:text-[#1d1d1f]">
-                内容库
-              </a>
-              <a href="/outputs" className="text-[#34c759] font-medium">
-                输出历史
-              </a>
-              <a href="/settings" className="text-[#6e6e73] hover:text-[#1d1d1f]">
-                设置
-              </a>
-            </nav>
+    <AppShell>
+      <main className="flex h-full min-w-0 flex-col overflow-hidden">
+        <header className="flex h-[60px] shrink-0 items-center justify-between border-b border-border bg-card px-6">
+          <div className="relative w-full max-w-[400px]">
+            <Search className="absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+            <input value={searchQuery} onChange={(event) => setSearchQuery(event.target.value)} placeholder="搜索输出..." className="h-9 w-full rounded-lg border border-border bg-background pl-9 pr-3 text-[13px] text-foreground outline-none focus:border-primary focus:ring-2 focus:ring-ring/20" />
           </div>
-        </div>
-      </header>
+          <Button variant="secondary" size="sm">使用指南</Button>
+        </header>
 
-      {/* 主内容 */}
-      <main className="max-w-7xl mx-auto px-6 py-8">
-        {/* 标题和统计 */}
-        <div className="flex items-start justify-between mb-6">
-          <div>
-            <h2 className="text-3xl font-bold text-[#1d1d1f] mb-2">输出历史</h2>
-            <p className="text-[#6e6e73]">
-              共 {outputCount} 个输出，累计 {formatWordCount(totalWordCount)} 字
-            </p>
-          </div>
-
-          <div className="relative">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[#8e8e93]" />
-            <Input
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="搜索输出..."
-              className="w-64 pl-10"
-            />
-          </div>
-        </div>
-
-        {/* 格式筛选 */}
-        <div className="flex gap-2 mb-6">
-          <button
-            onClick={() => setSelectedFormat(null)}
-            className={`px-4 py-2 rounded-full text-sm whitespace-nowrap transition-colors ${
-              selectedFormat === null
-                ? 'bg-[#34c759] text-white'
-                : 'bg-white text-[#6e6e73] hover:bg-[#f2f2f7]'
-            }`}
-          >
-            全部 ({outputs.length})
-          </button>
-          {(['text', 'markdown', 'html'] as const).map((format) => {
-            const count = getOutputsByFormat(format).length
-            return (
-              <button
-                key={format}
-                onClick={() => setSelectedFormat(format)}
-                className={`px-4 py-2 rounded-full text-sm whitespace-nowrap transition-colors ${
-                  selectedFormat === format
-                    ? 'bg-[#34c759] text-white'
-                    : 'bg-white text-[#6e6e73] hover:bg-[#f2f2f7]'
-                }`}
-              >
-                {format.toUpperCase()} ({count})
-              </button>
-            )
-          })}
-        </div>
-
-        {/* 输出列表 */}
-        {filteredOutputs.length === 0 ? (
-          <Card className="border-dashed">
-            <CardContent className="flex flex-col items-center justify-center py-12">
-              <FileText className="w-16 h-16 text-[#8e8e93] mb-4" />
-              <h3 className="text-xl font-medium text-[#1d1d1f] mb-2">
-                没有找到输出
-              </h3>
-              <p className="text-[#6e6e73]">
-                {searchQuery || selectedFormat
-                  ? '尝试调整筛选条件'
-                  : '执行 Flow 后会在这里看到输出结果'}
-              </p>
-            </CardContent>
-          </Card>
-        ) : (
-          <div className="space-y-4">
-            {filteredOutputs.map((output) => (
-              <Card key={output.id} className="hover:shadow-lg transition-shadow">
-                <CardHeader>
-                  <div className="flex items-start justify-between">
-                    <div className="flex-1">
-                      <CardTitle className="text-lg">{output.title}</CardTitle>
-                      <div className="flex items-center gap-3 mt-2 text-sm text-[#8e8e93]">
-                        <div className="flex items-center gap-1">
-                          <Calendar className="w-4 h-4" />
-                          <span>{formatDate(output.createdAt)}</span>
-                        </div>
-                        <div className="flex items-center gap-1">
-                          <FileText className="w-4 h-4" />
-                          <span>{formatWordCount(output.wordCount)} 字</span>
-                        </div>
-                        <span className="px-2 py-1 bg-[#f2f2f7] rounded text-xs">
-                          {output.format.toUpperCase()}
-                        </span>
-                      </div>
-                    </div>
-                  </div>
-                </CardHeader>
-                <CardContent>
-                  <CardDescription className="line-clamp-3 mb-4 whitespace-pre-wrap">
-                    {output.content}
-                  </CardDescription>
-
-                  <div className="flex gap-2">
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => handleDownloadOutput(output)}
-                    >
-                      <Download className="w-4 h-4 mr-1" />
-                      下载
-                    </Button>
-                    <Button
-                      variant="outline"
-                      size="icon"
-                      className="w-8 h-8"
-                      onClick={() => handleDeleteOutput(output.id)}
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </Button>
-                  </div>
-                </CardContent>
-              </Card>
+        <div className="flex-1 overflow-auto p-6">
+          <p className="mb-4 text-[13px] text-muted-foreground">共 {getOutputCount()} 个输出，累计 {formatCount(getTotalWordCount())} 字</p>
+          <div className="mb-5 flex flex-wrap gap-2">
+            <button type="button" onClick={() => setSelectedFormat(null)} className={selectedFormat === null ? 'rounded-lg bg-primary px-3 py-1.5 text-[13px] text-primary-foreground' : 'rounded-lg border border-border bg-background px-3 py-1.5 text-[13px] text-muted-foreground hover:bg-muted dark:border-0 dark:bg-secondary'}>全部 ({outputs.length})</button>
+            {(['text', 'markdown', 'html'] as const).map((format) => (
+              <button key={format} type="button" onClick={() => setSelectedFormat(format)} className={selectedFormat === format ? 'rounded-lg bg-primary px-3 py-1.5 text-[13px] text-primary-foreground' : 'rounded-lg border border-border bg-background px-3 py-1.5 text-[13px] text-muted-foreground hover:bg-muted dark:border-0 dark:bg-secondary'}>{format.toUpperCase()} ({getOutputsByFormat(format).length})</button>
             ))}
           </div>
-        )}
+
+          {filteredOutputs.length === 0 ? (
+            <div className="flex flex-col items-center justify-center py-24 text-center">
+              <FileText className="mb-4 h-10 w-10 text-muted-foreground/50" />
+              <h2 className="text-sm font-medium">没有找到输出</h2>
+              <p className="mt-2 text-[13px] text-muted-foreground">执行 Flow 后会在这里看到输出结果</p>
+            </div>
+          ) : (
+            <div className="grid grid-cols-[repeat(auto-fill,minmax(260px,1fr))] gap-4">
+              {filteredOutputs.map((output) => (
+                <article key={output.id} className="group overflow-hidden rounded-xl border border-border bg-card transition-colors hover:border-primary">
+                  <div className="flex h-36 items-center justify-center border-b border-border bg-background"><FileText className="h-10 w-10 text-muted-foreground/40" /></div>
+                  <div className="p-4">
+                    <h3 className="truncate text-sm font-medium">{output.title}</h3>
+                    <div className="mt-2 flex items-center gap-2 text-xs text-muted-foreground"><span className="rounded bg-muted px-2 py-0.5">{output.format.toUpperCase()}</span><span>{formatCount(output.wordCount)} 字</span></div>
+                    <p className="mt-3 line-clamp-2 whitespace-pre-wrap text-xs leading-relaxed text-muted-foreground">{output.content}</p>
+                    <div className="mt-4 flex justify-end gap-2">
+                      <Button variant="ghost" size="sm" className="gap-1.5" onClick={(event) => handleDownloadOutput(event, output)}><Download className="h-3.5 w-3.5" />下载</Button>
+                      <button type="button" onClick={(event) => handleDeleteOutput(event, output.id)} className="text-xs text-muted-foreground opacity-0 transition-opacity hover:text-destructive group-hover:opacity-100">删除</button>
+                    </div>
+                  </div>
+                </article>
+              ))}
+            </div>
+          )}
+        </div>
       </main>
-    </div>
+    </AppShell>
   )
 }

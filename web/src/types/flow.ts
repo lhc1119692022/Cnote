@@ -94,8 +94,18 @@ export interface Flow {
     y: number;
     zoom: number;
   };
+  thumbnail?: string;
+  folderId?: string;
   createdAt: number;
   updatedAt: number;
+}
+
+// Folder 定义
+export interface Folder {
+  id: string;
+  name: string;
+  color?: string;
+  createdAt: number;
 }
 
 // Template 定义

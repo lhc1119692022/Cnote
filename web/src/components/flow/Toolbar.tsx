@@ -1,7 +1,6 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
-  Menu,
   ArrowLeft,
   FileText,
   Sparkles,
@@ -9,27 +8,47 @@ import {
   Layers,
   Download,
   Upload,
-  PanelRight,
 } from 'lucide-react'
 import { useFlowStore } from '@/stores/use-flow-store'
+import { useTemplateStore } from '@/stores/use-template-store'
+import { captureFlowThumbnail } from '@/lib/flow/thumbnail'
 import { Button } from '@/components/ui/button'
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 
 export function Toolbar() {
   const navigate = useNavigate()
-  const [showRightPanel, setShowRightPanel] = useState(false)
+  const [showTemplateDialog, setShowTemplateDialog] = useState(false)
+  const [templateTitle, setTemplateTitle] = useState('')
+  const [templateDescription, setTemplateDescription] = useState('')
+  const [templateCategory, setTemplateCategory] = useState('')
+  const createTemplate = useTemplateStore((state) => state.createTemplate)
 
   const {
     currentFlow,
+    nodes,
+    edges,
     saveCurrentFlow,
     addNode,
     exportFlowAsJSON,
     importFlowFromJSON,
   } = useFlowStore()
 
+  // 生成画布缩略图
+  const generateThumbnail = async () => {
+    if (nodes.length === 0) return undefined
+    return captureFlowThumbnail()
+  }
+
   // 返回 Dashboard
-  const handleBack = () => {
-    saveCurrentFlow()
-    navigate('/dashboard')
+  const handleBack = async () => {
+    try {
+      const thumbnail = await generateThumbnail()
+      saveCurrentFlow(thumbnail)
+      navigate('/dashboard')
+    } catch (error) {
+      console.error('handleBack 错误:', error)
+      navigate('/dashboard')
+    }
   }
 
   // 添加内容节点
@@ -70,15 +89,33 @@ export function Toolbar() {
   }
 
   // 保存
-  const handleSave = () => {
-    saveCurrentFlow()
+  const handleSave = async () => {
+    const thumbnail = await generateThumbnail()
+    saveCurrentFlow(thumbnail)
     // TODO: 显示保存成功提示
   }
 
   // 保存为模板
   const handleSaveAsTemplate = () => {
-    // TODO: 实现保存为模板功能
-    console.log('保存为模板')
+    if (!currentFlow || nodes.length === 0) return
+    setTemplateTitle(currentFlow.name)
+    setTemplateDescription(currentFlow.description || '')
+    setShowTemplateDialog(true)
+  }
+
+  const handleCreateTemplate = () => {
+    if (!templateTitle.trim() || nodes.length === 0) return
+    createTemplate(
+      templateTitle.trim(),
+      templateDescription.trim(),
+      nodes,
+      edges,
+      templateCategory.trim() || undefined
+    )
+    setShowTemplateDialog(false)
+    setTemplateTitle('')
+    setTemplateDescription('')
+    setTemplateCategory('')
   }
 
   // 导出
@@ -118,25 +155,11 @@ export function Toolbar() {
     input.click()
   }
 
-  // 切换右侧面板
-  const handleTogglePanel = () => {
-    setShowRightPanel(!showRightPanel)
-  }
-
   return (
-    <div className="absolute top-0 left-0 right-0 z-50 flex items-center gap-2 bg-white/80 backdrop-blur-sm border-b border-[#d2d2d7] px-4 py-2">
+    <>
+    <div className="absolute top-0 left-0 right-0 z-50 flex items-center gap-2 bg-card border-b border-border px-4 py-2">
       {/* 左侧 */}
       <div className="flex items-center gap-2">
-        {/* 侧边栏切换 */}
-        <Button
-          variant="ghost"
-          size="icon"
-          className="w-10 h-10"
-          onClick={() => console.log('切换侧边栏')}
-        >
-          <Menu className="w-5 h-5" />
-        </Button>
-
         {/* 返回按钮 */}
         <Button
           variant="ghost"
@@ -148,7 +171,7 @@ export function Toolbar() {
         </Button>
 
         {/* 分隔线 */}
-        <div className="w-px h-6 bg-[#d2d2d7]" />
+        <div className="w-px h-6 bg-border" />
 
         {/* 内容按钮 */}
         <Button
@@ -173,7 +196,7 @@ export function Toolbar() {
 
       {/* 中间 - Flow 名称 */}
       <div className="flex-1 text-center">
-        <h1 className="text-sm font-medium text-[#1d1d1f]">
+        <h1 className="text-sm font-medium text-foreground">
           {currentFlow?.name || 'Untitled Flow'}
         </h1>
       </div>
@@ -224,20 +247,32 @@ export function Toolbar() {
           <Upload className="w-4 h-4" />
         </Button>
 
-        {/* 分隔线 */}
-        <div className="w-px h-6 bg-[#d2d2d7]" />
-
-        {/* 面板切换 */}
-        <Button
-          variant="ghost"
-          size="icon"
-          className="w-10 h-9"
-          onClick={handleTogglePanel}
-          title="切换右侧面板"
-        >
-          <PanelRight className="w-4 h-4" />
-        </Button>
       </div>
     </div>
+
+    <Dialog open={showTemplateDialog} onOpenChange={setShowTemplateDialog}>
+      <DialogContent>
+        <DialogHeader><DialogTitle className="text-base">保存为模板</DialogTitle></DialogHeader>
+        <div className="space-y-4">
+          <label className="block text-[13px] text-muted-foreground">
+            <span className="mb-2 block font-medium">模板名称</span>
+            <input autoFocus value={templateTitle} onChange={(event) => setTemplateTitle(event.target.value)} className="h-10 w-full rounded-lg border border-border bg-background px-3 text-foreground outline-none focus:border-primary focus:ring-2 focus:ring-ring/20" />
+          </label>
+          <label className="block text-[13px] text-muted-foreground">
+            <span className="mb-2 block font-medium">描述（可选）</span>
+            <input value={templateDescription} onChange={(event) => setTemplateDescription(event.target.value)} className="h-10 w-full rounded-lg border border-border bg-background px-3 text-foreground outline-none focus:border-primary focus:ring-2 focus:ring-ring/20" />
+          </label>
+          <label className="block text-[13px] text-muted-foreground">
+            <span className="mb-2 block font-medium">分类（可选）</span>
+            <input value={templateCategory} onChange={(event) => setTemplateCategory(event.target.value)} placeholder="例如：内容处理" className="h-10 w-full rounded-lg border border-border bg-background px-3 text-foreground outline-none focus:border-primary focus:ring-2 focus:ring-ring/20" />
+          </label>
+        </div>
+        <div className="mt-6 flex gap-3">
+          <Button variant="secondary" className="flex-1" onClick={() => setShowTemplateDialog(false)}>取消</Button>
+          <Button className="flex-1" onClick={handleCreateTemplate} disabled={!templateTitle.trim()}>保存模板</Button>
+        </div>
+      </DialogContent>
+    </Dialog>
+    </>
   )
 }

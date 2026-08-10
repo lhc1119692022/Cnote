@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import { persist } from 'zustand/middleware'
+import { createJSONStorage, persist } from 'zustand/middleware'
 import { localForageStorage } from '@/lib/localforage-storage'
 import { AIClient, type ProviderConfig } from '@/lib/api'
 import { encryptAPIKey, decryptAPIKey } from '@/lib/secure-storage'
@@ -149,7 +149,7 @@ export const useAIStore = create<AIState>()(
     }),
     {
       name: 'cnote-ai',
-      storage: localForageStorage as any,
+      storage: createJSONStorage(() => localForageStorage),
       partialize: (state) => ({
         apiKeys: state.apiKeys,
         currentProviderId: state.currentProviderId,

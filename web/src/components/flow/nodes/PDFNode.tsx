@@ -22,24 +22,24 @@ export const PDFNode = memo(({ data, selected }: NodeProps<PDFNodeData>) => {
 
   return (
     <div
-      className={`bg-white rounded-xl shadow-lg border-2 min-w-[320px] max-w-[400px] ${
-        selected ? 'border-[#34c759]' : 'border-[#d2d2d7]'
+      className={`bg-card rounded-xl shadow-lg border-2 min-w-[320px] max-w-[400px] ${
+        selected ? 'border-primary' : 'border-border'
       }`}
     >
       {/* 输入连接点 */}
       <Handle
         type="target"
         position={Position.Left}
-        className="w-3 h-3 !bg-[#34c759] border-2 border-white"
+        className="w-3 h-3 !bg-primary border-2 border-white"
       />
 
       {/* 头部 */}
-      <div className="flex items-center justify-between px-4 py-3 border-b border-[#d2d2d7]">
+      <div className="flex items-center justify-between px-4 py-3 border-b border-border">
         <div className="flex items-center gap-2">
           <div className="w-8 h-8 rounded-lg bg-red-100 flex items-center justify-center">
             <FileText className="w-4 h-4 text-red-600" />
           </div>
-          <span className="font-medium text-[#1d1d1f]">{data.label}</span>
+          <span className="font-medium text-foreground">{data.label}</span>
         </div>
 
         <Button variant="ghost" size="icon" className="w-6 h-6">
@@ -52,19 +52,19 @@ export const PDFNode = memo(({ data, selected }: NodeProps<PDFNodeData>) => {
         {!fileName ? (
           <div
             onClick={handleFileSelect}
-            className="flex flex-col items-center justify-center h-40 border-2 border-dashed border-[#d2d2d7] rounded-lg cursor-pointer hover:border-[#34c759] hover:bg-[#f2f2f7] transition-colors"
+            className="flex flex-col items-center justify-center h-40 border-2 border-dashed border-border rounded-lg cursor-pointer hover:border-primary hover:bg-muted transition-colors"
           >
-            <Upload className="w-10 h-10 text-[#8e8e93] mb-2" />
-            <p className="text-sm text-[#1d1d1f] font-medium mb-1">点击上传 PDF</p>
-            <p className="text-xs text-[#8e8e93]">支持最大 10MB</p>
+            <Upload className="w-10 h-10 text-muted-foreground mb-2" />
+            <p className="text-sm text-foreground font-medium mb-1">点击上传 PDF</p>
+            <p className="text-xs text-muted-foreground">支持最大 10MB</p>
           </div>
         ) : (
           <div className="space-y-3">
-            <div className="flex items-center gap-3 p-3 bg-[#f2f2f7] rounded-lg">
+            <div className="flex items-center gap-3 p-3 bg-muted rounded-lg">
               <FileText className="w-8 h-8 text-red-600" />
               <div className="flex-1 min-w-0">
-                <p className="text-sm font-medium text-[#1d1d1f] truncate">{fileName}</p>
-                <p className="text-xs text-[#8e8e93]">{pageCount} 页</p>
+                <p className="text-sm font-medium text-foreground truncate">{fileName}</p>
+                <p className="text-xs text-muted-foreground">{pageCount} 页</p>
               </div>
               <Button
                 variant="ghost"
@@ -89,7 +89,7 @@ export const PDFNode = memo(({ data, selected }: NodeProps<PDFNodeData>) => {
 
             {status === 'success' && (
               <div className="flex items-center gap-2 px-3 py-2 bg-green-50 border border-green-200 rounded-lg">
-                <div className="w-2 h-2 rounded-full bg-[#34c759]" />
+                <div className="w-2 h-2 rounded-full bg-primary" />
                 <span className="text-xs text-green-700">文本提取完成</span>
               </div>
             )}
@@ -105,7 +105,7 @@ export const PDFNode = memo(({ data, selected }: NodeProps<PDFNodeData>) => {
               </Button>
               <Button
                 size="sm"
-                className="flex-1 h-8 text-xs bg-[#34c759] hover:bg-[#2fb350] text-white"
+                className="flex-1 h-8 text-xs bg-primary text-primary-foreground hover:brightness-90"
                 onClick={() => {
                   setStatus('processing')
                   setTimeout(() => setStatus('success'), 2000)
@@ -120,8 +120,8 @@ export const PDFNode = memo(({ data, selected }: NodeProps<PDFNodeData>) => {
       </div>
 
       {/* 底部操作 */}
-      <div className="flex items-center justify-between px-4 py-2 border-t border-[#d2d2d7] bg-[#f2f2f7] rounded-b-xl">
-        <span className="text-xs text-[#8e8e93]">
+      <div className="flex items-center justify-between px-4 py-2 border-t border-border bg-muted rounded-b-xl">
+        <span className="text-xs text-muted-foreground">
           {!fileName ? '等待上传' : status === 'success' ? '已就绪' : '处理中'}
         </span>
         <Button variant="ghost" size="sm" className="text-xs h-7">
@@ -133,7 +133,7 @@ export const PDFNode = memo(({ data, selected }: NodeProps<PDFNodeData>) => {
       <Handle
         type="source"
         position={Position.Right}
-        className="w-3 h-3 !bg-[#34c759] border-2 border-white"
+        className="w-3 h-3 !bg-primary border-2 border-white"
       />
     </div>
   )

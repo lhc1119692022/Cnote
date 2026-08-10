@@ -21,24 +21,24 @@ export const AINode = memo(({ data, selected }: NodeProps<AINodeData>) => {
 
   return (
     <div
-      className={`bg-white rounded-xl shadow-lg border-2 min-w-[320px] max-w-[400px] ${
-        selected ? 'border-[#34c759]' : 'border-[#d2d2d7]'
+      className={`bg-card rounded-xl shadow-lg border-2 min-w-[320px] max-w-[400px] ${
+        selected ? 'border-primary' : 'border-border'
       }`}
     >
       {/* 输入连接点 */}
       <Handle
         type="target"
         position={Position.Left}
-        className="w-3 h-3 !bg-[#34c759] border-2 border-white"
+        className="w-3 h-3 !bg-primary border-2 border-white"
       />
 
       {/* 头部 */}
-      <div className="flex items-center justify-between px-4 py-3 border-b border-[#d2d2d7]">
+      <div className="flex items-center justify-between px-4 py-3 border-b border-border">
         <div className="flex items-center gap-2">
           <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-purple-500 to-pink-500 flex items-center justify-center">
-            <Sparkles className="w-4 h-4 text-white" />
+            <Sparkles className="w-4 h-4 text-primary-foreground" />
           </div>
-          <span className="font-medium text-[#1d1d1f]">{data.label}</span>
+          <span className="font-medium text-foreground">{data.label}</span>
         </div>
 
         <div className="flex items-center gap-1">
@@ -57,39 +57,39 @@ export const AINode = memo(({ data, selected }: NodeProps<AINodeData>) => {
       </div>
 
       {/* 模型选择 */}
-      <div className="px-4 py-3 border-b border-[#d2d2d7] space-y-2">
+      <div className="px-4 py-3 border-b border-border space-y-2">
         <div className="flex gap-2">
           <div className="flex-1">
-            <label className="text-xs text-[#6e6e73] mb-1 block">服务商</label>
+            <label className="text-xs text-muted-foreground mb-1 block">服务商</label>
             <div className="relative">
               <select
                 value={provider}
                 onChange={(e) => setProvider(e.target.value)}
-                className="w-full px-3 py-2 pr-8 border border-[#d2d2d7] rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#34c759] appearance-none bg-white"
+                className="w-full px-3 py-2 pr-8 border border-border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-ring appearance-none bg-card"
               >
                 <option>OpenAI</option>
                 <option>Anthropic</option>
                 <option>Google</option>
                 <option>Cohere</option>
               </select>
-              <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 w-4 h-4 text-[#8e8e93] pointer-events-none" />
+              <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground pointer-events-none" />
             </div>
           </div>
 
           <div className="flex-1">
-            <label className="text-xs text-[#6e6e73] mb-1 block">模型</label>
+            <label className="text-xs text-muted-foreground mb-1 block">模型</label>
             <div className="relative">
               <select
                 value={model}
                 onChange={(e) => setModel(e.target.value)}
-                className="w-full px-3 py-2 pr-8 border border-[#d2d2d7] rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#34c759] appearance-none bg-white"
+                className="w-full px-3 py-2 pr-8 border border-border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-ring appearance-none bg-card"
               >
                 <option>gpt-4</option>
                 <option>gpt-4-turbo</option>
                 <option>gpt-3.5-turbo</option>
                 <option>claude-3-opus</option>
               </select>
-              <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 w-4 h-4 text-[#8e8e93] pointer-events-none" />
+              <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground pointer-events-none" />
             </div>
           </div>
         </div>
@@ -97,21 +97,21 @@ export const AINode = memo(({ data, selected }: NodeProps<AINodeData>) => {
 
       {/* Prompt 区域 */}
       <div className="p-4">
-        <label className="text-xs text-[#6e6e73] mb-2 block">Prompt</label>
+        <label className="text-xs text-muted-foreground mb-2 block">Prompt</label>
         <textarea
           value={prompt}
           onChange={(e) => setPrompt(e.target.value)}
           placeholder="输入 AI 提示词..."
-          className="w-full h-32 px-3 py-2 border border-[#d2d2d7] rounded-lg resize-none focus:outline-none focus:ring-2 focus:ring-[#34c759] text-sm"
+          className="w-full h-32 px-3 py-2 border border-border rounded-lg resize-none focus:outline-none focus:ring-2 focus:ring-ring text-sm"
         />
 
         {/* 高级设置 */}
         {showSettings && (
-          <div className="mt-3 pt-3 border-t border-[#d2d2d7] space-y-3">
+          <div className="mt-3 pt-3 border-t border-border space-y-3">
             <div>
               <div className="flex items-center justify-between mb-2">
-                <label className="text-xs text-[#6e6e73]">Temperature</label>
-                <span className="text-xs text-[#1d1d1f] font-medium">{temperature}</span>
+                <label className="text-xs text-muted-foreground">Temperature</label>
+                <span className="text-xs text-foreground font-medium">{temperature}</span>
               </div>
               <input
                 type="range"
@@ -125,7 +125,7 @@ export const AINode = memo(({ data, selected }: NodeProps<AINodeData>) => {
             </div>
 
             <div>
-              <label className="text-xs text-[#6e6e73] mb-1 block">Max Tokens</label>
+              <label className="text-xs text-muted-foreground mb-1 block">Max Tokens</label>
               <Input
                 type="number"
                 placeholder="2048"
@@ -137,11 +137,11 @@ export const AINode = memo(({ data, selected }: NodeProps<AINodeData>) => {
       </div>
 
       {/* 底部操作 */}
-      <div className="flex items-center justify-between px-4 py-2 border-t border-[#d2d2d7] bg-[#f2f2f7] rounded-b-xl">
-        <span className="text-xs text-[#8e8e93]">
+      <div className="flex items-center justify-between px-4 py-2 border-t border-border bg-muted rounded-b-xl">
+        <span className="text-xs text-muted-foreground">
           {prompt.length} 字符
         </span>
-        <Button variant="ghost" size="sm" className="text-xs h-7 text-[#34c759]">
+        <Button variant="ghost" size="sm" className="text-xs h-7 text-primary">
           测试运行
         </Button>
       </div>
@@ -150,7 +150,7 @@ export const AINode = memo(({ data, selected }: NodeProps<AINodeData>) => {
       <Handle
         type="source"
         position={Position.Right}
-        className="w-3 h-3 !bg-[#34c759] border-2 border-white"
+        className="w-3 h-3 !bg-primary border-2 border-white"
       />
     </div>
   )

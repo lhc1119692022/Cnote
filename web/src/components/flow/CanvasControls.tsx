@@ -12,11 +12,11 @@ import {
 } from 'lucide-react'
 import { useFlowStore } from '@/stores/use-flow-store'
 import { Button } from '@/components/ui/button'
-import { useState } from 'react'
+import { useTheme } from '@/hooks/use-theme'
 
 export function CanvasControls() {
   const reactFlowInstance = useReactFlow()
-  const [isDarkMode, setIsDarkMode] = useState(false)
+  const { theme, toggleTheme } = useTheme()
 
   const { undo, redo, canUndo, canRedo, isLocked, toggleLock } = useFlowStore()
 
@@ -54,16 +54,10 @@ export function CanvasControls() {
     toggleLock()
   }
 
-  // 切换深色模式
-  const handleToggleDarkMode = () => {
-    setIsDarkMode(!isDarkMode)
-    // TODO: 实现深色模式切换
-  }
-
   return (
     <div className="absolute bottom-6 left-6 z-50 flex flex-col gap-2">
       {/* 编辑控制 */}
-      <div className="flex gap-2 p-2 bg-white/80 backdrop-blur-sm rounded-lg border border-[#d2d2d7] shadow-sm">
+      <div className="flex gap-2 p-2 bg-card rounded-lg border border-border shadow-sm">
         <Button
           variant="ghost"
           size="icon"
@@ -88,7 +82,7 @@ export function CanvasControls() {
       </div>
 
       {/* 视图控制 */}
-      <div className="flex gap-2 p-2 bg-white/80 backdrop-blur-sm rounded-lg border border-[#d2d2d7] shadow-sm">
+      <div className="flex gap-2 p-2 bg-card rounded-lg border border-border shadow-sm">
         <Button
           variant="ghost"
           size="icon"
@@ -112,7 +106,7 @@ export function CanvasControls() {
         <Button
           variant="ghost"
           size="icon"
-          className="w-8 h-8 bg-[#34c759] text-white hover:bg-[#2fb350] hover:text-white"
+          className="w-8 h-8 bg-primary text-primary-foreground hover:brightness-90 hover:text-primary-foreground"
           onClick={handleFitView}
           title="适应视图 (F/⌘0)"
         >
@@ -121,7 +115,7 @@ export function CanvasControls() {
       </div>
 
       {/* 其他控制 */}
-      <div className="flex gap-2 p-2 bg-white/80 backdrop-blur-sm rounded-lg border border-[#d2d2d7] shadow-sm">
+      <div className="flex gap-2 p-2 bg-card rounded-lg border border-border shadow-sm">
         <Button
           variant="ghost"
           size="icon"
@@ -140,10 +134,10 @@ export function CanvasControls() {
           variant="ghost"
           size="icon"
           className="w-8 h-8"
-          onClick={handleToggleDarkMode}
+          onClick={toggleTheme}
           title="切换深色模式"
         >
-          {isDarkMode ? (
+          {theme === 'dark' ? (
             <Sun className="w-4 h-4" />
           ) : (
             <Moon className="w-4 h-4" />

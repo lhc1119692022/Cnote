@@ -1,31 +1,13 @@
 import { useState } from 'react'
-import { Settings, Plus, Trash2, Eye, EyeOff, Check, X } from 'lucide-react'
-import { useAIStore } from '@/stores/use-ai-store'
-import { PROVIDERS, validateAPIKey } from '@/lib/api'
+import { Check, Eye, EyeOff, Plus, Settings, Trash2 } from 'lucide-react'
+import { AppShell } from '@/components/layout/AppShell'
 import { Button } from '@/components/ui/button'
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
-import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-} from '@/components/ui/dialog'
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import { PROVIDERS, validateAPIKey } from '@/lib/api'
+import { useAIStore } from '@/stores/use-ai-store'
 
 export function APIKeysManager() {
-  const {
-    apiKeys,
-    addAPIKey,
-    removeAPIKey,
-    getAPIKey,
-    currentAPIKeyId,
-    setCurrentAPIKey,
-    proxyURL,
-    setProxyURL,
-  } = useAIStore()
-
+  const { apiKeys, addAPIKey, removeAPIKey, getAPIKey, currentAPIKeyId, setCurrentAPIKey, proxyURL, setProxyURL } = useAIStore()
   const [showAddDialog, setShowAddDialog] = useState(false)
   const [newKeyProviderId, setNewKeyProviderId] = useState('openai')
   const [newKeyValue, setNewKeyValue] = useState('')
@@ -33,276 +15,93 @@ export function APIKeysManager() {
   const [showKeys, setShowKeys] = useState<Record<string, boolean>>({})
   const [testingKey, setTestingKey] = useState<string | null>(null)
 
-  // 添加新 Key
-  const handleAddKey = () => {
-    if (!newKeyValue.trim()) return
-
-    if (!validateAPIKey(newKeyProviderId, newKeyValue)) {
-      alert('API Key 格式无效')
-      return
-    }
-
-    addAPIKey(newKeyProviderId, newKeyValue, newKeyName)
+  const resetDialog = () => {
     setShowAddDialog(false)
     setNewKeyValue('')
     setNewKeyName('')
   }
 
-  // 切换显示/隐藏
-  const toggleShowKey = (id: string) => {
-    setShowKeys((prev) => ({ ...prev, [id]: !prev[id] }))
+  const handleAddKey = () => {
+    if (!newKeyValue.trim()) return
+    if (!validateAPIKey(newKeyProviderId, newKeyValue)) {
+      alert('API Key 格式无效')
+      return
+    }
+    addAPIKey(newKeyProviderId, newKeyValue, newKeyName)
+    resetDialog()
   }
 
-  // 测试 API Key
   const handleTestKey = async (id: string) => {
     setTestingKey(id)
-
-    // TODO: 实现实际的测试逻辑
     await new Promise((resolve) => setTimeout(resolve, 1000))
-
     setTestingKey(null)
   }
 
-  // 获取提供商名称
-  const getProviderName = (providerId: string) => {
-    return PROVIDERS.find((p) => p.id === providerId)?.name || providerId
-  }
-
-  // 格式化 API Key 显示
-  const formatKeyDisplay = (encryptedKey: string, show: boolean) => {
-    if (show) {
-      const key = getAPIKey(encryptedKey)
-      return key || '••••••••••••••••'
-    }
-    return '••••••••••••••••'
-  }
+  const providerName = (id: string) => PROVIDERS.find((provider) => provider.id === id)?.name || id
+  const displayKey = (encryptedKey: string, show: boolean) => show ? getAPIKey(encryptedKey) || '••••••••••••••••' : '••••••••••••••••'
 
   return (
-    <div className="min-h-screen bg-[#f2f2f7]">
-      {/* 头部 */}
-      <header className="bg-white border-b border-[#d2d2d7]">
-        <div className="max-w-4xl mx-auto px-6 py-4">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 bg-blue-100 rounded-xl flex items-center justify-center">
-              <Settings className="w-5 h-5 text-blue-600" />
-            </div>
-            <div>
-              <h1 className="text-2xl font-bold text-[#1d1d1f]">API Keys 管理</h1>
-              <p className="text-sm text-[#6e6e73]">管理你的 AI 服务 API 密钥</p>
-            </div>
-          </div>
-        </div>
-      </header>
+    <AppShell>
+      <main className="flex h-full min-w-0 flex-col overflow-hidden">
+        <header className="flex h-[60px] shrink-0 items-center justify-between border-b border-border bg-card px-6">
+          <h1 className="text-[15px] font-semibold">API 密钥管理</h1>
+          <Button size="sm" className="gap-1.5" onClick={() => setShowAddDialog(true)}><Plus className="h-3.5 w-3.5" />添加密钥</Button>
+        </header>
 
-      {/* 主内容 */}
-      <main className="max-w-4xl mx-auto px-6 py-8">
-        {/* 代理设置 */}
-        <Card className="mb-6">
-          <CardHeader>
-            <CardTitle>Cloudflare 代理</CardTitle>
-            <CardDescription>
-              用于解决 CORS 问题的代理服务器地址
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            <div className="flex gap-2">
-              <Input
-                value={proxyURL}
-                onChange={(e) => setProxyURL(e.target.value)}
-                placeholder="https://ai-proxy.cnote.workers.dev"
-                className="flex-1"
-              />
-              <Button variant="outline">测试连接</Button>
+        <div className="flex-1 overflow-auto p-6">
+          <section className="mb-6 rounded-xl border border-border bg-card p-4">
+            <h2 className="text-sm font-medium">Cloudflare 代理</h2>
+            <p className="mt-1 text-xs text-muted-foreground">用于解决 CORS 问题的代理服务器地址</p>
+            <div className="mt-3 flex gap-2">
+              <input value={proxyURL} onChange={(event) => setProxyURL(event.target.value)} placeholder="https://ai-proxy.cnote.workers.dev" className="h-9 flex-1 rounded-lg border border-border bg-background px-3 text-[13px] text-foreground outline-none focus:border-primary focus:ring-2 focus:ring-ring/20" />
+              <Button variant="secondary" size="sm">测试连接</Button>
             </div>
-          </CardContent>
-        </Card>
+          </section>
 
-        {/* API Keys 列表 */}
-        <div className="flex items-center justify-between mb-4">
-          <h2 className="text-xl font-bold text-[#1d1d1f]">API Keys</h2>
-          <Button
-            onClick={() => setShowAddDialog(true)}
-            className="bg-[#34c759] hover:bg-[#2fb350] text-white gap-2"
-          >
-            <Plus className="w-4 h-4" />
-            添加 Key
-          </Button>
-        </div>
-
-        {apiKeys.length === 0 ? (
-          <Card className="border-dashed">
-            <CardContent className="flex flex-col items-center justify-center py-12">
-              <Settings className="w-16 h-16 text-[#8e8e93] mb-4" />
-              <h3 className="text-xl font-medium text-[#1d1d1f] mb-2">
-                还没有 API Key
-              </h3>
-              <p className="text-[#6e6e73] mb-6">
-                添加你的第一个 API Key 开始使用 AI 功能
-              </p>
-              <Button
-                onClick={() => setShowAddDialog(true)}
-                className="bg-[#34c759] hover:bg-[#2fb350] text-white gap-2"
-              >
-                <Plus className="w-4 h-4" />
-                添加 Key
-              </Button>
-            </CardContent>
-          </Card>
-        ) : (
-          <div className="space-y-3">
-            {apiKeys.map((key) => (
-              <Card
-                key={key.id}
-                className={`cursor-pointer transition-colors ${
-                  currentAPIKeyId === key.id ? 'border-[#34c759] border-2' : ''
-                }`}
-                onClick={() => setCurrentAPIKey(key.id)}
-              >
-                <CardContent className="flex items-center justify-between py-4">
-                  <div className="flex-1">
-                    <div className="flex items-center gap-2 mb-1">
-                      <span className="font-medium text-[#1d1d1f]">
-                        {key.name}
-                      </span>
-                      <span className="text-xs px-2 py-0.5 bg-[#f2f2f7] rounded text-[#6e6e73]">
-                        {getProviderName(key.providerId)}
-                      </span>
-                      {currentAPIKeyId === key.id && (
-                        <Check className="w-4 h-4 text-[#34c759]" />
-                      )}
+          {apiKeys.length === 0 ? (
+            <div className="flex flex-col items-center justify-center py-24 text-center">
+              <Settings className="mb-4 h-10 w-10 text-muted-foreground/50" />
+              <h2 className="text-sm font-medium">还没有 API Key</h2>
+              <p className="mt-2 text-[13px] text-muted-foreground">添加你的第一个 API Key 开始使用 AI 功能</p>
+              <Button size="sm" className="mt-6 gap-1.5" onClick={() => setShowAddDialog(true)}><Plus className="h-3.5 w-3.5" />添加密钥</Button>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {apiKeys.map((apiKey) => (
+                <article key={apiKey.id} onClick={() => setCurrentAPIKey(apiKey.id)} className={`cursor-pointer rounded-xl border bg-card p-4 transition-colors ${currentAPIKeyId === apiKey.id ? 'border-primary' : 'border-border hover:border-primary/60'}`}>
+                  <div className="flex items-center justify-between gap-4">
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2">
+                        <span className="truncate text-sm font-medium">{apiKey.name || '未命名密钥'}</span>
+                        <span className="rounded bg-muted px-2 py-0.5 text-xs text-muted-foreground">{providerName(apiKey.providerId)}</span>
+                        {currentAPIKeyId === apiKey.id && <Check className="h-4 w-4 text-primary" />}
+                      </div>
+                      <code className="mt-2 block text-xs text-muted-foreground">{displayKey(apiKey.encryptedKey, showKeys[apiKey.id])}</code>
                     </div>
-                    <div className="flex items-center gap-2">
-                      <code className="text-sm text-[#6e6e73] font-mono">
-                        {formatKeyDisplay(key.encryptedKey, showKeys[key.id])}
-                      </code>
+                    <div className="flex gap-1">
+                      <Button variant="ghost" size="icon-sm" onClick={(event) => { event.stopPropagation(); setShowKeys((current) => ({ ...current, [apiKey.id]: !current[apiKey.id] })) }} aria-label="显示或隐藏密钥">{showKeys[apiKey.id] ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}</Button>
+                      <Button variant="ghost" size="icon-sm" disabled={testingKey === apiKey.id} onClick={(event) => { event.stopPropagation(); handleTestKey(apiKey.id) }} aria-label="测试密钥"><Check className="h-4 w-4" /></Button>
+                      <Button variant="ghost" size="icon-sm" onClick={(event) => { event.stopPropagation(); if (confirm('确定要删除这个 API Key 吗？')) removeAPIKey(apiKey.id) }} aria-label="删除密钥"><Trash2 className="h-4 w-4 text-destructive" /></Button>
                     </div>
                   </div>
-
-                  <div className="flex items-center gap-2">
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      onClick={(e) => {
-                        e.stopPropagation()
-                        toggleShowKey(key.id)
-                      }}
-                    >
-                      {showKeys[key.id] ? (
-                        <EyeOff className="w-4 h-4" />
-                      ) : (
-                        <Eye className="w-4 h-4" />
-                      )}
-                    </Button>
-
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      onClick={(e) => {
-                        e.stopPropagation()
-                        handleTestKey(key.id)
-                      }}
-                      disabled={testingKey === key.id}
-                    >
-                      {testingKey === key.id ? (
-                        <span className="animate-spin">⟳</span>
-                      ) : (
-                        <Check className="w-4 h-4" />
-                      )}
-                    </Button>
-
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      onClick={(e) => {
-                        e.stopPropagation()
-                        if (confirm('确定要删除这个 API Key 吗？')) {
-                          removeAPIKey(key.id)
-                        }
-                      }}
-                    >
-                      <Trash2 className="w-4 h-4 text-red-500" />
-                    </Button>
-                  </div>
-                </CardContent>
-              </Card>
-            ))}
-          </div>
-        )}
+                </article>
+              ))}
+            </div>
+          )}
+        </div>
       </main>
 
-      {/* 添加 Key 对话框 */}
-      <Dialog open={showAddDialog} onOpenChange={setShowAddDialog}>
-        <DialogContent className="sm:max-w-md">
-          <DialogHeader>
-            <DialogTitle>添加 API Key</DialogTitle>
-            <DialogDescription>
-              选择提供商并输入你的 API 密钥
-            </DialogDescription>
-          </DialogHeader>
-
+      <Dialog open={showAddDialog} onOpenChange={(open) => !open && resetDialog()}>
+        <DialogContent>
+          <DialogHeader><DialogTitle className="text-base">添加 API Key</DialogTitle></DialogHeader>
           <div className="space-y-4">
-            <div>
-              <Label htmlFor="provider">提供商</Label>
-              <select
-                id="provider"
-                value={newKeyProviderId}
-                onChange={(e) => setNewKeyProviderId(e.target.value)}
-                className="w-full px-3 py-2 border border-[#d2d2d7] rounded-lg focus:outline-none focus:ring-2 focus:ring-[#34c759]"
-              >
-                {PROVIDERS.map((provider) => (
-                  <option key={provider.id} value={provider.id}>
-                    {provider.name}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            <div>
-              <Label htmlFor="name">名称（可选）</Label>
-              <Input
-                id="name"
-                value={newKeyName}
-                onChange={(e) => setNewKeyName(e.target.value)}
-                placeholder="如: 我的 OpenAI Key"
-              />
-            </div>
-
-            <div>
-              <Label htmlFor="apiKey">API Key</Label>
-              <Input
-                id="apiKey"
-                type="password"
-                value={newKeyValue}
-                onChange={(e) => setNewKeyValue(e.target.value)}
-                placeholder="sk-..."
-              />
-            </div>
+            <label className="block text-[13px] text-muted-foreground"><span className="mb-2 block font-medium">提供商</span><select value={newKeyProviderId} onChange={(event) => setNewKeyProviderId(event.target.value)} className="h-10 w-full rounded-lg border border-border bg-background px-3 text-foreground outline-none focus:border-primary focus:ring-2 focus:ring-ring/20">{PROVIDERS.map((provider) => <option key={provider.id} value={provider.id}>{provider.name}</option>)}</select></label>
+            <label className="block text-[13px] text-muted-foreground"><span className="mb-2 block font-medium">名称（可选）</span><input value={newKeyName} onChange={(event) => setNewKeyName(event.target.value)} placeholder="如：我的 OpenAI Key" className="h-10 w-full rounded-lg border border-border bg-background px-3 text-foreground outline-none focus:border-primary focus:ring-2 focus:ring-ring/20" /></label>
+            <label className="block text-[13px] text-muted-foreground"><span className="mb-2 block font-medium">API Key</span><input type="password" autoFocus value={newKeyValue} onChange={(event) => setNewKeyValue(event.target.value)} placeholder="sk-..." className="h-10 w-full rounded-lg border border-border bg-background px-3 text-foreground outline-none focus:border-primary focus:ring-2 focus:ring-ring/20" /></label>
           </div>
-
-          <div className="flex gap-3 mt-6">
-            <Button
-              variant="outline"
-              className="flex-1"
-              onClick={() => {
-                setShowAddDialog(false)
-                setNewKeyValue('')
-                setNewKeyName('')
-              }}
-            >
-              <X className="w-4 h-4 mr-2" />
-              取消
-            </Button>
-            <Button
-              className="flex-1 bg-[#34c759] hover:bg-[#2fb350] text-white"
-              onClick={handleAddKey}
-              disabled={!newKeyValue.trim()}
-            >
-              <Check className="w-4 h-4 mr-2" />
-              添加
-            </Button>
-          </div>
+          <div className="mt-6 flex gap-3"><Button variant="secondary" className="flex-1" onClick={resetDialog}>取消</Button><Button className="flex-1" onClick={handleAddKey} disabled={!newKeyValue.trim()}>添加</Button></div>
         </DialogContent>
       </Dialog>
-    </div>
+    </AppShell>
   )
 }

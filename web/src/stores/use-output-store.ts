@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import { persist } from 'zustand/middleware'
+import { createJSONStorage, persist } from 'zustand/middleware'
 import { nanoid } from 'nanoid'
 import { localForageStorage } from '@/lib/localforage-storage'
 import type { Output } from '@/types/flow'
@@ -136,7 +136,7 @@ export const useOutputStore = create<OutputState>()(
     }),
     {
       name: 'cnote-outputs',
-      storage: localForageStorage as any,
+      storage: createJSONStorage(() => localForageStorage),
     }
   )
 )

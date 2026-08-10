@@ -3,8 +3,7 @@ import { persist } from 'zustand/middleware'
 import { nanoid } from 'nanoid'
 import { applyNodeChanges, applyEdgeChanges } from 'reactflow'
 import type { Node, Edge, OnNodesChange, OnEdgesChange } from 'reactflow'
-import { localForageStorage } from '@/lib/localforage-storage'
-import type { Flow } from '@/types/flow'
+import type { Flow, Folder } from '@/types/flow'
 import { FlowExecutor, type ExecutionContext } from '@/lib/flow'
 
 interface FlowState {
@@ -14,6 +13,9 @@ interface FlowState {
 
   // 所有 Flows
   flows: Flow[]
+
+  // 文件夹
+  folders: Folder[]
 
   // React Flow 状态
   nodes: Node[]
@@ -32,12 +34,23 @@ interface FlowState {
   executionContexts: Map<string, ExecutionContext>
 
   // 操作方法
-  createFlow: (name: string, description?: string) => Flow
+  createFlow: (
+    name: string,
+    description?: string,
+    folderId?: string,
+    initialGraph?: { nodes: Node[]; edges: Edge[] }
+  ) => Flow
   deleteFlow: (id: string) => void
   updateFlow: (id: string, updates: Partial<Flow>) => void
   loadFlow: (id: string) => void
-  saveCurrentFlow: () => void
+  saveCurrentFlow: (thumbnail?: string, viewport?: Flow['viewport']) => void
   duplicateFlow: (id: string) => Flow
+
+  // 文件夹操作
+  createFolder: (name: string, color?: string) => Folder
+  deleteFolder: (id: string) => void
+  updateFolder: (id: string, updates: Partial<Folder>) => void
+  moveFlowToFolder: (flowId: string, folderId: string | null) => void
 
   // 节点操作
   addNode: (node: Omit<Node, 'id'>) => void
@@ -84,6 +97,7 @@ export const useFlowStore = create<FlowState>()(
       currentFlow: null,
       currentFlowId: null,
       flows: [],
+      folders: [],
       nodes: [],
       edges: [],
       history: [],
@@ -94,14 +108,33 @@ export const useFlowStore = create<FlowState>()(
       executionContexts: new Map(),
 
       // 创建新 Flow
-      createFlow: (name, description) => {
+      createFlow: (name, description, folderId, initialGraph) => {
+        const nodeIdMap = new Map<string, string>()
+        const initialNodes = (initialGraph?.nodes || []).map((node) => {
+          const id = nanoid()
+          nodeIdMap.set(node.id, id)
+          return {
+            ...node,
+            id,
+            data: { ...node.data },
+            selected: false,
+          }
+        })
+        const initialEdges = (initialGraph?.edges || []).map((edge) => ({
+          ...edge,
+          id: nanoid(),
+          source: nodeIdMap.get(edge.source) || edge.source,
+          target: nodeIdMap.get(edge.target) || edge.target,
+          selected: false,
+        }))
         const newFlow: Flow = {
           id: nanoid(),
           name,
           title: name,
           description: description || '',
-          nodes: [],
-          edges: [],
+          nodes: initialNodes,
+          edges: initialEdges,
+          folderId,
           createdAt: Date.now(),
           updatedAt: Date.now(),
         }
@@ -110,8 +143,8 @@ export const useFlowStore = create<FlowState>()(
           flows: [...state.flows, newFlow],
           currentFlow: newFlow,
           currentFlowId: newFlow.id,
-          nodes: [],
-          edges: [],
+          nodes: initialNodes,
+          edges: initialEdges,
           history: [],
           historyIndex: -1,
         }))
@@ -164,11 +197,42 @@ export const useFlowStore = create<FlowState>()(
       },
 
       // 保存当前 Flow
-      saveCurrentFlow: () => {
+      saveCurrentFlow: (thumbnail, viewport) => {
         const { currentFlowId, nodes, edges } = get()
         if (!currentFlowId) return
 
-        get().updateFlow(currentFlowId, { nodes, edges })
+        const updatedAt = Date.now()
+        const updates: Partial<Flow> = {
+          nodes,
+          edges,
+          updatedAt,
+        }
+        if (thumbnail) updates.thumbnail = thumbnail
+        if (viewport) updates.viewport = viewport
+
+        set((state) => {
+          let flows = state.flows.map((flow) =>
+            flow.id === currentFlowId ? { ...flow, ...updates } : flow
+          )
+
+          if (thumbnail) {
+            const retainedIds = new Set(
+              flows
+                .filter((flow) => flow.thumbnail)
+                .sort((first, second) => second.updatedAt - first.updatedAt)
+                .slice(0, 30)
+                .map((flow) => flow.id)
+            )
+            flows = flows.map((flow) =>
+              flow.thumbnail && !retainedIds.has(flow.id)
+                ? { ...flow, thumbnail: undefined }
+                : flow
+            )
+          }
+
+          const currentFlow = flows.find((flow) => flow.id === currentFlowId) || null
+          return { flows, currentFlow }
+        })
       },
 
       // 复制 Flow
@@ -467,10 +531,65 @@ export const useFlowStore = create<FlowState>()(
       stopExecution: () => {
         set({ isExecuting: false })
       },
+
+      // 创建文件夹
+      createFolder: (name, color) => {
+        const newFolder: Folder = {
+          id: nanoid(),
+          name,
+          color: color || '#3B6DFF',
+          createdAt: Date.now(),
+        }
+
+        set((state) => ({
+          folders: [...state.folders, newFolder],
+        }))
+
+        return newFolder
+      },
+
+      // 删除文件夹
+      deleteFolder: (id) => {
+        set((state) => ({
+          folders: state.folders.filter((f) => f.id !== id),
+          // 将该文件夹下的 flows 移到根目录
+          flows: state.flows.map((f) =>
+            f.folderId === id ? { ...f, folderId: undefined } : f
+          ),
+        }))
+      },
+
+      // 更新文件夹
+      updateFolder: (id, updates) => {
+        set((state) => ({
+          folders: state.folders.map((f) =>
+            f.id === id ? { ...f, ...updates } : f
+          ),
+        }))
+      },
+
+      // 移动 Flow 到文件夹
+      moveFlowToFolder: (flowId, folderId) => {
+        set((state) => ({
+          flows: state.flows.map((f) =>
+            f.id === flowId ? { ...f, folderId: folderId || undefined, updatedAt: Date.now() } : f
+          ),
+        }))
+      },
     }),
     {
       name: 'cnote-flows',
-      storage: localForageStorage as any,
+      partialize: (state) => ({
+        currentFlow: state.currentFlow,
+        currentFlowId: state.currentFlowId,
+        flows: state.flows,
+        folders: state.folders,
+        nodes: state.nodes,
+        edges: state.edges,
+        history: state.history,
+        historyIndex: state.historyIndex,
+        isLocked: state.isLocked,
+      }),
     }
   )
 )

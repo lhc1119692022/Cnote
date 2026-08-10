@@ -29,7 +29,7 @@ export const StickyNode = memo(({ data, selected }: NodeProps<StickyNodeData>) =
   return (
     <div
       className={`rounded-xl shadow-lg border-2 min-w-[240px] max-w-[280px] ${
-        selected ? 'border-[#34c759]' : 'border-[#d2d2d7]'
+        selected ? 'border-primary' : 'border-border'
       }`}
       style={{ backgroundColor: currentColor.value }}
     >
@@ -39,7 +39,7 @@ export const StickyNode = memo(({ data, selected }: NodeProps<StickyNodeData>) =
       >
         <div className="flex items-center gap-2">
           <StickyNote className="w-4 h-4" style={{ color: currentColor.border }} />
-          <span className="text-sm font-medium text-[#1d1d1f]">{data.label}</span>
+          <span className="text-sm font-medium text-foreground">{data.label}</span>
         </div>
 
         <div className="flex items-center gap-1">

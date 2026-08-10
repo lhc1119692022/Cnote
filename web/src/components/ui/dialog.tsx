@@ -34,7 +34,7 @@ export function DialogContent({ className, children, ...props }: DialogContentPr
   return (
     <div
       className={cn(
-        'bg-white rounded-2xl p-6 w-full max-w-md shadow-xl',
+        'bg-card border border-border rounded-xl p-6 w-full max-w-md shadow-2xl',
         className
       )}
       {...props}
@@ -63,7 +63,7 @@ interface DialogTitleProps extends React.HTMLAttributes<HTMLHeadingElement> {
 export function DialogTitle({ className, children, ...props }: DialogTitleProps) {
   return (
     <h3
-      className={cn('text-xl font-bold text-[#1d1d1f] mb-2', className)}
+      className={cn('text-xl font-bold text-foreground mb-2', className)}
       {...props}
     >
       {children}
@@ -78,7 +78,7 @@ interface DialogDescriptionProps extends React.HTMLAttributes<HTMLParagraphEleme
 export function DialogDescription({ className, children, ...props }: DialogDescriptionProps) {
   return (
     <p
-      className={cn('text-sm text-[#6e6e73]', className)}
+      className={cn('text-sm text-muted-foreground', className)}
       {...props}
     >
       {children}
