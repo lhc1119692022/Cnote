@@ -125,15 +125,147 @@
 
 /* React Flow 自定义样式 */
 .react-flow__node {
-  border-radius: 12px;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+  overflow: visible;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.react-flow__node:hover {
+  z-index: 1000 !important;
+}
+
+.node-card {
+  box-sizing: border-box;
+}
+
+.node-panel-shadow {
+  box-shadow: 0 5px 18px rgb(15 23 42 / 0.055);
+}
+
+.node-hover-toolbar {
+  position: absolute;
+  right: 0;
+  bottom: 100%;
+  z-index: 30;
+  padding-bottom: 8px;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(4px);
+  transition: opacity 140ms ease, transform 140ms ease;
+}
+
+.node-hover-toolbar-surface {
+  box-shadow: 0 4px 14px rgb(15 23 42 / 0.065);
+}
+
+.react-flow__node:hover .node-hover-toolbar,
+.react-flow__node:focus-within .node-hover-toolbar {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateY(0);
+}
+
+.react-flow__node.dragging .node-hover-toolbar {
+  opacity: 0;
+  pointer-events: none;
 }
 
 .react-flow__handle {
-  width: 12px;
-  height: 12px;
-  background: var(--primary);
-  border: 2px solid white;
+  z-index: 10;
+}
+
+/* Connection points stay quiet until the node is being inspected. */
+.node-connection-handle {
+  top: 50% !important;
+  width: 64px !important;
+  height: 64px !important;
+  display: flex !important;
+  align-items: center;
+  justify-content: center;
+  border: 0 !important;
+  border-radius: 999px !important;
+  background: transparent !important;
+  color: var(--muted-foreground);
+  box-shadow: none;
+  opacity: 0;
+  pointer-events: auto !important;
+  cursor: crosshair;
+  touch-action: none;
+  transition: opacity 160ms ease;
+}
+
+.react-flow__handle-left.node-connection-handle {
+  left: -32px !important;
+  transform: translateY(-50%);
+}
+
+.react-flow__handle-right.node-connection-handle {
+  right: -32px !important;
+  transform: translateY(-50%);
+}
+
+.node-connection-handle-surface {
+  pointer-events: none;
+  display: flex;
+  width: 46px;
+  height: 46px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--card);
+  box-shadow: 0 1px 4px rgb(15 23 42 / 0.06);
+  transition: transform 160ms ease, background-color 160ms ease, color 160ms ease;
+}
+
+.react-flow__node:hover .node-connection-handle,
+.react-flow__node.selected .node-connection-handle,
+.react-flow__node:focus-within .node-connection-handle {
+  opacity: 1;
+}
+
+.node-connection-handle:hover {
+  color: var(--foreground);
+}
+
+.node-connection-handle:hover .node-connection-handle-surface {
+  background: var(--muted);
+  transform: scale(1.1);
+}
+
+.node-resize-arc {
+  position: absolute;
+  right: -17px;
+  bottom: -17px;
+  z-index: 12;
+  width: 48px;
+  height: 48px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: nwse-resize;
+  opacity: 0;
+  pointer-events: auto;
+  transition: opacity 120ms ease;
+}
+
+.node-resize-arc svg {
+  width: 42px;
+  height: 42px;
+  overflow: visible;
+}
+
+.node-resize-arc path {
+  fill: none;
+  stroke: var(--card);
+  stroke-width: 6;
+  stroke-linecap: round;
+  filter: drop-shadow(0 1px 1px rgb(15 23 42 / 0.1));
+}
+
+.node-resize-arc:hover,
+.node-resize-arc.is-resizing {
+  opacity: 1;
 }
 
 .react-flow__edge-path {
@@ -143,4 +275,21 @@
 
 .react-flow__edge.selected .react-flow__edge-path {
   stroke: var(--primary);
+}
+
+/* Keep floating surfaces visually close to the canvas instead of heavily elevated. */
+.shadow-sm {
+  box-shadow: 0 1px 3px rgb(15 23 42 / 0.045) !important;
+}
+
+.shadow-lg {
+  box-shadow: 0 5px 16px rgb(15 23 42 / 0.065) !important;
+}
+
+.shadow-xl {
+  box-shadow: 0 7px 20px rgb(15 23 42 / 0.075) !important;
+}
+
+.shadow-2xl {
+  box-shadow: 0 10px 28px rgb(15 23 42 / 0.09) !important;
 }

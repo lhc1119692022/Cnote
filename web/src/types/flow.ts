@@ -41,7 +41,7 @@ export interface ContentNodeData extends BaseNodeData {
 
 // AI 节点数据
 export interface AINodeData extends BaseNodeData {
-  providerId: string;
+  channelId?: string;
   model: string;
   systemPrompt?: string;
   userPrompt: string;
@@ -130,16 +130,4 @@ export interface Source {
   metadata?: Record<string, any>;
   createdAt: number;
   updatedAt: number;
-}
-
-// Output 定义（输出历史）
-export interface Output {
-  id: string;
-  title: string;
-  content: string;
-  format: 'html' | 'markdown' | 'text';
-  flowId?: string;
-  nodeId?: string;
-  wordCount: number;
-  createdAt: number;
 }

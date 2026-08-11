@@ -1,12 +1,11 @@
 // API 配置类型
-export type ProtocolType = 'responses' | 'chatCompletions'
+export type ProtocolType = 'responses' | 'messages' | 'chatCompletions'
 
 export interface ProviderConfig {
   id: string
   name: string
   baseURL: string
   protocol: ProtocolType
-  needsProxy?: boolean
   models: ModelConfig[]
 }
 
@@ -36,7 +35,7 @@ export interface ChatCompletionRequest {
 
 export interface ResponsesAPIRequest {
   model: string
-  prompt: string
+  input: string | ChatMessage[]
   temperature?: number
   max_tokens?: number
   stream?: boolean
@@ -75,6 +74,10 @@ export interface ResponsesAPIResponse {
     completion_tokens: number
     total_tokens: number
   }
+  output_text?: string
+  output?: Array<{
+    content?: Array<{ type?: string; text?: string }>
+  }>
 }
 
 // 流式响应类型
@@ -105,5 +108,6 @@ export interface APIError {
 // 预设的 API 协议
 export const API_PROTOCOLS: Record<ProtocolType, string> = {
   responses: '/v1/responses',
+  messages: '/v1/messages',
   chatCompletions: '/v1/chat/completions',
 }

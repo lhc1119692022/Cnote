@@ -34,14 +34,16 @@ export class FlowExecutor {
   private edges: FlowEdge[]
   private contexts: Map<string, ExecutionContext>
   private aiClient?: AIClient
+  private aiClientResolver?: (channelId?: string) => AIClient | undefined
   private scraperClient?: ScraperClient
 
-  constructor(nodes: FlowNode[], edges: FlowEdge[], aiClient?: AIClient, scraperClient?: ScraperClient) {
+  constructor(nodes: FlowNode[], edges: FlowEdge[], aiClient?: AIClient, scraperClient?: ScraperClient, aiClientResolver?: (channelId?: string) => AIClient | undefined) {
     this.nodes = nodes
     this.edges = edges
     this.contexts = new Map()
     this.aiClient = aiClient
     this.scraperClient = scraperClient
+    this.aiClientResolver = aiClientResolver
   }
 
   /**
@@ -215,11 +217,13 @@ export class FlowExecutor {
     node: FlowNode,
     inputs: Record<string, any>
   ): Promise<string> {
-    if (!this.aiClient) {
+    const data = node.data as any
+    const aiClient = data.channelId
+      ? this.aiClientResolver?.(data.channelId)
+      : this.aiClient
+    if (!aiClient) {
       throw new Error('AI client not initialized')
     }
-
-    const data = node.data as any
 
     // 构建提示词
     const inputTexts = Object.values(inputs)
@@ -235,27 +239,12 @@ export class FlowExecutor {
       { role: 'user', content: userPrompt },
     ]
 
-    const response = await this.aiClient.chatCompletion({
+    return aiClient.complete({
       model: data.model || 'gpt-3.5-turbo',
       messages,
       temperature: data.temperature || 0.7,
       max_tokens: 4096,
     })
-
-    // 处理流式响应
-    if (Symbol.asyncIterator in Object(response)) {
-      let fullText = ''
-      for await (const chunk of response as AsyncIterable<any>) {
-        const content = chunk.choices[0]?.delta?.content
-        if (content) {
-          fullText += content
-        }
-      }
-      return fullText
-    }
-
-    // 处理普通响应
-    return (response as any).choices[0]?.message?.content || ''
   }
 
   /**

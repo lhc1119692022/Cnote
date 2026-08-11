@@ -7,46 +7,116 @@ import type {
   StreamChunk,
   APIError,
 } from './types'
-import { detectCORSCached } from './cors-detector'
 
 /**
  * AI API 客户端
  * 支持 Responses API 和 Chat Completions API
- * 自动 CORS 检测和代理切换
  */
 export class AIClient {
   private provider: ProviderConfig
   private apiKey: string
-  private proxyURL?: string
 
-  constructor(provider: ProviderConfig, apiKey: string, proxyURL?: string) {
+  constructor(provider: ProviderConfig, apiKey: string) {
     this.provider = provider
     this.apiKey = apiKey
-    this.proxyURL = proxyURL
   }
 
   /**
-   * 获取实际请求 URL（考虑代理）
+   * 获取实际请求 URL
    */
-  private async getRequestURL(endpoint: string): Promise<string> {
-    const fullURL = `${this.provider.baseURL}${endpoint}`
+  private getRequestURL(endpoint: string): string {
+    const baseURL = this.provider.baseURL.replace(/\/$/, '')
+    if (baseURL.endsWith('/v1') && endpoint.startsWith('/v1/')) {
+      return `${baseURL}${endpoint.slice(3)}`
+    }
+    return `${baseURL}${endpoint}`
+  }
 
-    // 如果配置了需要代理，直接使用代理
-    if (this.provider.needsProxy && this.proxyURL) {
-      // 使用 Cloudflare Worker 代理格式: /proxy/{provider}/{endpoint}
-      const providerName = this.provider.id.toLowerCase()
-      return `${this.proxyURL}/proxy/${providerName}${endpoint}`
+  private getHeaders(): Record<string, string> {
+    if (this.provider.protocol === 'messages') {
+      return {
+        'Content-Type': 'application/json',
+        'x-api-key': this.apiKey,
+        'anthropic-version': '2023-06-01',
+      }
+    }
+    return {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${this.apiKey}`,
+    }
+  }
+
+  async listModels(): Promise<string[]> {
+    const response = await fetch(this.getRequestURL('/v1/models'), {
+      method: 'GET',
+      headers: this.getHeaders(),
+    })
+    if (!response.ok) {
+      let message = `HTTP ${response.status}`
+      try {
+        const body = await response.json() as { error?: { message?: string }; message?: string }
+        message = body.error?.message || body.message || message
+      } catch {
+        // Keep the HTTP status when the endpoint does not return JSON.
+      }
+      throw new Error(message)
+    }
+    const body = await response.json() as { data?: Array<{ id?: string }>; models?: Array<{ id?: string; name?: string }> }
+    const models: Array<{ id?: string; name?: string }> = body.data || body.models || []
+    return models
+      .map((model) => model.id || model.name || '')
+      .filter((id): id is string => Boolean(id))
+      .sort((a, b) => a.localeCompare(b))
+  }
+
+  async complete(request: ChatCompletionRequest): Promise<string> {
+    if (this.provider.protocol === 'chatCompletions') {
+      const response = await this.chatCompletion({ ...request, stream: false }) as ChatCompletionResponse
+      return response.choices?.[0]?.message?.content || ''
     }
 
-    // 自动检测 CORS
-    const corsResult = await detectCORSCached(this.provider.baseURL)
-    if (corsResult.needsProxy && this.proxyURL) {
-      // 使用 Cloudflare Worker 代理格式: /proxy/{provider}/{endpoint}
-      const providerName = this.provider.id.toLowerCase()
-      return `${this.proxyURL}/proxy/${providerName}${endpoint}`
+    if (this.provider.protocol === 'responses') {
+      const response = await fetch(this.getRequestURL('/v1/responses'), {
+        method: 'POST',
+        headers: this.getHeaders(),
+        body: JSON.stringify({
+          model: request.model,
+          input: request.messages,
+          temperature: request.temperature,
+          max_output_tokens: request.max_tokens,
+        }),
+      })
+      if (!response.ok) {
+        const error: APIError = await response.json()
+        throw new Error(error.error?.message || 'API request failed')
+      }
+      const result = await response.json() as ResponsesAPIResponse
+      return result.output_text
+        || result.output?.flatMap((item) => item.content || []).find((item) => item.type === 'output_text')?.text
+        || ''
     }
 
-    return fullURL
+    const system = request.messages.filter((message) => message.role === 'system').map((message) => message.content).join('\n\n')
+    const messages = request.messages
+      .filter((message) => message.role !== 'system')
+      .map((message) => ({ role: message.role, content: message.content }))
+    const response = await fetch(this.getRequestURL('/v1/messages'), {
+      method: 'POST',
+      headers: this.getHeaders(),
+      body: JSON.stringify({
+        model: request.model,
+        system: system || undefined,
+        messages,
+        temperature: request.temperature,
+        max_tokens: request.max_tokens || 4096,
+      }),
+    })
+    if (!response.ok) {
+      const error = await response.json() as APIError
+      throw new Error(error.error?.message || 'API request failed')
+    }
+    const result = await response.json() as { content?: Array<{ type?: string; text?: string }> }
+    return result.content?.filter((item) => item.type === 'text').map((item) => item.text || '').join('') || ''
   }
 
   /**
@@ -59,14 +129,11 @@ export class AIClient {
       throw new Error('Provider does not support Chat Completions API')
     }
 
-    const url = await this.getRequestURL('/v1/chat/completions')
+    const url = this.getRequestURL('/v1/chat/completions')
 
     const response = await fetch(url, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${this.apiKey}`,
-      },
+      headers: this.getHeaders(),
       body: JSON.stringify(request),
     })
 
@@ -94,14 +161,11 @@ export class AIClient {
       throw new Error('Provider does not support Responses API')
     }
 
-    const url = await this.getRequestURL('/v1/responses')
+    const url = this.getRequestURL('/v1/responses')
 
     const response = await fetch(url, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${this.apiKey}`,
-      },
+      headers: this.getHeaders(),
       body: JSON.stringify(request),
     })
 
@@ -158,23 +222,8 @@ export class AIClient {
    */
   async testConnection(): Promise<boolean> {
     try {
-      if (this.provider.protocol === 'chatCompletions') {
-        const response = await this.chatCompletion({
-          model: this.provider.models[0].id,
-          messages: [{ role: 'user', content: 'Hello' }],
-          max_tokens: 5,
-        })
-
-        return !!(response as ChatCompletionResponse).id
-      } else {
-        const response = await this.responses({
-          model: this.provider.models[0].id,
-          prompt: 'Hello',
-          max_tokens: 5,
-        })
-
-        return !!(response as ResponsesAPIResponse).id
-      }
+      await this.listModels()
+      return true
     } catch (error) {
       console.error('Connection test failed:', error)
       return false

@@ -1,8 +1,10 @@
 import { memo, useState } from 'react'
-import { Handle, Position, NodeProps } from 'reactflow'
-import { Globe, RefreshCw, AlertCircle, X } from 'lucide-react'
+import { Position, NodeProps } from 'reactflow'
+import { Globe, RefreshCw, AlertCircle } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { useFlowStore } from '@/stores/use-flow-store'
+import { NodeHandle, NodeHoverToolbar, NodeResizeArc } from './NodeChrome'
 
 interface BrowserNodeData {
   label: string
@@ -11,13 +13,15 @@ interface BrowserNodeData {
   extractMode?: 'text' | 'html' | 'markdown'
 }
 
-export const BrowserNode = memo(({ data, selected }: NodeProps<BrowserNodeData>) => {
+export const BrowserNode = memo(({ id, data, selected }: NodeProps<BrowserNodeData>) => {
   const [url, setUrl] = useState(data.url || '')
   const [selector, setSelector] = useState(data.selector || '')
   const [extractMode, setExtractMode] = useState<'text' | 'html' | 'markdown'>(
     data.extractMode || 'text'
   )
   const [status, setStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle')
+  const updateNode = useFlowStore((state) => state.updateNode)
+  const updateData = (updates: Partial<BrowserNodeData>) => updateNode(id, { data: { ...data, ...updates } })
 
   const handleFetch = () => {
     if (!url.trim()) return
@@ -28,29 +32,24 @@ export const BrowserNode = memo(({ data, selected }: NodeProps<BrowserNodeData>)
 
   return (
     <div
-      className={`bg-card rounded-xl shadow-lg border-2 min-w-[320px] max-w-[400px] ${
+      className={`node-card node-panel-shadow group relative flex h-full min-h-[390px] w-full min-w-[320px] flex-col rounded-xl border bg-card ${
         selected ? 'border-primary' : 'border-border'
       }`}
     >
       {/* 输入连接点 */}
-      <Handle
-        type="target"
-        position={Position.Left}
-        className="w-3 h-3 !bg-primary border-2 border-white"
-      />
+      <NodeHandle type="target" position={Position.Left} id="in" />
+      <NodeHandle type="source" position={Position.Right} id="out" />
+      <NodeHoverToolbar nodeId={id} />
+      <NodeResizeArc nodeId={id} minWidth={320} minHeight={390} />
 
       {/* 头部 */}
-      <div className="flex items-center justify-between px-4 py-3 border-b border-border">
+      <div className="flex items-center px-4 py-3 border-b border-border">
         <div className="flex items-center gap-2">
           <div className="w-8 h-8 rounded-lg bg-blue-100 flex items-center justify-center">
             <Globe className="w-4 h-4 text-blue-600" />
           </div>
           <span className="font-medium text-foreground">{data.label}</span>
         </div>
-
-        <Button variant="ghost" size="icon" className="w-6 h-6">
-          <X className="w-4 h-4" />
-        </Button>
       </div>
 
       {/* URL 输入 */}
@@ -59,7 +58,7 @@ export const BrowserNode = memo(({ data, selected }: NodeProps<BrowserNodeData>)
         <div className="flex gap-2">
           <Input
             value={url}
-            onChange={(e) => setUrl(e.target.value)}
+            onChange={(event) => { const value = event.target.value; setUrl(value); updateData({ url: value }) }}
             placeholder="https://example.com"
             className="flex-1 h-9 text-sm"
           />
@@ -79,12 +78,12 @@ export const BrowserNode = memo(({ data, selected }: NodeProps<BrowserNodeData>)
       </div>
 
       {/* 提取配置 */}
-      <div className="p-4 space-y-3">
+      <div className="flex-1 p-4 space-y-3">
         <div>
           <label className="text-xs text-muted-foreground mb-2 block">CSS 选择器 (可选)</label>
           <Input
             value={selector}
-            onChange={(e) => setSelector(e.target.value)}
+            onChange={(event) => { const value = event.target.value; setSelector(value); updateData({ selector: value }) }}
             placeholder=".article-content, #main"
             className="h-9 text-sm"
           />
@@ -96,7 +95,7 @@ export const BrowserNode = memo(({ data, selected }: NodeProps<BrowserNodeData>)
             {(['text', 'html', 'markdown'] as const).map((mode) => (
               <button
                 key={mode}
-                onClick={() => setExtractMode(mode)}
+                onClick={() => { setExtractMode(mode); updateData({ extractMode: mode }) }}
                 className={`flex-1 px-3 py-2 rounded-lg text-sm transition-colors ${
                   extractMode === mode
                     ? 'bg-primary text-primary-foreground'
@@ -137,12 +136,6 @@ export const BrowserNode = memo(({ data, selected }: NodeProps<BrowserNodeData>)
         </Button>
       </div>
 
-      {/* 输出连接点 */}
-      <Handle
-        type="source"
-        position={Position.Right}
-        className="w-3 h-3 !bg-primary border-2 border-white"
-      />
     </div>
   )
 })

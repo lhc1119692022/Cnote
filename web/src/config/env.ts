@@ -4,9 +4,6 @@
  */
 
 export const env = {
-  // AI API 代理端点
-  proxyURL: import.meta.env.VITE_PROXY_URL || 'https://api.cnote.app',
-
   // Web Scraper 端点
   scraperURL: import.meta.env.VITE_SCRAPER_URL || 'https://scraper.cnote.app',
 

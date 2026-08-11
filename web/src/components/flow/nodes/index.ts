@@ -1,4 +1,4 @@
-export { ContentNode } from './ContentNode'
+export { ContentNode, ContentLeafNode } from './ContentNode'
 export { AINode } from './AINode'
 export { BrowserNode } from './BrowserNode'
 export { OutputNode } from './OutputNode'

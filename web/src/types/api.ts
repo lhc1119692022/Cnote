@@ -1,15 +1,6 @@
 // API 协议类型
 export type ProtocolType = 'responses' | 'chatCompletions';
 
-// 连接模式（自动检测）
-export type ConnectionMode = 'direct' | 'proxy';
-
-// CORS 检测结果
-export interface CORSDetectResult {
-  needsProxy: boolean;
-  error?: string;
-}
-
 // 模型配置
 export interface ModelConfig {
   id: string;
@@ -27,7 +18,6 @@ export interface ProviderConfig {
   apiKey: string;
   protocol: ProtocolType;
   models: ModelConfig[];
-  needsProxy: boolean;  // 后台自动检测
   enabled: boolean;
   builtin: boolean;
   createdAt: number;

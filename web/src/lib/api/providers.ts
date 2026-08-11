@@ -9,8 +9,7 @@ export const PROVIDERS: ProviderConfig[] = [
     id: 'openai',
     name: 'OpenAI',
     baseURL: 'https://api.openai.com',
-    protocol: 'chatCompletions',
-    needsProxy: false,
+    protocol: 'responses',
     models: [
       {
         id: 'gpt-4-turbo',
@@ -33,13 +32,34 @@ export const PROVIDERS: ProviderConfig[] = [
     ],
   },
 
+  // DeepSeek 官方 API
+  {
+    id: 'deepseek',
+    name: 'DeepSeek',
+    baseURL: 'https://api.deepseek.com',
+    protocol: 'responses',
+    models: [
+      {
+        id: 'deepseek-v4-pro',
+        name: 'DeepSeek V4 Pro',
+        maxTokens: 1000000,
+        supportsStreaming: true,
+      },
+      {
+        id: 'deepseek-v4-flash',
+        name: 'DeepSeek V4 Flash',
+        maxTokens: 1000000,
+        supportsStreaming: true,
+      },
+    ],
+  },
+
   // Anthropic Claude
   {
     id: 'anthropic',
     name: 'Anthropic',
     baseURL: 'https://api.anthropic.com',
-    protocol: 'chatCompletions',
-    needsProxy: false,
+    protocol: 'messages',
     models: [
       {
         id: 'claude-3-opus-20240229',
@@ -68,7 +88,6 @@ export const PROVIDERS: ProviderConfig[] = [
     name: 'Google',
     baseURL: 'https://generativelanguage.googleapis.com',
     protocol: 'chatCompletions',
-    needsProxy: false,
     models: [
       {
         id: 'gemini-pro',
@@ -91,7 +110,6 @@ export const PROVIDERS: ProviderConfig[] = [
     name: 'Ollama (本地)',
     baseURL: 'http://localhost:11434',
     protocol: 'chatCompletions',
-    needsProxy: false,
     models: [
       {
         id: 'llama2',
@@ -120,7 +138,6 @@ export const PROVIDERS: ProviderConfig[] = [
     name: '自定义',
     baseURL: '',
     protocol: 'chatCompletions',
-    needsProxy: false,
     models: [
       {
         id: 'custom-model',
@@ -155,6 +172,7 @@ export function validateAPIKey(providerId: string, apiKey: string): boolean {
 
   switch (providerId) {
     case 'openai':
+    case 'deepseek':
       return apiKey.startsWith('sk-')
     case 'anthropic':
       return apiKey.startsWith('sk-ant-')

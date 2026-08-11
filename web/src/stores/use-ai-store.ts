@@ -1,19 +1,32 @@
 import { create } from 'zustand'
 import { createJSONStorage, persist } from 'zustand/middleware'
 import { localForageStorage } from '@/lib/localforage-storage'
-import { AIClient, type ProviderConfig } from '@/lib/api'
+import { AIClient, getProvider, type ProviderConfig, type ProtocolType } from '@/lib/api'
 import { encryptAPIKey, decryptAPIKey } from '@/lib/secure-storage'
 
-interface APIKeyStore {
+export interface APIChannel {
   id: string
   providerId: string
   encryptedKey: string
-  name?: string
+  name: string
+  baseURL?: string
+  modelIds?: string[]
+  protocol?: ProtocolType
+}
+
+export interface APIChannelInput {
+  id?: string
+  providerId: string
+  apiKey: string
+  name: string
+  baseURL?: string
+  modelIds?: string[]
+  protocol?: ProtocolType
 }
 
 interface AIState {
   // API Keys
-  apiKeys: APIKeyStore[]
+  apiKeys: APIChannel[]
 
   // 当前选中的配置
   currentProviderId: string | null
@@ -22,23 +35,24 @@ interface AIState {
 
   // AI 客户端实例
   client: AIClient | null
-
-  // Cloudflare 代理 URL
-  proxyURL: string
+  defaultsInitialized: boolean
+  defaultsVersion: number
 
   // 操作方法
-  addAPIKey: (providerId: string, apiKey: string, name?: string) => string
+  addAPIKey: (providerId: string, apiKey: string, name?: string, options?: { baseURL?: string; modelIds?: string[]; protocol?: ProtocolType }) => string
   removeAPIKey: (id: string) => void
-  updateAPIKey: (id: string, apiKey: string) => void
+  updateAPIKey: (id: string, updates: { providerId?: string; apiKey?: string; name?: string; baseURL?: string; modelIds?: string[]; protocol?: ProtocolType }) => void
+  replaceAPIKeys: (channels: APIChannelInput[]) => void
+  initializeDefaultChannels: () => void
   getAPIKey: (id: string) => string | null
 
   setCurrentProvider: (providerId: string) => void
   setCurrentModel: (modelId: string) => void
   setCurrentAPIKey: (keyId: string) => void
-  setProxyURL: (url: string) => void
 
   // 初始化 AI 客户端
   initializeClient: (provider: ProviderConfig) => void
+  createClientForChannel: (channelId: string) => AIClient | null
 
   // 测试连接
   testConnection: () => Promise<boolean>
@@ -52,10 +66,11 @@ export const useAIStore = create<AIState>()(
       currentModelId: null,
       currentAPIKeyId: null,
       client: null,
-      proxyURL: 'https://ai-proxy.cnote.workers.dev',
+      defaultsInitialized: false,
+      defaultsVersion: 0,
 
       // 添加 API Key
-      addAPIKey: (providerId, apiKey, name) => {
+      addAPIKey: (providerId, apiKey, name, options) => {
         const id = `key-${Date.now()}`
         const encryptedKey = encryptAPIKey(apiKey)
 
@@ -66,7 +81,10 @@ export const useAIStore = create<AIState>()(
               id,
               providerId,
               encryptedKey,
-              name: name || `${providerId} Key`,
+              name: name || `${providerId} 渠道`,
+              baseURL: options?.baseURL,
+              modelIds: options?.modelIds,
+              protocol: options?.protocol,
             },
           ],
         }))
@@ -83,14 +101,77 @@ export const useAIStore = create<AIState>()(
       },
 
       // 更新 API Key
-      updateAPIKey: (id, apiKey) => {
-        const encryptedKey = encryptAPIKey(apiKey)
-
+      updateAPIKey: (id, updates) => {
         set((state) => ({
           apiKeys: state.apiKeys.map((k) =>
-            k.id === id ? { ...k, encryptedKey } : k
+            k.id === id
+              ? {
+                  ...k,
+                  ...updates,
+                  encryptedKey: updates.apiKey ? encryptAPIKey(updates.apiKey) : k.encryptedKey,
+                }
+              : k
           ),
         }))
+      },
+
+      replaceAPIKeys: (channels) => {
+        const apiKeys = channels.map((channel, index) => ({
+          id: channel.id || `key-${Date.now()}-${index}`,
+          providerId: channel.providerId,
+          encryptedKey: encryptAPIKey(channel.apiKey),
+          name: channel.name,
+          baseURL: channel.baseURL,
+          modelIds: channel.modelIds,
+          protocol: channel.protocol,
+        }))
+        set({ apiKeys, currentAPIKeyId: apiKeys[0]?.id || null, client: null })
+      },
+
+      initializeDefaultChannels: () => {
+        set((state) => {
+          if (state.defaultsVersion >= 3) return state
+          const defaultSpecs = [
+            { id: 'official-openai', providerId: 'openai', name: 'OpenAI 官方' },
+            { id: 'official-deepseek', providerId: 'deepseek', name: 'DeepSeek 官方' },
+          ]
+          const createDefaultChannel = ({ id, providerId, name }: typeof defaultSpecs[number]) => {
+            const provider = getProvider(providerId)
+            return {
+              id,
+              providerId,
+              name,
+              encryptedKey: encryptAPIKey(''),
+              baseURL: provider?.baseURL,
+              modelIds: [],
+              protocol: provider?.protocol,
+            }
+          }
+          if (state.apiKeys.length > 0) {
+            const apiKeys = state.apiKeys.map((channel) => {
+              if (channel.id !== 'official-openai' && channel.id !== 'official-deepseek') return channel
+              const provider = getProvider(channel.providerId)
+              return { ...channel, modelIds: [], protocol: provider?.protocol || channel.protocol }
+            })
+            defaultSpecs.forEach((spec) => {
+              if (!apiKeys.some((channel) => channel.id === spec.id)) apiKeys.push(createDefaultChannel(spec))
+            })
+            return {
+              apiKeys,
+              defaultsInitialized: true,
+              defaultsVersion: 3,
+            }
+          }
+
+          const defaults = defaultSpecs.map(createDefaultChannel)
+
+          return {
+            apiKeys: defaults,
+            currentAPIKeyId: null,
+            defaultsInitialized: true,
+            defaultsVersion: 3,
+          }
+        })
       },
 
       // 获取解密后的 API Key
@@ -116,14 +197,9 @@ export const useAIStore = create<AIState>()(
         set({ currentAPIKeyId: keyId })
       },
 
-      // 设置代理 URL
-      setProxyURL: (url) => {
-        set({ proxyURL: url })
-      },
-
       // 初始化 AI 客户端
       initializeClient: (provider) => {
-        const { currentAPIKeyId, proxyURL } = get()
+        const { currentAPIKeyId } = get()
         if (!currentAPIKeyId) {
           throw new Error('No API key selected')
         }
@@ -133,8 +209,45 @@ export const useAIStore = create<AIState>()(
           throw new Error('API key not found')
         }
 
-        const client = new AIClient(provider, apiKey, proxyURL)
+        const channel = get().apiKeys.find((item) => item.id === currentAPIKeyId)
+        const selectedModels = channel?.modelIds?.length
+          ? channel.modelIds.map((modelId) => provider.models.find((model) => model.id === modelId) || {
+              id: modelId,
+              name: modelId,
+              maxTokens: 4096,
+              supportsStreaming: true,
+            })
+          : []
+        const client = new AIClient({
+          ...provider,
+          protocol: channel?.protocol || provider.protocol,
+          baseURL: channel?.baseURL || provider.baseURL,
+          models: selectedModels,
+        }, apiKey)
         set({ client })
+      },
+
+      createClientForChannel: (channelId) => {
+        const channel = get().apiKeys.find((item) => item.id === channelId)
+        if (!channel || !channel.modelIds?.length) return null
+        const apiKey = get().getAPIKey(channelId)
+        if (!apiKey) return null
+        const provider = getProvider(channel.providerId)
+        if (!provider) return null
+        const selectedModels = channel.modelIds.map((modelId) =>
+          provider.models.find((model) => model.id === modelId) || {
+            id: modelId,
+            name: modelId,
+            maxTokens: 4096,
+            supportsStreaming: true,
+          }
+        )
+        return new AIClient({
+          ...provider,
+          protocol: channel.protocol || provider.protocol,
+          baseURL: channel.baseURL || provider.baseURL,
+          models: selectedModels,
+        }, apiKey)
       },
 
       // 测试连接
@@ -155,7 +268,8 @@ export const useAIStore = create<AIState>()(
         currentProviderId: state.currentProviderId,
         currentModelId: state.currentModelId,
         currentAPIKeyId: state.currentAPIKeyId,
-        proxyURL: state.proxyURL,
+        defaultsInitialized: state.defaultsInitialized,
+        defaultsVersion: state.defaultsVersion,
       }),
     }
   )

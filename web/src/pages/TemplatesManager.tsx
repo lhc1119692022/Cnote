@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { FileText, Search } from 'lucide-react'
+import { FileText, Search, Trash2 } from 'lucide-react'
 import { AppShell } from '@/components/layout/AppShell'
 import { Button } from '@/components/ui/button'
 import { useFlowStore } from '@/stores/use-flow-store'
@@ -35,8 +35,14 @@ export function TemplatesManager() {
   }
 
   const handleDeleteTemplate = (event: React.MouseEvent, id: string) => {
+    event.preventDefault()
     event.stopPropagation()
     if (confirm('确定要删除这个模板吗？')) deleteTemplate(id)
+  }
+
+  const formatDate = (timestamp: number) => {
+    const date = new Date(timestamp)
+    return `${date.getMonth() + 1}月${date.getDate()}日`
   }
 
   return (
@@ -68,22 +74,37 @@ export function TemplatesManager() {
               <p className="mt-2 text-[13px] text-muted-foreground">在 Flow 编辑器中可将当前画布保存为模板</p>
             </div>
           ) : (
-            <div className="grid grid-cols-[repeat(auto-fill,minmax(260px,1fr))] gap-4">
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-[repeat(auto-fill,minmax(200px,220px))]">
               {filteredTemplates.map((template) => (
-                <article key={template.id} className="group overflow-hidden rounded-xl border border-border bg-card transition-colors hover:border-primary">
+                <article key={template.id} className="group relative overflow-hidden rounded-xl border border-border bg-card transition-all hover:border-primary hover:shadow-sm">
                   <button type="button" onClick={() => handleUseTemplate(template.id)} className="block w-full text-left">
-                    <div className="flex h-36 items-center justify-center border-b border-border bg-background">
-                      <FileText className="h-10 w-10 text-muted-foreground/40" />
+                    <div className="relative flex aspect-square w-full items-center justify-center overflow-hidden border-b border-border bg-background">
+                      {template.thumbnail ? (
+                        <img src={template.thumbnail} alt={template.title} className="h-full w-full bg-background object-contain" />
+                      ) : (
+                        <FileText className="h-12 w-12 text-muted-foreground/40" strokeWidth={1} />
+                      )}
                     </div>
-                    <div className="p-4">
-                      <h3 className="truncate text-sm font-medium">{template.title}</h3>
-                      <p className="mt-2 line-clamp-2 text-xs leading-relaxed text-muted-foreground">{template.description}</p>
-                      <p className="mt-3 text-xs text-muted-foreground">{template.nodes.length} 个节点 · 使用 {template.usageCount} 次</p>
+
+                    <div className="h-[88px] p-3">
+                      <h3 className="mb-1 truncate text-[14px] font-medium text-foreground">{template.title}</h3>
+                      <p className="min-h-[18px] line-clamp-1 text-[12px] leading-[18px] text-muted-foreground">
+                        {template.description || '\u00a0'}
+                      </p>
+                      <div className="mt-2 flex items-center justify-between text-[12px] text-muted-foreground">
+                        <span>{formatDate(template.createdAt)}</span>
+                        <span>含 {template.nodes.length} 个节点</span>
+                      </div>
                     </div>
                   </button>
-                  <div className="flex justify-end px-4 pb-4">
-                    <button type="button" onClick={(event) => handleDeleteTemplate(event, template.id)} className="text-xs text-muted-foreground opacity-0 transition-opacity hover:text-destructive group-hover:opacity-100">删除</button>
-                  </div>
+                  <button
+                    type="button"
+                    onClick={(event) => handleDeleteTemplate(event, template.id)}
+                    className="absolute right-2 top-2 flex h-7 w-7 items-center justify-center rounded-md border border-border bg-card/95 text-muted-foreground opacity-0 shadow-sm backdrop-blur transition-all hover:text-destructive group-hover:opacity-100 group-focus-within:opacity-100"
+                    aria-label={`删除 ${template.title}`}
+                  >
+                    <Trash2 className="h-3.5 w-3.5" strokeWidth={2} />
+                  </button>
                 </article>
               ))}
             </div>

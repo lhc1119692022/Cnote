@@ -107,6 +107,7 @@ export const EditorNode = memo(({ data, selected }: NodeProps<EditorNodeData>) =
         position={Position.Right}
         className="w-3 h-3 !bg-primary border-2 border-white"
       />
+
     </div>
   )
 })

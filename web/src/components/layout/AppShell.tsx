@@ -1,10 +1,10 @@
-import type { ReactNode } from 'react'
+import { useState, type ReactNode } from 'react'
 import { NavLink } from 'react-router-dom'
 import {
-  Archive,
   FileStack,
   FolderKanban,
   Github,
+  Languages,
   LayoutDashboard,
   Moon,
   Settings,
@@ -17,7 +17,7 @@ const navigation = [
   { to: '/dashboard', label: '控制台', icon: LayoutDashboard },
   { to: '/sources', label: '内容', icon: FileStack },
   { to: '/templates', label: '模板', icon: FolderKanban },
-  { to: '/outputs', label: '抽屉', icon: Archive },
+  { to: '/settings/api-keys', label: 'API 密钥', icon: Settings },
 ]
 
 interface AppShellProps {
@@ -26,6 +26,7 @@ interface AppShellProps {
 
 export function AppShell({ children }: AppShellProps) {
   const { theme, toggleTheme } = useTheme()
+  const [languageLabel, setLanguageLabel] = useState<'简体中文' | 'English'>('简体中文')
 
   return (
     <div className="flex h-screen min-w-0 bg-background p-2.5 gap-2.5">
@@ -66,20 +67,14 @@ export function AppShell({ children }: AppShellProps) {
           </nav>
 
           <div className="space-y-1 border-t border-border p-2">
-            <NavLink
-              to="/settings/api-keys"
-              className={({ isActive }) =>
-                cn(
-                  'flex h-9 items-center gap-2.5 rounded-lg px-3 text-[13px] transition-colors',
-                  isActive
-                    ? 'bg-muted font-medium text-foreground'
-                    : 'text-muted-foreground hover:bg-muted/70 hover:text-foreground'
-                )
-              }
+            <button
+              type="button"
+              onClick={() => setLanguageLabel((current) => current === '简体中文' ? 'English' : '简体中文')}
+              className="flex h-9 w-full items-center gap-2.5 rounded-lg px-3 text-[13px] text-muted-foreground transition-colors hover:bg-muted/70 hover:text-foreground"
             >
-              <Settings className="h-4 w-4" strokeWidth={2} />
-              <span>API 密钥</span>
-            </NavLink>
+              <Languages className="h-4 w-4" strokeWidth={2} />
+              <span>{languageLabel}</span>
+            </button>
             <button
               type="button"
               onClick={toggleTheme}

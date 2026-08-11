@@ -5,6 +5,52 @@ import { applyNodeChanges, applyEdgeChanges } from 'reactflow'
 import type { Node, Edge, OnNodesChange, OnEdgesChange } from 'reactflow'
 import type { Flow, Folder } from '@/types/flow'
 import { FlowExecutor, type ExecutionContext } from '@/lib/flow'
+import { useAIStore } from '@/stores/use-ai-store'
+
+const nodeLabelDefaults: Record<string, string> = {
+  ai: 'AI 节点',
+  browser: '浏览器节点',
+  sticky: '贴纸',
+  content: '内容类型选择',
+  text: '文本节点',
+  youtube: 'YouTube 节点',
+  pdf: 'PDF 节点',
+  image: '图片节点',
+  video: '视频节点',
+  table: '表格节点',
+}
+
+function getNodeLabel(node: Pick<Node, 'type' | 'data'>) {
+  const mode = node.type === 'content' ? node.data?.mode : node.type
+  return String(node.data?.label || nodeLabelDefaults[mode || ''] || '节点').trim() || '节点'
+}
+
+function getUniqueNodeLabel(requestedLabel: string, usedLabels: Set<string>) {
+  const requested = requestedLabel.trim() || '节点'
+  if (!usedLabels.has(requested)) {
+    usedLabels.add(requested)
+    return requested
+  }
+
+  const suffixMatch = requested.match(/^(.*?)(?:\s*\((\d+)\))$/)
+  const base = suffixMatch?.[1]?.trim() || requested
+  let index = 2
+  let candidate = `${base} (${index})`
+  while (usedLabels.has(candidate)) {
+    index += 1
+    candidate = `${base} (${index})`
+  }
+  usedLabels.add(candidate)
+  return candidate
+}
+
+function ensureUniqueNodeLabels(nodes: Node[]) {
+  const usedLabels = new Set<string>()
+  return nodes.map((node) => {
+    const label = getUniqueNodeLabel(getNodeLabel(node), usedLabels)
+    return label === node.data?.label ? node : { ...node, data: { ...node.data, label } }
+  })
+}
 
 interface FlowState {
   // 当前 Flow
@@ -110,7 +156,7 @@ export const useFlowStore = create<FlowState>()(
       // 创建新 Flow
       createFlow: (name, description, folderId, initialGraph) => {
         const nodeIdMap = new Map<string, string>()
-        const initialNodes = (initialGraph?.nodes || []).map((node) => {
+        const initialNodes = ensureUniqueNodeLabels((initialGraph?.nodes || []).map((node) => {
           const id = nanoid()
           nodeIdMap.set(node.id, id)
           return {
@@ -119,7 +165,7 @@ export const useFlowStore = create<FlowState>()(
             data: { ...node.data },
             selected: false,
           }
-        })
+        }))
         const initialEdges = (initialGraph?.edges || []).map((edge) => ({
           ...edge,
           id: nanoid(),
@@ -185,15 +231,18 @@ export const useFlowStore = create<FlowState>()(
       loadFlow: (id) => {
         const flow = get().flows.find((f) => f.id === id)
         if (!flow) return
+        const nodes = ensureUniqueNodeLabels(flow.nodes || [])
+        const normalizedFlow = { ...flow, nodes }
 
-        set({
-          currentFlow: flow,
+        set((state) => ({
+          flows: state.flows.map((item) => item.id === id ? normalizedFlow : item),
+          currentFlow: normalizedFlow,
           currentFlowId: id,
-          nodes: flow.nodes || [],
+          nodes,
           edges: flow.edges || [],
           history: [],
           historyIndex: -1,
-        })
+        }))
       },
 
       // 保存当前 Flow
@@ -258,12 +307,14 @@ export const useFlowStore = create<FlowState>()(
 
       // 添加节点
       addNode: (node) => {
-        const newNode: Node = {
-          ...node,
-          id: nanoid(),
-        }
-
         set((state) => {
+          const usedLabels = new Set(state.nodes.map(getNodeLabel))
+          const label = getUniqueNodeLabel(getNodeLabel(node), usedLabels)
+          const newNode: Node = {
+            ...node,
+            id: nanoid(),
+            data: { ...node.data, label },
+          }
           const newNodes = [...state.nodes, newNode]
           return { nodes: newNodes }
         })
@@ -285,9 +336,18 @@ export const useFlowStore = create<FlowState>()(
 
       // 更新节点
       updateNode: (id, updates) => {
-        set((state) => ({
-          nodes: state.nodes.map((n) => (n.id === id ? { ...n, ...updates } : n)),
-        }))
+        set((state) => {
+          const current = state.nodes.find((node) => node.id === id)
+          if (!current) return state
+          const merged = {
+            ...current,
+            ...updates,
+            data: updates.data ? { ...current.data, ...updates.data } : current.data,
+          }
+          const usedLabels = new Set(state.nodes.filter((node) => node.id !== id).map(getNodeLabel))
+          const label = getUniqueNodeLabel(getNodeLabel(merged), usedLabels)
+          return { nodes: state.nodes.map((node) => node.id === id ? { ...merged, data: { ...merged.data, label } } : node) }
+        })
 
         get().saveCurrentFlow()
       },
@@ -297,18 +357,21 @@ export const useFlowStore = create<FlowState>()(
         const node = get().nodes.find((n) => n.id === id)
         if (!node) return
 
-        const newNode: Node = {
-          ...node,
-          id: nanoid(),
-          position: {
-            x: node.position.x + 50,
-            y: node.position.y + 50,
-          },
-        }
-
-        set((state) => ({
-          nodes: [...state.nodes, newNode],
-        }))
+        set((state) => {
+          const usedLabels = new Set(state.nodes.map(getNodeLabel))
+          const label = getUniqueNodeLabel(getNodeLabel(node), usedLabels)
+          const newNode: Node = {
+            ...node,
+            id: nanoid(),
+            selected: false,
+            data: { ...node.data, label, sourceId: undefined },
+            position: {
+              x: node.position.x + 50,
+              y: node.position.y + 50,
+            },
+          }
+          return { nodes: [...state.nodes, newNode] }
+        })
 
         get().addToHistory()
         get().saveCurrentFlow()
@@ -464,7 +527,7 @@ export const useFlowStore = create<FlowState>()(
             name: data.name || '导入的 Flow',
             title: data.title || data.name || '导入的 Flow',
             description: data.description || '',
-            nodes: data.nodes || [],
+            nodes: ensureUniqueNodeLabels(data.nodes || []),
             edges: data.edges || [],
             createdAt: Date.now(),
             updatedAt: Date.now(),
@@ -504,7 +567,10 @@ export const useFlowStore = create<FlowState>()(
             nodes.map((n) => ({ ...n, data: n.data || {} })),
             edges.map((e) => ({ ...e, type: e.type || 'smoothstep' })),
             aiClient,
-            scraperClient
+            scraperClient,
+            (channelId) => channelId
+              ? useAIStore.getState().createClientForChannel(channelId) || undefined
+              : undefined
           )
 
           const result = await executor.execute()

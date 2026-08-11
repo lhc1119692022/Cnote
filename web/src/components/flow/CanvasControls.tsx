@@ -4,9 +4,10 @@ import {
   Redo,
   ZoomIn,
   ZoomOut,
-  Maximize2,
-  Lock,
-  Unlock,
+  Map,
+  LayoutGrid,
+  CircleHelp,
+  LocateFixed,
   Moon,
   Sun,
 } from 'lucide-react'
@@ -14,11 +15,19 @@ import { useFlowStore } from '@/stores/use-flow-store'
 import { Button } from '@/components/ui/button'
 import { useTheme } from '@/hooks/use-theme'
 
-export function CanvasControls() {
+interface CanvasControlsProps {
+  minimapVisible: boolean
+  onToggleMinimap: () => void
+  onArrange: () => void
+  onGuide: () => void
+  leftOffset?: number
+}
+
+export function CanvasControls({ minimapVisible, onToggleMinimap, onArrange, onGuide, leftOffset = 24 }: CanvasControlsProps) {
   const reactFlowInstance = useReactFlow()
   const { theme, toggleTheme } = useTheme()
 
-  const { undo, redo, canUndo, canRedo, isLocked, toggleLock } = useFlowStore()
+  const { undo, redo, canUndo, canRedo } = useFlowStore()
 
   // 撤销
   const handleUndo = () => {
@@ -49,19 +58,14 @@ export function CanvasControls() {
     reactFlowInstance.fitView({ padding: 0.2, duration: 300 })
   }
 
-  // 切换锁定
-  const handleToggleLock = () => {
-    toggleLock()
-  }
-
   return (
-    <div className="absolute bottom-6 left-6 z-50 flex flex-col gap-2">
+    <div className="pointer-events-none absolute bottom-6 z-50 transition-[left]" style={{ left: leftOffset }}>
       {/* 编辑控制 */}
-      <div className="flex gap-2 p-2 bg-card rounded-lg border border-border shadow-sm">
+      <div className="pointer-events-auto flex w-12 flex-col items-center gap-1 rounded-2xl border border-border bg-card p-1.5 shadow-lg">
         <Button
           variant="ghost"
           size="icon"
-          className="w-8 h-8"
+          className="h-9 w-9 rounded-lg"
           onClick={handleUndo}
           disabled={!canUndo()}
           title="撤销 (⌘Z)"
@@ -72,21 +76,19 @@ export function CanvasControls() {
         <Button
           variant="ghost"
           size="icon"
-          className="w-8 h-8"
+          className="h-9 w-9 rounded-lg"
           onClick={handleRedo}
           disabled={!canRedo()}
           title="重做 (⌘⇧Z)"
         >
           <Redo className="w-4 h-4" />
         </Button>
-      </div>
-
+        <div className="my-1 h-px w-7 bg-border" />
       {/* 视图控制 */}
-      <div className="flex gap-2 p-2 bg-card rounded-lg border border-border shadow-sm">
         <Button
           variant="ghost"
           size="icon"
-          className="w-8 h-8"
+          className="h-9 w-9 rounded-lg"
           onClick={handleZoomIn}
           title="放大 (+/⌘+)"
         >
@@ -96,7 +98,7 @@ export function CanvasControls() {
         <Button
           variant="ghost"
           size="icon"
-          className="w-8 h-8"
+          className="h-9 w-9 rounded-lg"
           onClick={handleZoomOut}
           title="缩小 (-/⌘-)"
         >
@@ -106,44 +108,20 @@ export function CanvasControls() {
         <Button
           variant="ghost"
           size="icon"
-          className="w-8 h-8 bg-primary text-primary-foreground hover:brightness-90 hover:text-primary-foreground"
+          className="h-9 w-9 rounded-lg"
           onClick={handleFitView}
-          title="适应视图 (F/⌘0)"
+          title="聚焦节点 / 适应视图"
         >
-          <Maximize2 className="w-4 h-4" />
+          <LocateFixed className="w-4 h-4" />
         </Button>
-      </div>
-
-      {/* 其他控制 */}
-      <div className="flex gap-2 p-2 bg-card rounded-lg border border-border shadow-sm">
-        <Button
-          variant="ghost"
-          size="icon"
-          className="w-8 h-8"
-          onClick={handleToggleLock}
-          title={isLocked ? '解锁画布' : '锁定画布'}
-        >
-          {isLocked ? (
-            <Lock className="w-4 h-4" />
-          ) : (
-            <Unlock className="w-4 h-4" />
-          )}
-        </Button>
-
-        <Button
-          variant="ghost"
-          size="icon"
-          className="w-8 h-8"
-          onClick={toggleTheme}
-          title="切换深色模式"
-        >
-          {theme === 'dark' ? (
-            <Sun className="w-4 h-4" />
-          ) : (
-            <Moon className="w-4 h-4" />
-          )}
-        </Button>
-      </div>
+        <div className="my-1 h-px w-7 bg-border" />
+      <div className="contents">
+        <Button variant="ghost" size="icon" className="h-9 w-9 rounded-lg" onClick={onToggleMinimap} title={minimapVisible ? '隐藏小地图' : '显示小地图'}><Map className="h-4 w-4" /></Button>
+        <Button variant="ghost" size="icon" className="h-9 w-9 rounded-lg" onClick={onArrange} title="整理节点"><LayoutGrid className="h-4 w-4" /></Button>
+        <Button variant="ghost" size="icon" className="h-9 w-9 rounded-lg" onClick={onGuide} title="操作指南"><CircleHelp className="h-4 w-4" /></Button>
+        <div className="my-1 h-px w-7 bg-border" />
+        <Button variant="ghost" size="icon" className="h-9 w-9 rounded-lg" onClick={toggleTheme} title="切换主题">{theme === 'dark' ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}</Button>
+      </div></div>
     </div>
   )
 }

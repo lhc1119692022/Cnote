@@ -1,19 +1,43 @@
-import { memo, useState } from 'react'
-import { Handle, Position, NodeProps } from 'reactflow'
+import { memo, useEffect, useState } from 'react'
+import { Position, NodeProps } from 'reactflow'
 import { FileText, Download, Upload, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { useFlowStore } from '@/stores/use-flow-store'
+import { NodeHandle, NodeHoverToolbar, NodeResizeArc, NodeResourceLostNotice } from './NodeChrome'
 
 interface PDFNodeData {
   label: string
   fileName?: string
   pageCount?: number
   extractedText?: string
+  content?: string
+  resourceLost?: boolean
+  disabled?: boolean
+  enabled?: boolean
 }
 
-export const PDFNode = memo(({ data, selected }: NodeProps<PDFNodeData>) => {
+export const PDFNode = memo(({ id, data, selected }: NodeProps<PDFNodeData>) => {
+  const updateNode = useFlowStore((state) => state.updateNode)
   const [fileName, setFileName] = useState(data.fileName || '')
   const [pageCount, setPageCount] = useState(data.pageCount || 0)
   const [status, setStatus] = useState<'idle' | 'processing' | 'success'>('idle')
+  const resourceLost = Boolean(data.resourceLost)
+  const disabled = Boolean(data.disabled && !resourceLost)
+
+  useEffect(() => setFileName(data.fileName || ''), [data.fileName])
+  useEffect(() => setPageCount(data.pageCount || 0), [data.pageCount])
+  useEffect(() => {
+    if (!data.content?.startsWith('blob:')) return
+    let active = true
+    fetch(data.content)
+      .then((response) => { if (!response.ok) throw new Error('PDF resource unavailable') })
+      .catch(() => {
+        if (!active || data.resourceLost) return
+        const current = useFlowStore.getState().nodes.find((node) => node.id === id)
+        if (current) updateNode(id, { data: { ...current.data, resourceLost: true } })
+      })
+    return () => { active = false }
+  }, [data.content, data.resourceLost, id, updateNode])
 
   const handleFileSelect = () => {
     // TODO: 实现文件选择逻辑
@@ -22,33 +46,29 @@ export const PDFNode = memo(({ data, selected }: NodeProps<PDFNodeData>) => {
 
   return (
     <div
-      className={`bg-card rounded-xl shadow-lg border-2 min-w-[320px] max-w-[400px] ${
+      className={`node-card node-panel-shadow group relative flex h-full min-h-[300px] w-full min-w-[320px] flex-col rounded-xl border bg-card ${
         selected ? 'border-primary' : 'border-border'
-      }`}
+      } ${disabled ? 'opacity-50 grayscale' : ''}`}
     >
       {/* 输入连接点 */}
-      <Handle
-        type="target"
-        position={Position.Left}
-        className="w-3 h-3 !bg-primary border-2 border-white"
-      />
+      <NodeHandle type="target" position={Position.Left} id="in" />
+      <NodeHandle type="source" position={Position.Right} id="out" />
+      <NodeHoverToolbar nodeId={id} />
+      <NodeResizeArc nodeId={id} minWidth={320} minHeight={300} />
+      {resourceLost && <NodeResourceLostNotice />}
 
       {/* 头部 */}
-      <div className="flex items-center justify-between px-4 py-3 border-b border-border">
+      <div className="flex items-center px-4 py-3 border-b border-border">
         <div className="flex items-center gap-2">
           <div className="w-8 h-8 rounded-lg bg-red-100 flex items-center justify-center">
             <FileText className="w-4 h-4 text-red-600" />
           </div>
           <span className="font-medium text-foreground">{data.label}</span>
         </div>
-
-        <Button variant="ghost" size="icon" className="w-6 h-6">
-          <X className="w-4 h-4" />
-        </Button>
       </div>
 
       {/* 文件上传区域 */}
-      <div className="p-4">
+      <div className="flex-1 p-4">
         {!fileName ? (
           <div
             onClick={handleFileSelect}
@@ -129,12 +149,6 @@ export const PDFNode = memo(({ data, selected }: NodeProps<PDFNodeData>) => {
         </Button>
       </div>
 
-      {/* 输出连接点 */}
-      <Handle
-        type="source"
-        position={Position.Right}
-        className="w-3 h-3 !bg-primary border-2 border-white"
-      />
     </div>
   )
 })
