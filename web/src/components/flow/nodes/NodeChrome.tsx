@@ -1,9 +1,11 @@
 import { useRef, useState, type ChangeEvent } from 'react'
 import { Handle, Position } from 'reactflow'
-import { FileText, Globe, Image as ImageIcon, Layers3, Copy, Bookmark, RefreshCw, Sparkles, StickyNote, Table2, Type, Video, Youtube, Plus, X } from 'lucide-react'
+import { FileText, Globe, Layers3, Copy, Bookmark, RefreshCw, Sparkles, StickyNote, Plus, X } from 'lucide-react'
 import { useFlowStore } from '@/stores/use-flow-store'
 import { useSourceStore } from '@/stores/use-source-store'
 import type { ContentMode } from '@/types/flow'
+import { cloneLocalResource, storeLocalResource } from '@/lib/resource-storage'
+import { getContentCategoryVisual } from '@/lib/content-visuals'
 
 interface NodeHandleProps {
   type: 'target' | 'source'
@@ -35,12 +37,6 @@ const nodeChromeByType: Record<string, { icon: typeof FileText; iconClass: strin
   browser: { icon: Globe, iconClass: 'text-blue-600 bg-blue-100' },
   sticky: { icon: StickyNote, iconClass: 'text-amber-600 bg-amber-100' },
   content: { icon: Layers3, iconClass: 'text-slate-600 bg-slate-100' },
-  text: { icon: Type, iconClass: 'text-slate-600 bg-slate-100' },
-  youtube: { icon: Youtube, iconClass: 'text-rose-600 bg-rose-100' },
-  pdf: { icon: FileText, iconClass: 'text-red-600 bg-red-100' },
-  image: { icon: ImageIcon, iconClass: 'text-violet-600 bg-violet-100' },
-  video: { icon: Video, iconClass: 'text-emerald-600 bg-emerald-100' },
-  table: { icon: Table2, iconClass: 'text-cyan-600 bg-cyan-100' },
 }
 
 const nodeChromeLabels: Record<string, string> = {
@@ -72,13 +68,26 @@ export function NodeResourceLostNotice() {
   return <div className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center px-8 text-center text-sm font-semibold text-red-600">资源丢失，刷新节点连接资源</div>
 }
 
-function getFavoriteData(node: any): { type: ContentMode; content: string; metadata: Record<string, any> } {
+function getFavoriteData(node: any, snapshotResourceId?: string): { type: ContentMode; content: string; metadata: Record<string, any> } {
   const mode = getNodeMode(node)
   if (contentModes.has(mode as ContentMode)) {
+    const hasLocalResource = Boolean(node?.data?.resourceId)
+    const nodeData = {
+      ...node?.data,
+      sourceId: undefined,
+      resourceId: hasLocalResource ? snapshotResourceId : node?.data?.resourceId,
+      content: hasLocalResource ? '' : node?.data?.content,
+    }
     return {
       type: mode as ContentMode,
-      content: String(node?.data?.content || ''),
-      metadata: { nodeType: node?.type, nodeId: node?.id, nodeData: { ...node?.data, sourceId: undefined } },
+      content: hasLocalResource ? '' : String(node?.data?.content || ''),
+      metadata: {
+        snapshotVersion: 1,
+        originNodeId: node?.id,
+        resourceOwnership: hasLocalResource ? 'snapshot' : undefined,
+        nodeType: node?.type,
+        nodeData,
+      },
     }
   }
 
@@ -87,7 +96,16 @@ function getFavoriteData(node: any): { type: ContentMode; content: string; metad
     : mode === 'sticky'
       ? node?.data?.content || node?.data?.text || ''
       : node?.data?.output || node?.data?.prompt || node?.data?.content || ''
-  return { type: 'text', content: String(content), metadata: { nodeType: node?.type, nodeId: node?.id, nodeData: { ...node?.data, sourceId: undefined } } }
+  return {
+    type: 'text',
+    content: String(content),
+    metadata: {
+      snapshotVersion: 1,
+      originNodeId: node?.id,
+      nodeType: node?.type,
+      nodeData: { ...node?.data, sourceId: undefined },
+    },
+  }
 }
 
 /** Shared node hover actions: duplicate, save to the content library, and delete. */
@@ -96,7 +114,6 @@ export function NodeHoverToolbar({ nodeId }: { nodeId: string }) {
   const updateNode = useFlowStore((state) => state.updateNode)
   const duplicateNode = useFlowStore((state) => state.duplicateNode)
   const deleteNode = useFlowStore((state) => state.deleteNode)
-  const sources = useSourceStore((state) => state.sources)
   const createSource = useSourceStore((state) => state.createSource)
   const deleteSource = useSourceStore((state) => state.deleteSource)
   const [isSaving, setIsSaving] = useState(false)
@@ -104,14 +121,18 @@ export function NodeHoverToolbar({ nodeId }: { nodeId: string }) {
   const [nameDraft, setNameDraft] = useState('')
   const refreshInputRef = useRef<HTMLInputElement>(null)
 
+  const sourceId = node?.data?.sourceId as string | undefined
+  const isSaved = useSourceStore((state) => Boolean(sourceId && state.sources.some((source) => source.id === sourceId)))
+
   if (!node) return null
 
   const mode = getNodeMode(node)
-  const chrome = nodeChromeByType[mode] || nodeChromeByType.content
+  const categoryVisual = getContentCategoryVisual(mode, node.data?.contentCategory)
+  const chrome = categoryVisual
+    ? { icon: categoryVisual.icon, iconClass: `${categoryVisual.iconClass} ${categoryVisual.iconSurfaceClass}` }
+    : nodeChromeByType[mode] || nodeChromeByType.content
   const Icon = chrome.icon
   const label = node.data?.label || nodeChromeLabels[mode] || '节点'
-  const sourceId = node.data?.sourceId as string | undefined
-  const isSaved = Boolean(sourceId && sources.some((source) => source.id === sourceId))
   const resourceLost = Boolean(node.data?.resourceLost)
 
   const commitName = () => {
@@ -121,32 +142,40 @@ export function NodeHoverToolbar({ nodeId }: { nodeId: string }) {
     setIsEditingName(false)
   }
 
-  const toggleFavorite = () => {
+  const toggleFavorite = async () => {
     if (isSaving) return
     setIsSaving(true)
-    if (isSaved && sourceId) {
-      deleteSource(sourceId)
-      updateNode(nodeId, { data: { ...node.data, sourceId: undefined } })
-      setIsSaving(false)
-      return
-    }
+    try {
+      if (isSaved && sourceId) {
+        deleteSource(sourceId)
+        updateNode(nodeId, { data: { ...node.data, sourceId: undefined } })
+        return
+      }
 
-    const favorite = getFavoriteData(node)
-    const source = createSource(label, favorite.content, favorite.type, favorite.metadata)
-    updateNode(nodeId, { data: { ...node.data, sourceId: source.id } })
-    setIsSaving(false)
+      const snapshotResourceId = node.data?.resourceId
+        ? await cloneLocalResource(node.data.resourceId)
+        : undefined
+      if (node.data?.resourceId && !snapshotResourceId) return
+      const favorite = getFavoriteData(node, snapshotResourceId)
+      const source = createSource(label, favorite.content, favorite.type, favorite.metadata)
+      updateNode(nodeId, { data: { ...node.data, sourceId: source.id } })
+    } finally {
+      setIsSaving(false)
+    }
   }
 
-  const repairResource = (content: string, fileName?: string) => {
+  const repairResource = (content: string, fileName?: string, resourceId?: string) => {
     const current = useFlowStore.getState().nodes.find((item) => item.id === nodeId)
     if (!current) return
-    updateNode(nodeId, { data: { ...current.data, content, fileName: fileName || current.data?.fileName, resourceLost: false, disabled: false, enabled: true } })
+    updateNode(nodeId, { data: { ...current.data, content, resourceId: resourceId || current.data?.resourceId, fileName: fileName || current.data?.fileName, resourceLost: false, disabled: false, enabled: true } })
   }
 
   const refreshResource = () => {
-    const source = sourceId ? sources.find((item) => item.id === sourceId) : undefined
-    if (source?.content && !source.content.startsWith('blob:')) {
-      repairResource(source.content, source.metadata?.nodeData?.fileName)
+    const source = sourceId
+      ? useSourceStore.getState().sources.find((item) => item.id === sourceId)
+      : undefined
+    if (source && (source.content || source.metadata?.nodeData?.resourceId)) {
+      repairResource(source.content, source.metadata?.nodeData?.fileName, source.metadata?.nodeData?.resourceId)
       return
     }
     const input = refreshInputRef.current
@@ -156,7 +185,7 @@ export function NodeHoverToolbar({ nodeId }: { nodeId: string }) {
     input.click()
   }
 
-  const handleResourceSelected = (event: ChangeEvent<HTMLInputElement>) => {
+  const handleResourceSelected = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0]
     event.target.value = ''
     if (!file) return
@@ -166,7 +195,8 @@ export function NodeHoverToolbar({ nodeId }: { nodeId: string }) {
       reader.readAsText(file)
       return
     }
-    repairResource(URL.createObjectURL(file), file.name)
+    const resource = await storeLocalResource(file)
+    repairResource(resource.url, file.name, resource.resourceId)
   }
 
   return (

@@ -27,18 +27,21 @@ export function CanvasControls({ minimapVisible, onToggleMinimap, onArrange, onG
   const reactFlowInstance = useReactFlow()
   const { theme, toggleTheme } = useTheme()
 
-  const { undo, redo, canUndo, canRedo } = useFlowStore()
+  const undo = useFlowStore((state) => state.undo)
+  const redo = useFlowStore((state) => state.redo)
+  const canUndo = useFlowStore((state) => state.historyIndex > 0)
+  const canRedo = useFlowStore((state) => state.historyIndex < state.history.length - 1)
 
   // 撤销
   const handleUndo = () => {
-    if (canUndo()) {
+    if (canUndo) {
       undo()
     }
   }
 
   // 重做
   const handleRedo = () => {
-    if (canRedo()) {
+    if (canRedo) {
       redo()
     }
   }
@@ -67,7 +70,7 @@ export function CanvasControls({ minimapVisible, onToggleMinimap, onArrange, onG
           size="icon"
           className="h-9 w-9 rounded-lg"
           onClick={handleUndo}
-          disabled={!canUndo()}
+          disabled={!canUndo}
           title="撤销 (⌘Z)"
         >
           <Undo className="w-4 h-4" />
@@ -78,7 +81,7 @@ export function CanvasControls({ minimapVisible, onToggleMinimap, onArrange, onG
           size="icon"
           className="h-9 w-9 rounded-lg"
           onClick={handleRedo}
-          disabled={!canRedo()}
+          disabled={!canRedo}
           title="重做 (⌘⇧Z)"
         >
           <Redo className="w-4 h-4" />

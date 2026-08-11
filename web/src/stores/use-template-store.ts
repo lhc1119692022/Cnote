@@ -134,9 +134,9 @@ export const useTemplateStore = create<TemplateState>()(
             [
               {
                 id: 'content-1',
-                type: 'content',
+                type: 'text',
                 position: { x: 100, y: 100 },
-                data: { label: '文本输入', mode: 'text' },
+                data: { label: '文本输入', mode: 'text', content: '' },
               },
               {
                 id: 'ai-1',
@@ -145,15 +145,15 @@ export const useTemplateStore = create<TemplateState>()(
                 data: { label: 'AI 处理' },
               },
               {
-                id: 'output-1',
-                type: 'output',
+                id: 'text-output-1',
+                type: 'text',
                 position: { x: 700, y: 100 },
-                data: { label: '输出结果' },
+                data: { label: '输出结果', mode: 'text', content: '' },
               },
             ],
             [
               { id: 'e1', source: 'content-1', target: 'ai-1', type: 'smoothstep' },
-              { id: 'e2', source: 'ai-1', target: 'output-1', type: 'smoothstep' },
+              { id: 'e2', source: 'ai-1', target: 'text-output-1', type: 'smoothstep' },
             ],
             '基础'
           )
@@ -165,9 +165,9 @@ export const useTemplateStore = create<TemplateState>()(
             [
               {
                 id: 'content-1',
-                type: 'content',
+                type: 'youtube',
                 position: { x: 100, y: 100 },
-                data: { label: 'YouTube 链接', mode: 'youtube' },
+                data: { label: 'YouTube 链接', mode: 'youtube', content: '' },
               },
               {
                 id: 'ai-1',
@@ -176,15 +176,15 @@ export const useTemplateStore = create<TemplateState>()(
                 data: { label: 'AI 总结' },
               },
               {
-                id: 'output-1',
-                type: 'output',
+                id: 'text-output-1',
+                type: 'text',
                 position: { x: 700, y: 100 },
-                data: { label: '输出摘要' },
+                data: { label: '输出摘要', mode: 'text', content: '' },
               },
             ],
             [
               { id: 'e1', source: 'content-1', target: 'ai-1', type: 'smoothstep' },
-              { id: 'e2', source: 'ai-1', target: 'output-1', type: 'smoothstep' },
+              { id: 'e2', source: 'ai-1', target: 'text-output-1', type: 'smoothstep' },
             ],
             '内容处理'
           )
@@ -207,15 +207,15 @@ export const useTemplateStore = create<TemplateState>()(
                 data: { label: 'AI 分析' },
               },
               {
-                id: 'output-1',
-                type: 'output',
+                id: 'text-output-1',
+                type: 'text',
                 position: { x: 700, y: 100 },
-                data: { label: '分析报告' },
+                data: { label: '分析报告', mode: 'text', content: '' },
               },
             ],
             [
               { id: 'e1', source: 'browser-1', target: 'ai-1', type: 'smoothstep' },
-              { id: 'e2', source: 'ai-1', target: 'output-1', type: 'smoothstep' },
+              { id: 'e2', source: 'ai-1', target: 'text-output-1', type: 'smoothstep' },
             ],
             '内容处理'
           )

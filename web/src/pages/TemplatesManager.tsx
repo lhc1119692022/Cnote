@@ -9,7 +9,7 @@ import { useTemplateStore } from '@/stores/use-template-store'
 export function TemplatesManager() {
   const navigate = useNavigate()
   const { templates, deleteTemplate, incrementUsage, getAllCategories, initialize } = useTemplateStore()
-  const { createFlow } = useFlowStore()
+  const createFlow = useFlowStore((state) => state.createFlow)
   const [searchQuery, setSearchQuery] = useState('')
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null)
 

@@ -2,7 +2,13 @@ import { create } from 'zustand'
 import { createJSONStorage, persist } from 'zustand/middleware'
 import { nanoid } from 'nanoid'
 import { localForageStorage } from '@/lib/localforage-storage'
+import { deleteLocalResource } from '@/lib/resource-storage'
 import type { Source, ContentMode } from '@/types/flow'
+
+const snapshotResourceId = (source?: Source) =>
+  source?.metadata?.resourceOwnership === 'snapshot'
+    ? source.metadata?.nodeData?.resourceId as string | undefined
+    : undefined
 
 interface SourceState {
   sources: Source[]
@@ -72,9 +78,16 @@ export const useSourceStore = create<SourceState>()(
 
       // 删除内容源
       deleteSource: (id) => {
-        set((state) => ({
-          sources: state.sources.filter((s) => s.id !== id),
-        }))
+        set((state) => {
+          const removed = state.sources.find((source) => source.id === id)
+          const remaining = state.sources.filter((source) => source.id !== id)
+          const resourceId = snapshotResourceId(removed)
+          if (
+            resourceId &&
+            !remaining.some((source) => snapshotResourceId(source) === resourceId)
+          ) void deleteLocalResource(resourceId)
+          return { sources: remaining }
+        })
       },
 
       // 复制内容源
@@ -114,9 +127,19 @@ export const useSourceStore = create<SourceState>()(
 
       // 批量删除
       deleteSources: (ids) => {
-        set((state) => ({
-          sources: state.sources.filter((s) => !ids.includes(s.id)),
-        }))
+        set((state) => {
+          const idSet = new Set(ids)
+          const removed = state.sources.filter((source) => idSet.has(source.id))
+          const remaining = state.sources.filter((source) => !idSet.has(source.id))
+          const resourceIds = new Set(
+            removed.map(snapshotResourceId).filter(Boolean) as string[],
+          )
+          resourceIds.forEach((resourceId) => {
+            if (!remaining.some((source) => snapshotResourceId(source) === resourceId))
+              void deleteLocalResource(resourceId)
+          })
+          return { sources: remaining }
+        })
       },
 
       // 初始化

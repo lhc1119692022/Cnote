@@ -5,15 +5,19 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { useFlowStore } from '@/stores/use-flow-store'
 import { NodeHandle, NodeHoverToolbar, NodeResizeArc } from './NodeChrome'
+import { contentCategoryVisuals } from '@/lib/content-visuals'
 
 interface BrowserNodeData {
   label: string
   url?: string
   selector?: string
   extractMode?: 'text' | 'html' | 'markdown'
+  contentCategory?: string
 }
 
 export const BrowserNode = memo(({ id, data, selected }: NodeProps<BrowserNodeData>) => {
+  const socialVisual = data.contentCategory === 'social' ? contentCategoryVisuals.social : undefined
+  const HeaderIcon = socialVisual?.icon || Globe
   const [url, setUrl] = useState(data.url || '')
   const [selector, setSelector] = useState(data.selector || '')
   const [extractMode, setExtractMode] = useState<'text' | 'html' | 'markdown'>(
@@ -45,8 +49,8 @@ export const BrowserNode = memo(({ id, data, selected }: NodeProps<BrowserNodeDa
       {/* 头部 */}
       <div className="flex items-center px-4 py-3 border-b border-border">
         <div className="flex items-center gap-2">
-          <div className="w-8 h-8 rounded-lg bg-blue-100 flex items-center justify-center">
-            <Globe className="w-4 h-4 text-blue-600" />
+          <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${socialVisual?.iconSurfaceClass || 'bg-blue-100'}`}>
+            <HeaderIcon className={`w-4 h-4 ${socialVisual?.iconClass || 'text-blue-600'}`} />
           </div>
           <span className="font-medium text-foreground">{data.label}</span>
         </div>

@@ -22,7 +22,6 @@ export default defineConfig({
         manualChunks: {
           'react-vendor': ['react', 'react-dom', 'react-router-dom'],
           'reactflow': ['reactflow'],
-          'editor': ['@tiptap/react', '@tiptap/starter-kit'],
           'ui': ['lucide-react', 'clsx', 'tailwind-merge'],
         },
       },

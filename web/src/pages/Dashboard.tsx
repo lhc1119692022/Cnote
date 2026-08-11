@@ -8,7 +8,15 @@ import { Button } from '@/components/ui/button'
 
 export function Dashboard() {
   const navigate = useNavigate()
-  const { flows, folders, createFlow, createFolder, deleteFolder, moveFlowToFolder, loadFlow, deleteFlow, initialize } = useFlowStore()
+  const flows = useFlowStore((state) => state.flows)
+  const folders = useFlowStore((state) => state.folders)
+  const createFlow = useFlowStore((state) => state.createFlow)
+  const createFolder = useFlowStore((state) => state.createFolder)
+  const deleteFolder = useFlowStore((state) => state.deleteFolder)
+  const moveFlowToFolder = useFlowStore((state) => state.moveFlowToFolder)
+  const loadFlow = useFlowStore((state) => state.loadFlow)
+  const deleteFlow = useFlowStore((state) => state.deleteFlow)
+  const initialize = useFlowStore((state) => state.initialize)
   const { templates, incrementUsage, initialize: initializeTemplates } = useTemplateStore()
   const [showNewFlowDialog, setShowNewFlowDialog] = useState(false)
   const [newFlowName, setNewFlowName] = useState('')

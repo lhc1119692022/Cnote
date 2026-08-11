@@ -5,6 +5,7 @@ import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { useSourceStore } from '@/stores/use-source-store'
 import type { ContentMode } from '@/types/flow'
+import { getContentCategoryVisual } from '@/lib/content-visuals'
 
 const CONTENT_TYPES: { value: ContentMode; label: string }[] = [
   { value: 'text', label: '文本' },
@@ -60,6 +61,9 @@ export function SourcesManager() {
   const getTypeLabel = (type: ContentMode) =>
     CONTENT_TYPES.find((item) => item.value === type)?.label || type
 
+  const getSourceVisual = (source: (typeof sources)[number]) =>
+    getContentCategoryVisual(source.type, source.metadata?.nodeData?.contentCategory)
+
   return (
     <AppShell>
       <main className="flex h-full min-w-0 flex-col overflow-hidden">
@@ -91,16 +95,17 @@ export function SourcesManager() {
             >
               全部 ({sources.length})
             </button>
-            {CONTENT_TYPES.map((type) => (
+            {CONTENT_TYPES.map((type) => { const visual = getContentCategoryVisual(type.value); const Icon = visual?.icon || FileText; return (
               <button
                 key={type.value}
                 type="button"
                 onClick={() => setSelectedType(type.value)}
-                className={selectedType === type.value ? 'rounded-lg bg-primary px-3 py-1.5 text-[13px] text-primary-foreground' : 'rounded-lg border border-border bg-background px-3 py-1.5 text-[13px] text-muted-foreground hover:bg-muted dark:border-0 dark:bg-secondary'}
+                className={selectedType === type.value ? 'flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-[13px] text-primary-foreground' : 'flex items-center gap-1.5 rounded-lg border border-border bg-background px-3 py-1.5 text-[13px] text-muted-foreground hover:bg-muted dark:border-0 dark:bg-secondary'}
               >
+                <Icon className={`h-3.5 w-3.5 ${selectedType === type.value ? '' : visual?.iconClass || ''}`} />
                 {type.label} ({getSourcesByType(type.value).length})
               </button>
-            ))}
+            )})}
           </div>
 
           {filteredSources.length === 0 ? (
@@ -115,10 +120,10 @@ export function SourcesManager() {
             </div>
           ) : (
             <div className="grid grid-cols-[repeat(auto-fill,minmax(260px,1fr))] gap-4">
-              {filteredSources.map((source) => (
+              {filteredSources.map((source) => { const visual = getSourceVisual(source); const Icon = visual?.icon || FileText; return (
                 <article key={source.id} className="group overflow-hidden rounded-xl border border-border bg-card transition-colors hover:border-primary">
-                  <div className="flex h-36 items-center justify-center border-b border-border bg-background">
-                    <FileText className="h-10 w-10 text-muted-foreground/40" />
+                  <div className={`flex h-36 items-center justify-center border-b border-border ${visual?.iconSurfaceClass || 'bg-background'}`}>
+                    <Icon className={`h-10 w-10 ${visual?.iconClass || 'text-muted-foreground/40'}`} />
                   </div>
                   <div className="p-4">
                     <h3 className="truncate text-sm font-medium">{source.title}</h3>
@@ -132,7 +137,7 @@ export function SourcesManager() {
                     </div>
                   </div>
                 </article>
-              ))}
+              )})}
             </div>
           )}
         </div>

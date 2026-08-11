@@ -1,9 +1,10 @@
 import { memo, useEffect, useState } from 'react'
 import { Position, NodeProps } from 'reactflow'
-import { FileText, Download, Upload, X } from 'lucide-react'
+import { Download, Upload, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { useFlowStore } from '@/stores/use-flow-store'
 import { NodeHandle, NodeHoverToolbar, NodeResizeArc, NodeResourceLostNotice } from './NodeChrome'
+import { contentCategoryVisuals } from '@/lib/content-visuals'
 
 interface PDFNodeData {
   label: string
@@ -17,6 +18,8 @@ interface PDFNodeData {
 }
 
 export const PDFNode = memo(({ id, data, selected }: NodeProps<PDFNodeData>) => {
+  const documentVisual = contentCategoryVisuals.document
+  const DocumentIcon = documentVisual.icon
   const updateNode = useFlowStore((state) => state.updateNode)
   const [fileName, setFileName] = useState(data.fileName || '')
   const [pageCount, setPageCount] = useState(data.pageCount || 0)
@@ -60,8 +63,8 @@ export const PDFNode = memo(({ id, data, selected }: NodeProps<PDFNodeData>) => 
       {/* 头部 */}
       <div className="flex items-center px-4 py-3 border-b border-border">
         <div className="flex items-center gap-2">
-          <div className="w-8 h-8 rounded-lg bg-red-100 flex items-center justify-center">
-            <FileText className="w-4 h-4 text-red-600" />
+          <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${documentVisual.iconSurfaceClass}`}>
+            <DocumentIcon className={`w-4 h-4 ${documentVisual.iconClass}`} />
           </div>
           <span className="font-medium text-foreground">{data.label}</span>
         </div>
@@ -81,7 +84,7 @@ export const PDFNode = memo(({ id, data, selected }: NodeProps<PDFNodeData>) => 
         ) : (
           <div className="space-y-3">
             <div className="flex items-center gap-3 p-3 bg-muted rounded-lg">
-              <FileText className="w-8 h-8 text-red-600" />
+              <DocumentIcon className={`w-8 h-8 ${documentVisual.iconClass}`} />
               <div className="flex-1 min-w-0">
                 <p className="text-sm font-medium text-foreground truncate">{fileName}</p>
                 <p className="text-xs text-muted-foreground">{pageCount} 页</p>

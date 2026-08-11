@@ -1,11 +1,12 @@
 import { create } from 'zustand'
-import { persist } from 'zustand/middleware'
+import { persist, type PersistStorage, type StorageValue } from 'zustand/middleware'
 import { nanoid } from 'nanoid'
 import { applyNodeChanges, applyEdgeChanges } from 'reactflow'
 import type { Node, Edge, OnNodesChange, OnEdgesChange } from 'reactflow'
 import type { Flow, Folder } from '@/types/flow'
 import { FlowExecutor, type ExecutionContext } from '@/lib/flow'
 import { useAIStore } from '@/stores/use-ai-store'
+import { localForageStorage } from '@/lib/localforage-storage'
 
 const nodeLabelDefaults: Record<string, string> = {
   ai: 'AI 节点',
@@ -52,6 +53,37 @@ function ensureUniqueNodeLabels(nodes: Node[]) {
   })
 }
 
+function normalizeLegacyNodes(nodes: Node[]) {
+  return nodes.map((node) => {
+    if (node.type === 'output' || node.type === 'editor') {
+      return {
+        ...node,
+        type: 'text',
+        data: {
+          ...node.data,
+          mode: 'text',
+          content: node.data?.content || node.data?.output || '',
+        },
+      }
+    }
+    if (node.type === 'group') {
+      return {
+        ...node,
+        type: 'sticky',
+        data: { ...node.data, text: node.data?.text || node.data?.label || '' },
+      }
+    }
+    return node
+  })
+}
+
+function getPersistableNodes(nodes: Node[]) {
+  return nodes.map((node) => {
+    if (!node.data?.resourceId || !String(node.data?.content || '').startsWith('blob:')) return node
+    return { ...node, data: { ...node.data, content: '' } }
+  })
+}
+
 interface FlowState {
   // 当前 Flow
   currentFlow: Flow | null
@@ -78,6 +110,7 @@ interface FlowState {
   // 执行状态
   isExecuting: boolean
   executionContexts: Map<string, ExecutionContext>
+  hasHydrated: boolean
 
   // 操作方法
   createFlow: (
@@ -135,10 +168,75 @@ interface FlowState {
 
   // 初始化
   initialize: () => Promise<void>
+  setHasHydrated: (value: boolean) => void
+}
+
+type PersistedFlowState = Pick<
+  FlowState,
+  'currentFlowId' | 'flows' | 'folders' | 'isLocked'
+>
+
+let pendingFlowSaveTimer: ReturnType<typeof setTimeout> | null = null
+
+function scheduleCurrentFlowSave(get: () => FlowState, delay = 450) {
+  if (pendingFlowSaveTimer) clearTimeout(pendingFlowSaveTimer)
+  pendingFlowSaveTimer = setTimeout(() => {
+    pendingFlowSaveTimer = null
+    get().saveCurrentFlow()
+  }, delay)
+}
+
+function flushScheduledFlowSave(get: () => FlowState) {
+  if (!pendingFlowSaveTimer) return
+  clearTimeout(pendingFlowSaveTimer)
+  pendingFlowSaveTimer = null
+  get().saveCurrentFlow()
+}
+
+let lastPersistedSnapshot: PersistedFlowState | null = null
+let persistWriteQueue = Promise.resolve()
+
+const flowPersistStorage: PersistStorage<PersistedFlowState> = {
+  getItem: async (name) => {
+    const rawValue = await localForageStorage.getItem(name)
+    if (!rawValue) return null
+    const storedValue = JSON.parse(rawValue) as StorageValue<Partial<FlowState>>
+    const persistedState: PersistedFlowState = {
+      currentFlowId: storedValue.state.currentFlowId || null,
+      flows: storedValue.state.flows || [],
+      folders: storedValue.state.folders || [],
+      isLocked: Boolean(storedValue.state.isLocked),
+    }
+    const value: StorageValue<PersistedFlowState> = { state: persistedState, version: storedValue.version }
+    lastPersistedSnapshot = persistedState
+    return value
+  },
+  setItem: async (name, value) => {
+    const next = value.state
+    const previous = lastPersistedSnapshot
+    if (
+      previous &&
+      previous.flows === next.flows &&
+      previous.folders === next.folders &&
+      previous.currentFlowId === next.currentFlowId &&
+      previous.isLocked === next.isLocked
+    ) return
+
+    lastPersistedSnapshot = next
+    const serializedValue = JSON.stringify(value)
+    persistWriteQueue = persistWriteQueue.then(async () => {
+      await localForageStorage.setItem(name, serializedValue)
+    })
+    await persistWriteQueue
+  },
+  removeItem: async (name) => {
+    lastPersistedSnapshot = null
+    await localForageStorage.removeItem(name)
+  },
 }
 
 export const useFlowStore = create<FlowState>()(
-  persist(
+  persist<FlowState, [], [], PersistedFlowState>(
     (set, get) => ({
       currentFlow: null,
       currentFlowId: null,
@@ -148,15 +246,18 @@ export const useFlowStore = create<FlowState>()(
       edges: [],
       history: [],
       historyIndex: -1,
-      maxHistory: 50,
+      maxHistory: 30,
       isLocked: false,
       isExecuting: false,
       executionContexts: new Map(),
+      hasHydrated: false,
+      setHasHydrated: (value) => set({ hasHydrated: value }),
 
       // 创建新 Flow
       createFlow: (name, description, folderId, initialGraph) => {
+        flushScheduledFlowSave(get)
         const nodeIdMap = new Map<string, string>()
-        const initialNodes = ensureUniqueNodeLabels((initialGraph?.nodes || []).map((node) => {
+        const initialNodes = ensureUniqueNodeLabels(normalizeLegacyNodes((initialGraph?.nodes || []).map((node) => {
           const id = nanoid()
           nodeIdMap.set(node.id, id)
           return {
@@ -165,7 +266,7 @@ export const useFlowStore = create<FlowState>()(
             data: { ...node.data },
             selected: false,
           }
-        }))
+        })))
         const initialEdges = (initialGraph?.edges || []).map((edge) => ({
           ...edge,
           id: nanoid(),
@@ -191,8 +292,8 @@ export const useFlowStore = create<FlowState>()(
           currentFlowId: newFlow.id,
           nodes: initialNodes,
           edges: initialEdges,
-          history: [],
-          historyIndex: -1,
+          history: [{ nodes: initialNodes, edges: initialEdges }],
+          historyIndex: 0,
         }))
 
         return newFlow
@@ -229,9 +330,10 @@ export const useFlowStore = create<FlowState>()(
 
       // 加载 Flow
       loadFlow: (id) => {
+        flushScheduledFlowSave(get)
         const flow = get().flows.find((f) => f.id === id)
         if (!flow) return
-        const nodes = ensureUniqueNodeLabels(flow.nodes || [])
+        const nodes = ensureUniqueNodeLabels(normalizeLegacyNodes(flow.nodes || []))
         const normalizedFlow = { ...flow, nodes }
 
         set((state) => ({
@@ -240,19 +342,23 @@ export const useFlowStore = create<FlowState>()(
           currentFlowId: id,
           nodes,
           edges: flow.edges || [],
-          history: [],
-          historyIndex: -1,
+          history: [{ nodes, edges: flow.edges || [] }],
+          historyIndex: 0,
         }))
       },
 
       // 保存当前 Flow
       saveCurrentFlow: (thumbnail, viewport) => {
+        if (pendingFlowSaveTimer) {
+          clearTimeout(pendingFlowSaveTimer)
+          pendingFlowSaveTimer = null
+        }
         const { currentFlowId, nodes, edges } = get()
         if (!currentFlowId) return
 
         const updatedAt = Date.now()
         const updates: Partial<Flow> = {
-          nodes,
+          nodes: getPersistableNodes(nodes),
           edges,
           updatedAt,
         }
@@ -349,7 +455,7 @@ export const useFlowStore = create<FlowState>()(
           return { nodes: state.nodes.map((node) => node.id === id ? { ...merged, data: { ...merged.data, label } } : node) }
         })
 
-        get().saveCurrentFlow()
+        scheduleCurrentFlowSave(get)
       },
 
       // 复制节点
@@ -408,10 +514,14 @@ export const useFlowStore = create<FlowState>()(
           nodes: applyNodeChanges(changes, state.nodes),
         }))
 
-        // 延迟保存，避免拖拽时频繁保存
-        setTimeout(() => {
-          get().saveCurrentFlow()
-        }, 500)
+        // 选择状态不属于画板内容；位置、尺寸和删除等变更统一通过
+        // 一个可取消的定时器提交，避免拖动时堆积数十次保存任务。
+        if (changes.some((change) => change.type !== 'select')) {
+          scheduleCurrentFlowSave(get)
+        }
+        if (changes.some((change) => change.type === 'position' && change.dragging === false)) {
+          get().addToHistory()
+        }
       },
 
       // React Flow 边变更处理
@@ -420,7 +530,9 @@ export const useFlowStore = create<FlowState>()(
           edges: applyEdgeChanges(changes, state.edges),
         }))
 
-        get().saveCurrentFlow()
+        if (changes.some((change) => change.type !== 'select')) {
+          scheduleCurrentFlowSave(get)
+        }
       },
 
       // 添加到历史记录
@@ -527,7 +639,7 @@ export const useFlowStore = create<FlowState>()(
             name: data.name || '导入的 Flow',
             title: data.title || data.name || '导入的 Flow',
             description: data.description || '',
-            nodes: ensureUniqueNodeLabels(data.nodes || []),
+            nodes: ensureUniqueNodeLabels(normalizeLegacyNodes(data.nodes || [])),
             edges: data.edges || [],
             createdAt: Date.now(),
             updatedAt: Date.now(),
@@ -548,6 +660,9 @@ export const useFlowStore = create<FlowState>()(
 
       // 初始化
       initialize: async () => {
+        if (!useFlowStore.persist.hasHydrated()) {
+          await useFlowStore.persist.rehydrate()
+        }
         // 如果没有 Flow，创建一个默认的
         const { flows } = get()
         if (flows.length === 0) {
@@ -645,17 +760,14 @@ export const useFlowStore = create<FlowState>()(
     }),
     {
       name: 'cnote-flows',
+      storage: flowPersistStorage,
       partialize: (state) => ({
-        currentFlow: state.currentFlow,
         currentFlowId: state.currentFlowId,
         flows: state.flows,
         folders: state.folders,
-        nodes: state.nodes,
-        edges: state.edges,
-        history: state.history,
-        historyIndex: state.historyIndex,
         isLocked: state.isLocked,
       }),
+      onRehydrateStorage: () => (state) => state?.setHasHydrated(true),
     }
   )
 )

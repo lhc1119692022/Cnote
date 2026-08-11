@@ -1,24 +1,23 @@
-import { memo, useRef, useState, type ChangeEvent } from 'react'
+import { memo, useEffect, useRef, useState, type ChangeEvent } from 'react'
 import { NodeProps, Position } from 'reactflow'
 import {
   FileUp,
-  FileText,
   Image as ImageIcon,
   Maximize2,
   Mic,
-  Presentation,
-  Share2,
   Sparkles,
   Table2,
   Type,
   Video,
-  Workflow,
   Youtube,
   type LucideIcon,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { useFlowStore } from '@/stores/use-flow-store'
+import { storeLocalResource } from '@/lib/resource-storage'
+import { useLocalResourceUrl } from '@/hooks/use-local-resource-url'
+import { contentCategoryOptions, getContentCategoryVisual, type ContentCategoryId } from '@/lib/content-visuals'
 import { NodeHandle, NodeHoverToolbar, NodeResizeArc, NodeResourceLostNotice } from './NodeChrome'
 
 export type ContentMode = 'text' | 'image' | 'video' | 'table' | 'youtube' | 'pdf'
@@ -29,9 +28,11 @@ export interface ContentNodeData {
   mode?: ContentMode
   content?: string
   fileName?: string
+  resourceId?: string
   resourceLost?: boolean
   disabled?: boolean
   enabled?: boolean
+  contentCategory?: ContentCategoryId
 }
 
 interface ContentTypeOption {
@@ -42,26 +43,7 @@ interface ContentTypeOption {
   iconClass: string
 }
 
-type ContentCategoryId = 'video' | 'social' | 'document' | 'data' | 'presentation' | 'mindmap'
 type PendingImportKind = ContentLeafType | 'auto' | 'document' | 'presentation' | 'mindmap'
-
-interface ContentCategoryOption {
-  id: ContentCategoryId
-  label: string
-  icon: LucideIcon
-  iconClass: string
-  iconSurfaceClass: string
-  hoverClass: string
-}
-
-const contentCategoryOptions: ContentCategoryOption[] = [
-  { id: 'video', label: '视频', icon: Youtube, iconClass: 'text-red-500', iconSurfaceClass: 'bg-red-50', hoverClass: 'hover:border-red-200 hover:bg-red-50/60' },
-  { id: 'social', label: '社媒', icon: Share2, iconClass: 'text-pink-500', iconSurfaceClass: 'bg-pink-50', hoverClass: 'hover:border-pink-200 hover:bg-pink-50/60' },
-  { id: 'document', label: '文档', icon: FileText, iconClass: 'text-blue-500', iconSurfaceClass: 'bg-blue-50', hoverClass: 'hover:border-blue-200 hover:bg-blue-50/60' },
-  { id: 'data', label: '数据', icon: Table2, iconClass: 'text-emerald-500', iconSurfaceClass: 'bg-emerald-50', hoverClass: 'hover:border-emerald-200 hover:bg-emerald-50/60' },
-  { id: 'presentation', label: '演示文稿', icon: Presentation, iconClass: 'text-orange-500', iconSurfaceClass: 'bg-orange-50', hoverClass: 'hover:border-orange-200 hover:bg-orange-50/60' },
-  { id: 'mindmap', label: '思维导图', icon: Workflow, iconClass: 'text-violet-500', iconSurfaceClass: 'bg-violet-50', hoverClass: 'hover:border-violet-200 hover:bg-violet-50/60' },
-]
 
 export const contentTypeOptions: ContentTypeOption[] = [
   { mode: 'text', label: '文本', title: '文本输入', icon: Type, iconClass: 'text-slate-600' },
@@ -123,7 +105,7 @@ export const ContentNode = memo((props: NodeProps<ContentNodeData>) => {
 
   const handleCategoryClick = (category: ContentCategoryId) => {
     if (category === 'social') {
-      updateNode(id, { type: 'browser', data: { ...data, label: '社媒节点', url: '', status: 'idle', resourceLost: false, disabled: false } })
+      updateNode(id, { type: 'browser', data: { ...data, label: '社媒节点', url: '', status: 'idle', contentCategory: category, resourceLost: false, disabled: false } })
     } else if (category === 'video') {
       openResourcePicker('video')
     } else if (category === 'document') {
@@ -137,7 +119,7 @@ export const ContentNode = memo((props: NodeProps<ContentNodeData>) => {
     }
   }
 
-  const handleResourceSelected = (event: ChangeEvent<HTMLInputElement>) => {
+  const handleResourceSelected = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0]
     const importKind = pendingFileMode
     setPendingFileMode(null)
@@ -157,12 +139,25 @@ export const ContentNode = memo((props: NodeProps<ContentNodeData>) => {
           ? extension === 'pdf' ? 'pdf' : 'image'
           : importKind
     const mode = detectedMode
+    const contentCategory: ContentCategoryId = importKind === 'auto'
+      ? mode === 'video' || mode === 'youtube' ? 'video'
+        : mode === 'table' ? 'data'
+          : mode === 'image' ? 'mindmap'
+            : 'document'
+      : importKind === 'table' ? 'data'
+        : importKind === 'video' ? 'video'
+          : importKind === 'document' ? 'document'
+            : importKind === 'presentation' ? 'presentation'
+              : importKind === 'mindmap' ? 'mindmap'
+                : mode === 'table' ? 'data'
+                  : 'document'
 
-    const nextData = {
+    const nextData: ContentNodeData = {
       ...data,
       label: `${modeLabels[mode]}节点`,
       mode,
-      content: mode === 'text' ? `已导入本地文件：${file.name}` : URL.createObjectURL(file),
+      contentCategory,
+      content: '',
       fileName: file.name,
       resourceLost: false,
       disabled: false,
@@ -175,7 +170,17 @@ export const ContentNode = memo((props: NodeProps<ContentNodeData>) => {
       return
     }
 
-    updateNode(id, { type: mode, data: nextData })
+    const resource = await storeLocalResource(file)
+    updateNode(id, {
+      type: mode,
+      data: {
+        ...nextData,
+        resourceId: resource.resourceId,
+        content: mode === 'image' || mode === 'video' || mode === 'pdf'
+          ? resource.url
+          : `已导入本地文件：${file.name}`,
+      },
+    })
   }
 
   return (
@@ -193,7 +198,7 @@ export const ContentNode = memo((props: NodeProps<ContentNodeData>) => {
               const Icon = option.icon
               return (
                 <button key={option.id} type="button" onClick={() => handleCategoryClick(option.id)} className={`nodrag flex h-24 flex-col items-center justify-center gap-2.5 rounded-xl border border-border bg-card text-sm font-medium text-foreground transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${option.hoverClass}`}>
-                  <span className={`flex h-10 w-10 items-center justify-center rounded-xl ${option.iconSurfaceClass}`}><Icon className={`h-6 w-6 stroke-[1.8] ${option.iconClass}`} /></span>
+                  <span className="flex h-10 w-10 items-center justify-center"><Icon className={`h-6 w-6 stroke-[1.8] ${option.iconClass}`} /></span>
                   <span>{option.label}</span>
                 </button>
               )
@@ -212,18 +217,26 @@ export const ContentNode = memo((props: NodeProps<ContentNodeData>) => {
 export const ContentLeafNode = memo(({ id, data, selected }: NodeProps<ContentNodeData>) => {
   const mode = data.mode || 'text'
   const config = contentTypeOptions.find((option) => option.mode === mode) || contentTypeOptions[0]
+  const categoryVisual = getContentCategoryVisual(mode, data.contentCategory)
   const [content, setContent] = useState(data.content || '')
+  const localResourceUrl = useLocalResourceUrl(data.resourceId, data.content)
   const updateData = useNodeData(id)
   const resourceLost = Boolean(data.resourceLost)
   const disabled = Boolean(data.disabled && !resourceLost)
+
+  useEffect(() => setContent(data.content || ''), [data.content])
 
   const updateContent = (value: string) => {
     setContent(value)
     updateData({ content: value, resourceLost: false })
   }
 
-  const markResource = (lost: boolean) => updateData(lost ? { resourceLost: true } : { resourceLost: false, disabled: false, enabled: true })
-  const Icon = config.icon
+  const markResource = (lost: boolean) => {
+    if (Boolean(data.resourceLost) === lost) return
+    updateData(lost ? { resourceLost: true } : { resourceLost: false, disabled: false, enabled: true })
+  }
+  const Icon = categoryVisual?.icon || config.icon
+  const iconClass = categoryVisual?.iconClass || config.iconClass
 
   return (
     <div className={`node-card node-panel-shadow group relative flex h-full min-h-[360px] w-full min-w-[420px] flex-col overflow-visible rounded-[22px] border bg-card ${selected ? 'border-primary ring-2 ring-primary/20' : 'border-border'} ${disabled ? 'opacity-50 grayscale' : ''}`}>
@@ -234,7 +247,7 @@ export const ContentLeafNode = memo(({ id, data, selected }: NodeProps<ContentNo
       {resourceLost && <NodeResourceLostNotice />}
 
       <div className="flex h-[76px] items-center justify-between border-b border-border px-7">
-        <div className="flex items-center gap-4"><Icon className={`h-8 w-8 stroke-[1.7] ${config.iconClass}`} /><span className="text-[27px] font-medium tracking-tight text-foreground">{config.title}</span></div>
+        <div className="flex items-center gap-4"><span className={`flex h-10 w-10 items-center justify-center rounded-xl ${categoryVisual?.iconSurfaceClass || 'bg-slate-50'}`}><Icon className={`h-6 w-6 stroke-[1.7] ${iconClass}`} /></span><span className="text-[27px] font-medium tracking-tight text-foreground">{config.title}</span></div>
         <Button variant="ghost" size="icon" className="h-9 w-9 text-muted-foreground" aria-label="展开编辑器"><Maximize2 className="h-5 w-5" /></Button>
       </div>
 
@@ -242,8 +255,8 @@ export const ContentLeafNode = memo(({ id, data, selected }: NodeProps<ContentNo
         {mode === 'text' && <textarea value={content} onChange={(event) => updateContent(event.target.value)} placeholder="输入文本..." className="nodrag nowheel h-[170px] w-full resize-none bg-transparent text-[25px] leading-relaxed text-foreground outline-none placeholder:text-muted-foreground/60" />}
         {mode === 'youtube' && <div className="space-y-4"><Input value={content} onChange={(event) => updateContent(event.target.value)} placeholder="粘贴 YouTube 链接..." className="nodrag h-12 bg-card text-base" /><div className="flex h-28 items-center justify-center rounded-xl bg-muted text-sm text-muted-foreground"><Youtube className="mr-2 h-6 w-6 text-rose-500" />{content ? '视频链接已添加' : '等待加载视频'}</div></div>}
         {mode === 'pdf' && <div className="space-y-4"><Input value={content} onChange={(event) => updateContent(event.target.value)} placeholder="粘贴 PDF 链接..." className="nodrag h-12 bg-card text-base" /><div className="flex h-28 items-center justify-center rounded-xl bg-orange-50 text-sm text-orange-600"><FileUp className="mr-2 h-6 w-6" />{content ? 'PDF 链接已添加' : '等待添加 PDF'}</div></div>}
-        {mode === 'image' && <div className="flex h-[170px] items-center justify-center rounded-xl border border-dashed border-violet-200 bg-violet-50/60">{content ? <img src={content} alt="" onLoad={() => markResource(false)} onError={() => markResource(true)} className="max-h-full max-w-full rounded-lg object-contain" /> : <><ImageIcon className="mr-2 h-7 w-7 text-violet-500" /><span className="text-sm text-muted-foreground">粘贴或上传图片</span></>}</div>}
-        {mode === 'video' && <div className="flex h-[170px] items-center justify-center rounded-xl border border-dashed border-emerald-200 bg-emerald-50/60">{content ? <video src={content} muted preload="metadata" onLoadedData={() => markResource(false)} onError={() => markResource(true)} className="max-h-full max-w-full rounded-lg object-contain" /> : <><Video className="mr-2 h-7 w-7 text-emerald-500" /><span className="text-sm text-muted-foreground">粘贴或上传视频</span></>}</div>}
+        {mode === 'image' && <div className="flex h-[170px] items-center justify-center rounded-xl border border-dashed border-violet-200 bg-violet-50/60">{localResourceUrl ? <img src={localResourceUrl} alt="" onLoad={() => markResource(false)} onError={() => markResource(true)} className="max-h-full max-w-full rounded-lg object-contain" /> : <><ImageIcon className="mr-2 h-7 w-7 text-violet-500" /><span className="text-sm text-muted-foreground">粘贴或上传图片</span></>}</div>}
+        {mode === 'video' && <div className="flex h-[170px] items-center justify-center rounded-xl border border-dashed border-emerald-200 bg-emerald-50/60">{localResourceUrl ? <video src={localResourceUrl} muted preload="metadata" onLoadedData={() => markResource(false)} onError={() => markResource(true)} className="max-h-full max-w-full rounded-lg object-contain" /> : <><Video className="mr-2 h-7 w-7 text-emerald-500" /><span className="text-sm text-muted-foreground">粘贴或上传视频</span></>}</div>}
         {mode === 'table' && <div className="nodrag space-y-3 overflow-auto">{data.fileName && <div className="flex items-center gap-2 text-xs text-muted-foreground"><Table2 className="h-4 w-4 text-cyan-500" /><span className="truncate">{data.fileName}</span></div>}<table className="w-full border-collapse text-sm"><tbody>{[0, 1, 2].map((row) => <tr key={row}>{[0, 1, 2].map((col) => <td key={col} className="border border-border px-2 py-2"><input type="text" className="w-full bg-transparent outline-none" placeholder="..." /></td>)}</tr>)}</tbody></table></div>}
         {mode === 'text' && <Button variant="outline" size="icon" className="nodrag absolute bottom-6 right-7 h-11 w-11 rounded-xl bg-card text-muted-foreground" aria-label="语音输入"><Mic className="h-5 w-5" /></Button>}
       </div>

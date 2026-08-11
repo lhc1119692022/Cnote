@@ -102,6 +102,11 @@ export class FlowExecutor {
 
       switch (node.type) {
         case 'content':
+        case 'text':
+        case 'youtube':
+        case 'image':
+        case 'video':
+        case 'table':
           output = await this.executeContentNode(node, inputs)
           break
         case 'ai':
@@ -110,20 +115,11 @@ export class FlowExecutor {
         case 'browser':
           output = await this.executeBrowserNode(node, inputs)
           break
-        case 'output':
-          output = await this.executeOutputNode(node, inputs)
-          break
-        case 'editor':
-          output = await this.executeEditorNode(node, inputs)
-          break
         case 'pdf':
           output = await this.executePDFNode(node, inputs)
           break
         case 'sticky':
           output = await this.executeStickyNode(node, inputs)
-          break
-        case 'group':
-          output = await this.executeGroupNode(node, inputs)
           break
         default:
           throw new Error(`Unknown node type: ${node.type}`)
@@ -275,38 +271,6 @@ export class FlowExecutor {
   }
 
   /**
-   * 执行 Output 节点
-   */
-  private async executeOutputNode(
-    node: FlowNode,
-    inputs: Record<string, any>
-  ): Promise<any> {
-    const data = node.data as any
-
-    // 合并所有输入
-    const content = Object.values(inputs).join('\n\n')
-
-    return {
-      format: data.format || 'text',
-      content,
-      timestamp: Date.now(),
-    }
-  }
-
-  /**
-   * 执行 Editor 节点
-   */
-  private async executeEditorNode(
-    node: FlowNode,
-    _inputs: Record<string, any>
-  ): Promise<string> {
-    const data = node.data as any
-    const inputText = Object.values(_inputs).join('\n\n')
-
-    return data.content || inputText
-  }
-
-  /**
    * 执行 PDF 节点
    */
   private async executePDFNode(
@@ -328,17 +292,6 @@ export class FlowExecutor {
   ): Promise<string> {
     const data = node.data as any
     return data.content || ''
-  }
-
-  /**
-   * 执行 Group 节点
-   */
-  private async executeGroupNode(
-    _node: FlowNode,
-    inputs: Record<string, any>
-  ): Promise<any> {
-    // Group 节点只是组织作用，直接传递输入
-    return inputs
   }
 
   /**

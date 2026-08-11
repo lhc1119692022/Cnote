@@ -17,7 +17,16 @@ export const localForageStorage: StateStorage = {
     if (typeof window === 'undefined') return null
 
     try {
-      return (await localforage.getItem<string>(name)) || null
+      const storedValue = await localforage.getItem<string>(name)
+      if (storedValue) return storedValue
+
+      // Flow 数据早期版本写在同步 localStorage 中。首次读取时迁移到
+      // IndexedDB，避免升级后丢失用户已有画板。
+      const legacyValue = window.localStorage.getItem(name)
+      if (!legacyValue) return null
+      await localforage.setItem(name, legacyValue)
+      window.localStorage.removeItem(name)
+      return legacyValue
     } catch (error) {
       console.warn(`Failed to get item from LocalForage: ${name}`, error)
       // 降级到 localStorage

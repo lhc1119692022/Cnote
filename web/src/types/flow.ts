@@ -10,8 +10,12 @@ export type NodeType =
   | 'ai'
   | 'browser'
   | 'sticky'
-  | 'editor'
-  | 'output';
+  | 'text'
+  | 'youtube'
+  | 'pdf'
+  | 'image'
+  | 'video'
+  | 'table';
 
 // Content 节点模式
 export type ContentMode =
@@ -66,19 +70,6 @@ export interface StickyNodeData extends BaseNodeData {
   content: string;
   color: 'yellow' | 'pink' | 'green' | 'blue' | 'purple';
   background: 'solid' | 'none';
-}
-
-// Editor 节点数据
-export interface EditorNodeData extends BaseNodeData {
-  content: string;
-  format: 'html' | 'markdown';
-}
-
-// Output 节点数据
-export interface OutputNodeData extends BaseNodeData {
-  content: string;
-  format: 'html' | 'markdown' | 'text';
-  savedAt?: number;
 }
 
 // Flow 定义
