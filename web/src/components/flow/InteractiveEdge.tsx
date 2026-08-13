@@ -35,7 +35,15 @@ export const InteractiveEdge = memo(({ id, source, target, sourceX, sourceY, tar
   return (
     <>
       <g onMouseEnter={() => setIsHovered(true)} onMouseLeave={() => setIsHovered(false)}>
-        <BaseEdge id={id} path={path} interactionWidth={32} style={{ stroke: selected ? 'var(--primary)' : 'var(--muted-foreground)', strokeWidth: selected ? 2.5 : 2 }} />
+        <BaseEdge
+          id={id}
+          path={path}
+          interactionWidth={32}
+          style={{
+            stroke: selected ? 'var(--primary)' : 'var(--border)',
+            strokeWidth: selected ? 2.25 : 1.5,
+          }}
+        />
       </g>
       <EdgeLabelRenderer>
         <div data-edge-actions aria-hidden={!actionsVisible} onMouseEnter={() => setIsHovered(true)} onMouseLeave={() => setIsHovered(false)} className={`nodrag nopan absolute left-0 top-0 flex items-center rounded-full border border-border bg-card p-0.5 shadow-sm transition-opacity duration-150 ${actionsVisible ? 'pointer-events-auto opacity-100' : 'pointer-events-none opacity-0'}`} style={{ transform: `translate(-50%, -50%) translate(${labelX}px,${labelY}px)` }}>

@@ -1,0 +1,14 @@
+export const BROWSER_NODE_DEFAULT_SIZE = { width: 1280, height: 720 } as const
+export const BROWSER_NODE_MIN_SIZE = { width: 720, height: 480 } as const
+export const AI_NODE_DEFAULT_SIZE = { width: 460, height: 510 } as const
+export const AI_NODE_MIN_SIZE = { width: 460, height: 340 } as const
+export const AI_NODE_MAX_AUTO_HEIGHT = 960
+export const CONTENT_NODE_DEFAULT_SIZE = { width: 540, height: 430 } as const
+export const CONTENT_NODE_MIN_SIZE = { width: 420, height: 300 } as const
+export const STICKY_NODE_DEFAULT_SIZE = { width: 300, height: 240 } as const
+export const STICKY_NODE_MIN_SIZE = { width: 240, height: 210 } as const
+export const CONTENT_MEDIA_MAX_AUTO_HEIGHT = 640
+export const ONLINE_VIDEO_MAX_AUTO_HEIGHT = 720
+export const ONLINE_VIDEO_PORTRAIT_MAX_AUTO_HEIGHT = 1080
+export const ONLINE_VIDEO_TRANSCRIPT_MAX_HEIGHT = 288
+export const GROUP_NODE_PADDING = 48

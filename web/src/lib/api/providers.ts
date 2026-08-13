@@ -37,7 +37,7 @@ export const PROVIDERS: ProviderConfig[] = [
     id: 'deepseek',
     name: 'DeepSeek',
     baseURL: 'https://api.deepseek.com',
-    protocol: 'responses',
+    protocol: 'chatCompletions',
     models: [
       {
         id: 'deepseek-v4-pro',

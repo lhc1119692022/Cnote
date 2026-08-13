@@ -1,2 +1,2 @@
-export { ScraperClient } from './client'
-export type { ScraperConfig, WebContent, YouTubeSubtitles } from './client'
+export { ScraperClient, ScraperRequestError } from './client'
+export type { ContentServiceCapabilities, ContentServiceHealth, ScraperConfig, WebContent, YouTubeSubtitles } from './client'

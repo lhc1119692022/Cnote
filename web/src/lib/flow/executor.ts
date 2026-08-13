@@ -1,8 +1,58 @@
-import type { FlowNode, FlowEdge } from '@/types/flow'
-import type { ChatMessage } from '@/lib/api'
+import type { FlowNode, FlowEdge, ContentNodeData, BrowserNodeData } from '@/types/flow'
+import type { ChatContentPart, ChatMessage } from '@/lib/api'
+import { compileAiPrompt, compileAiPromptParts, type AIContextEntry } from './ai-prompt'
+import { buildAIContextEntries } from './ai-context'
+
+function compactConversation(messages: ChatMessage[], maxTokens = 258000, threshold = 0.7): ChatMessage[] {
+  const triggerTokens = Math.floor(maxTokens * threshold)
+  const estimateTokens = (message: ChatMessage) => {
+    const contentLength = typeof message.content === 'string'
+      ? message.content.length
+      : message.content.reduce((total, part) => total + (part.type === 'text' ? part.text.length : 1200), 0)
+    return Math.ceil(contentLength / 4) + 4
+  }
+  const totalTokens = messages.reduce((total, message) => total + estimateTokens(message), 0)
+  if (totalTokens <= triggerTokens) return messages
+
+  const systemMessages = messages.filter((message) => message.role === 'system')
+  const conversation = messages.filter((message) => message.role !== 'system')
+  const retained: ChatMessage[] = []
+  let retainedTokens = 0
+  const retainedBudget = Math.floor(triggerTokens * 0.55)
+  for (let index = conversation.length - 1; index >= 0; index -= 1) {
+    const message = conversation[index]
+    const tokens = estimateTokens(message)
+    if (retained.length && retainedTokens + tokens > retainedBudget) break
+    retained.unshift(message)
+    retainedTokens += tokens
+  }
+  return [
+    ...systemMessages,
+    { role: 'system' as const, content: '较早的会话内容已在达到上下文 70% 后自动压缩；以下保留最近的完整消息。' },
+    ...retained,
+  ]
+}
 import { topologicalSort, getPredecessors } from './graph'
 import { AIClient } from '@/lib/api'
 import { ScraperClient } from '@/lib/scraper'
+
+function extractInputTexts(value: unknown): string[] {
+  if (typeof value === 'string') return value.trim() ? [value] : []
+  if (!value || typeof value !== 'object') return []
+  const record = value as Record<string, unknown>
+  const fields = ['text', 'content', 'plainText', 'bodyText', 'transcript', 'value', 'url']
+  return fields.flatMap((field) =>
+    typeof record[field] === 'string' && record[field].trim()
+      ? [record[field] as string]
+      : [],
+  )
+}
+
+function isUnsupportedLocalVideoNode(node?: FlowNode) {
+  if (node?.type !== 'content') return false
+  const data = node.data as ContentNodeData
+  return data.category === 'video' && data.source?.kind === 'file'
+}
 
 /**
  * 节点执行上下文
@@ -36,14 +86,16 @@ export class FlowExecutor {
   private aiClient?: AIClient
   private aiClientResolver?: (channelId?: string) => AIClient | undefined
   private scraperClient?: ScraperClient
+  private onNodeDataUpdate?: (nodeId: string, data: Record<string, unknown>) => void
 
-  constructor(nodes: FlowNode[], edges: FlowEdge[], aiClient?: AIClient, scraperClient?: ScraperClient, aiClientResolver?: (channelId?: string) => AIClient | undefined) {
+  constructor(nodes: FlowNode[], edges: FlowEdge[], aiClient?: AIClient, scraperClient?: ScraperClient, aiClientResolver?: (channelId?: string) => AIClient | undefined, onNodeDataUpdate?: (nodeId: string, data: Record<string, unknown>) => void) {
     this.nodes = nodes
     this.edges = edges
     this.contexts = new Map()
     this.aiClient = aiClient
     this.scraperClient = scraperClient
     this.aiClientResolver = aiClientResolver
+    this.onNodeDataUpdate = onNodeDataUpdate
   }
 
   /**
@@ -102,11 +154,6 @@ export class FlowExecutor {
 
       switch (node.type) {
         case 'content':
-        case 'text':
-        case 'youtube':
-        case 'image':
-        case 'video':
-        case 'table':
           output = await this.executeContentNode(node, inputs)
           break
         case 'ai':
@@ -114,9 +161,6 @@ export class FlowExecutor {
           break
         case 'browser':
           output = await this.executeBrowserNode(node, inputs)
-          break
-        case 'pdf':
-          output = await this.executePDFNode(node, inputs)
           break
         case 'sticky':
           output = await this.executeStickyNode(node, inputs)
@@ -160,50 +204,48 @@ export class FlowExecutor {
     node: FlowNode,
     inputs: Record<string, any>
   ): Promise<any> {
-    const data = node.data as any
-
-    // 如果有输入，合并输入内容
-    const inputTexts = Object.values(inputs).filter((v) => typeof v === 'string')
+    const data = node.data as ContentNodeData
+    const payload = data.payload
+    const inputTexts = Object.values(inputs).flatMap(extractInputTexts)
     const mergedInput = inputTexts.join('\n\n')
 
-    switch (data.mode) {
-      case 'text':
-        return data.content || mergedInput
-      case 'youtube':
-        // 使用 ScraperClient 提取 YouTube 字幕
-        if (this.scraperClient && data.content) {
-          const videoId = ScraperClient.extractVideoId(data.content)
-          if (videoId) {
-            const result = await this.scraperClient.fetchYouTubeSubtitles(videoId)
-            return result.subtitles + (mergedInput ? '\n\n' + mergedInput : '')
-          }
-        }
-        return {
-          type: 'youtube',
-          url: data.content,
-          input: mergedInput,
-        }
-      case 'image':
-        return {
-          type: 'image',
-          url: data.content,
-          input: mergedInput,
-        }
-      case 'video':
-        return {
-          type: 'video',
-          url: data.content,
-          input: mergedInput,
-        }
-      case 'table':
-        return {
-          type: 'table',
-          data: data.tableData || [],
-          input: mergedInput,
-        }
-      default:
-        return data.content || mergedInput
+    if (payload?.kind === 'document') return [payload.plainText, mergedInput].filter(Boolean).join('\n\n')
+    if (payload?.kind === 'social') {
+      return {
+        kind: 'social',
+        title: payload.title,
+        bodyText: payload.bodyText,
+        author: payload.author,
+        publishedAt: payload.publishedAt,
+        metrics: payload.metrics,
+        contentBlocks: payload.contentBlocks,
+        input: mergedInput || undefined,
+      }
     }
+    if (payload?.kind === 'video') {
+      if (payload.provider === 'youtube' && this.scraperClient && payload.url && !payload.transcript) {
+        const videoId = ScraperClient.extractVideoId(payload.url)
+        if (videoId) {
+          const result = await this.scraperClient.fetchYouTubeSubtitles(videoId)
+          return { ...payload, transcript: result.subtitles, input: mergedInput || undefined }
+        }
+      }
+      return { ...payload, input: mergedInput || undefined }
+    }
+    if (payload?.kind === 'data') return { ...payload, input: mergedInput || undefined }
+    if (payload?.kind === 'mindmap') return { ...payload, input: mergedInput || undefined }
+    if (payload?.kind === 'image') return { ...payload, input: mergedInput || undefined }
+    if (payload?.kind === 'presentation') return { ...payload, input: mergedInput || undefined }
+
+    if (data.source?.kind === 'url' && data.source.provider === 'youtube' && this.scraperClient) {
+      const videoId = ScraperClient.extractVideoId(data.source.normalizedUrl)
+      if (videoId) {
+        const result = await this.scraperClient.fetchYouTubeSubtitles(videoId)
+        return { kind: 'video', provider: 'youtube', url: data.source.normalizedUrl, transcript: result.subtitles, input: mergedInput || undefined }
+      }
+    }
+
+    return mergedInput
   }
 
   /**
@@ -221,24 +263,40 @@ export class FlowExecutor {
       throw new Error('AI client not initialized')
     }
 
-    // 构建提示词
-    const inputTexts = Object.values(inputs)
-      .filter((v) => typeof v === 'string')
-      .join('\n\n')
+    const resolvedEntries = await buildAIContextEntries(this.nodes, Object.keys(inputs))
+    const inputEntries: AIContextEntry[] = Object.entries(inputs).flatMap(([sourceId, value]) => {
+      const source = this.nodes.find((item) => item.id === sourceId)
+      if (isUnsupportedLocalVideoNode(source)) return []
+      const text = extractInputTexts(value).join('\n\n').trim()
+      const resolved = resolvedEntries.find((entry) => entry.nodeId === sourceId)
+      if (!text && !resolved?.images?.length) return []
+      return [{ nodeId: sourceId, label: String(source?.data?.label || '上游节点'), text: text || resolved?.text || '', images: resolved?.images }]
+    })
 
     const systemPrompt = data.systemPrompt || '你是一个有用的助手。'
-    const userPrompt = data.prompt || inputTexts
+    const prompt = data.prompt || data.userPrompt || ''
+    const userParts = compileAiPromptParts(prompt, inputEntries)
+    const userContent: ChatMessage['content'] = userParts.some((part) => part.type === 'image')
+      ? userParts.map((part): ChatContentPart => part.type === 'text' ? { type: 'text', text: part.text } : { type: 'image', source: part.image })
+      : compileAiPrompt(prompt, inputEntries)
 
     // 调用 AI API
-    const messages: ChatMessage[] = [
+    const storedMessages: ChatMessage[] = Array.isArray(data.messages)
+      ? data.messages.filter((message: ChatMessage) => message?.content && (message.role === 'user' || message.role === 'assistant'))
+      : []
+    const messages = compactConversation([
       { role: 'system', content: systemPrompt },
-      { role: 'user', content: userPrompt },
-    ]
+      ...storedMessages.map((message: ChatMessage & { requestContent?: string }) => ({
+        ...message,
+        content: message.requestContent || message.content,
+      })),
+      ...(userContent && (typeof userContent === 'string' ? userContent.trim() : userContent.length) ? [{ role: 'user' as const, content: userContent }] : []),
+    ], data.maxTokens || 258000, data.autoCompressThreshold || 0.7)
 
     return aiClient.complete({
       model: data.model || 'gpt-3.5-turbo',
       messages,
-      temperature: data.temperature || 0.7,
+      temperature: 1,
       max_tokens: 4096,
     })
   }
@@ -249,38 +307,43 @@ export class FlowExecutor {
   private async executeBrowserNode(
     node: FlowNode,
     _inputs: Record<string, any>
-  ): Promise<string> {
-    const data = node.data as any
-    const url = data.url
+  ): Promise<string | { url: string; title?: string; text: string }> {
+    const data = node.data as BrowserNodeData
+    const url = String(data.confirmedUrl || data.url || '').trim()
 
     if (!url) {
       throw new Error('Browser node requires URL')
     }
 
-    // 使用 ScraperClient 抓取网页内容
-    if (this.scraperClient) {
-      try {
-        const result = await this.scraperClient.scrapeWeb(url)
-        return `# ${result.title}\n\n${result.content}`
-      } catch (error) {
-        throw new Error(`Failed to scrape ${url}: ${error instanceof Error ? error.message : 'Unknown error'}`)
-      }
+    const outputMode = data.outputMode || (data.extractedContent ? 'text' : 'url')
+    if (outputMode === 'url') return url
+
+    if (data.extractedContent?.trim()) {
+      return outputMode === 'text'
+        ? data.extractedContent
+        : { url, text: data.extractedContent }
     }
 
-    throw new Error('ScraperClient not configured')
-  }
+    if (data.snapshot?.url === url && data.snapshot.text.trim()) {
+      return outputMode === 'text'
+        ? data.snapshot.text
+        : { url, title: data.snapshot.title, text: data.snapshot.text }
+    }
 
-  /**
-   * 执行 PDF 节点
-   */
-  private async executePDFNode(
-    node: FlowNode,
-    _inputs: Record<string, any>
-  ): Promise<string> {
-    const data = node.data as any
+    if (!this.scraperClient) {
+      throw new Error('网页文本模式需要先在设置中配置内容解析服务')
+    }
 
-    // TODO: 实现 PDF 文本提取
-    return data.extractedText || '[PDF content]'
+    try {
+      const result = await this.scraperClient.scrapeWeb(url)
+      const snapshot = { url, title: result.title, text: result.content, fetchedAt: Date.now() }
+      this.onNodeDataUpdate?.(node.id, { snapshot })
+      return outputMode === 'text'
+        ? result.content
+        : { url, title: result.title, text: result.content }
+    } catch (error) {
+      throw new Error('Failed to scrape ' + url + ': ' + (error instanceof Error ? error.message : 'Unknown error'))
+    }
   }
 
   /**

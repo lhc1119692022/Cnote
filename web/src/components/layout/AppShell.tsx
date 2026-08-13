@@ -17,7 +17,7 @@ const navigation = [
   { to: '/dashboard', label: '控制台', icon: LayoutDashboard },
   { to: '/sources', label: '内容', icon: FileStack },
   { to: '/templates', label: '模板', icon: FolderKanban },
-  { to: '/settings/api-keys', label: 'API 密钥', icon: Settings },
+  { to: '/settings/api-keys', label: '设置', icon: Settings },
 ]
 
 interface AppShellProps {

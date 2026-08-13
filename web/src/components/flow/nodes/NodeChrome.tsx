@@ -1,11 +1,15 @@
-import { useRef, useState, type ChangeEvent } from 'react'
-import { Handle, Position } from 'reactflow'
-import { FileText, Globe, Layers3, Copy, Bookmark, RefreshCw, Sparkles, StickyNote, Plus, X } from 'lucide-react'
+import { useEffect, useRef, useState, type ChangeEvent, type ReactNode } from 'react'
+import { Handle, Position, useReactFlow } from 'reactflow'
+import { FileText, Globe, Layers3, Copy, Bookmark, RefreshCw, Scissors, Sparkles, StickyNote, Plus, X } from 'lucide-react'
 import { useFlowStore } from '@/stores/use-flow-store'
 import { useSourceStore } from '@/stores/use-source-store'
-import type { ContentMode } from '@/types/flow'
-import { cloneLocalResource, storeLocalResource } from '@/lib/resource-storage'
+import type { ContentCategory, ContentNodeData } from '@/types/flow'
+import { cloneLocalResource, deleteLocalResource } from '@/lib/resource-storage'
 import { getContentCategoryVisual } from '@/lib/content-visuals'
+import { canNodeOutputText, importContentIntoNode, refreshTextFromUpstream, reparseContentNode } from '@/lib/content-import-controller'
+import { getContentFileAccept } from '@/lib/content-import'
+import { cloneFlowValue } from '@/lib/flow/clone'
+import { getNodeMediaItems } from '@/lib/content-media'
 
 interface NodeHandleProps {
   type: 'target' | 'source'
@@ -30,13 +34,11 @@ export function NodeHandle({ type, position, id }: NodeHandleProps) {
   )
 }
 
-const contentModes = new Set<ContentMode>(['text', 'youtube', 'pdf', 'image', 'video', 'table'])
-
 const nodeChromeByType: Record<string, { icon: typeof FileText; iconClass: string }> = {
-  ai: { icon: Sparkles, iconClass: 'text-violet-600 bg-violet-100' },
-  browser: { icon: Globe, iconClass: 'text-blue-600 bg-blue-100' },
-  sticky: { icon: StickyNote, iconClass: 'text-amber-600 bg-amber-100' },
-  content: { icon: Layers3, iconClass: 'text-slate-600 bg-slate-100' },
+  ai: { icon: Sparkles, iconClass: 'text-violet-600' },
+  browser: { icon: Globe, iconClass: 'text-blue-600' },
+  sticky: { icon: StickyNote, iconClass: 'text-amber-600' },
+  content: { icon: Layers3, iconClass: 'text-slate-600' },
 }
 
 const nodeChromeLabels: Record<string, string> = {
@@ -44,75 +46,24 @@ const nodeChromeLabels: Record<string, string> = {
   browser: '浏览器节点',
   sticky: '贴纸',
   content: '内容类型选择',
-  text: '文本节点',
-  youtube: 'YouTube 节点',
-  pdf: 'PDF 节点',
-  image: '图片节点',
-  video: '视频节点',
-  table: '表格节点',
 }
 
 function getNodeMode(node: any): string {
-  return node?.type === 'content' ? node.data?.mode || 'content' : node?.type || 'content'
-}
-
-function resourceAccept(mode: string) {
-  if (mode === 'pdf') return '.pdf,application/pdf'
-  if (mode === 'image') return 'image/*'
-  if (mode === 'video') return 'video/*'
-  if (mode === 'table') return '.csv,.tsv,.xls,.xlsx,text/csv,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-  return '*/*'
+  return node?.type === 'content' ? node.data?.category || 'content' : node?.type || 'content'
 }
 
 export function NodeResourceLostNotice() {
   return <div className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center px-8 text-center text-sm font-semibold text-red-600">资源丢失，刷新节点连接资源</div>
 }
 
-function getFavoriteData(node: any, snapshotResourceId?: string): { type: ContentMode; content: string; metadata: Record<string, any> } {
-  const mode = getNodeMode(node)
-  if (contentModes.has(mode as ContentMode)) {
-    const hasLocalResource = Boolean(node?.data?.resourceId)
-    const nodeData = {
-      ...node?.data,
-      sourceId: undefined,
-      resourceId: hasLocalResource ? snapshotResourceId : node?.data?.resourceId,
-      content: hasLocalResource ? '' : node?.data?.content,
-    }
-    return {
-      type: mode as ContentMode,
-      content: hasLocalResource ? '' : String(node?.data?.content || ''),
-      metadata: {
-        snapshotVersion: 1,
-        originNodeId: node?.id,
-        resourceOwnership: hasLocalResource ? 'snapshot' : undefined,
-        nodeType: node?.type,
-        nodeData,
-      },
-    }
-  }
-
-  const content = mode === 'browser'
-    ? node?.data?.extractedContent || node?.data?.url || ''
-    : mode === 'sticky'
-      ? node?.data?.content || node?.data?.text || ''
-      : node?.data?.output || node?.data?.prompt || node?.data?.content || ''
-  return {
-    type: 'text',
-    content: String(content),
-    metadata: {
-      snapshotVersion: 1,
-      originNodeId: node?.id,
-      nodeType: node?.type,
-      nodeData: { ...node?.data, sourceId: undefined },
-    },
-  }
-}
-
 /** Shared node hover actions: duplicate, save to the content library, and delete. */
-export function NodeHoverToolbar({ nodeId }: { nodeId: string }) {
+export function NodeHoverToolbar({ nodeId, children }: { nodeId: string; children?: ReactNode }) {
   const node = useFlowStore((state) => state.nodes.find((item) => item.id === nodeId))
   const updateNode = useFlowStore((state) => state.updateNode)
+  const edges = useFlowStore((state) => state.edges)
+  const nodes = useFlowStore((state) => state.nodes)
   const duplicateNode = useFlowStore((state) => state.duplicateNode)
+  const addNode = useFlowStore((state) => state.addNode)
   const deleteNode = useFlowStore((state) => state.deleteNode)
   const createSource = useSourceStore((state) => state.createSource)
   const deleteSource = useSourceStore((state) => state.deleteSource)
@@ -127,13 +78,22 @@ export function NodeHoverToolbar({ nodeId }: { nodeId: string }) {
   if (!node) return null
 
   const mode = getNodeMode(node)
-  const categoryVisual = getContentCategoryVisual(mode, node.data?.contentCategory)
+  const categoryVisual = getContentCategoryVisual(undefined, node.data?.category)
   const chrome = categoryVisual
-    ? { icon: categoryVisual.icon, iconClass: `${categoryVisual.iconClass} ${categoryVisual.iconSurfaceClass}` }
+    ? { icon: categoryVisual.icon, iconClass: categoryVisual.iconClass }
     : nodeChromeByType[mode] || nodeChromeByType.content
   const Icon = chrome.icon
   const label = node.data?.label || nodeChromeLabels[mode] || '节点'
-  const resourceLost = Boolean(node.data?.resourceLost)
+  const resourceLost = Boolean(node.data?.resourceLost || node.data?.state === 'missing')
+  const canReparseContent = node.type === 'content' && Boolean(node.data?.source || node.data?.parse?.retryText)
+  const hasRefreshableUpstream = node.type === 'content' && node.data?.category === 'text' && Boolean(
+    edges.some((edge) => edge.target === nodeId && canNodeOutputText(nodes.find((item) => item.id === edge.source))),
+  )
+  const splitKind = node.type === 'content' && (node.data?.category === 'image' || node.data?.category === 'video')
+    ? node.data.category as 'image' | 'video'
+    : undefined
+  const splitResources = splitKind ? getNodeMediaItems(node, splitKind) : []
+  const canSplitResources = splitResources.length > 1
 
   const commitName = () => {
     const nextLabel = nameDraft.trim()
@@ -152,35 +112,47 @@ export function NodeHoverToolbar({ nodeId }: { nodeId: string }) {
         return
       }
 
-      const snapshotResourceId = node.data?.resourceId
-        ? await cloneLocalResource(node.data.resourceId)
+      if (node.type !== 'content') return
+      const nodeData = node.data as ContentNodeData
+      const currentResourceId = nodeData.source?.kind === 'file' || nodeData.source?.kind === 'clipboard-image' ? nodeData.source.resourceId : undefined
+      const snapshotResourceId = currentResourceId
+        ? await cloneLocalResource(currentResourceId)
         : undefined
-      if (node.data?.resourceId && !snapshotResourceId) return
-      const favorite = getFavoriteData(node, snapshotResourceId)
-      const source = createSource(label, favorite.content, favorite.type, favorite.metadata)
+      if (currentResourceId && !snapshotResourceId) return
+      const clonedData = cloneFlowValue(nodeData)
+      const snapshotData: ContentNodeData = snapshotResourceId && clonedData.source && (clonedData.source.kind === 'file' || clonedData.source.kind === 'clipboard-image')
+        ? { ...clonedData, sourceId: undefined, source: { ...clonedData.source, resourceId: snapshotResourceId } }
+        : { ...clonedData, sourceId: undefined }
+      const source = createSource(label, snapshotData)
       updateNode(nodeId, { data: { ...node.data, sourceId: source.id } })
     } finally {
       setIsSaving(false)
     }
   }
 
-  const repairResource = (content: string, fileName?: string, resourceId?: string) => {
-    const current = useFlowStore.getState().nodes.find((item) => item.id === nodeId)
-    if (!current) return
-    updateNode(nodeId, { data: { ...current.data, content, resourceId: resourceId || current.data?.resourceId, fileName: fileName || current.data?.fileName, resourceLost: false, disabled: false, enabled: true } })
-  }
-
-  const refreshResource = () => {
+  const refreshResource = async () => {
     const source = sourceId
       ? useSourceStore.getState().sources.find((item) => item.id === sourceId)
       : undefined
-    if (source && (source.content || source.metadata?.nodeData?.resourceId)) {
-      repairResource(source.content, source.metadata?.nodeData?.fileName, source.metadata?.nodeData?.resourceId)
+    if (source) {
+      const nextData = cloneFlowValue(source.nodeData)
+      const currentResourceId = node.data?.source?.kind === 'file' || node.data?.source?.kind === 'clipboard-image'
+        ? node.data.source.resourceId as string
+        : undefined
+      const nextResourceId = nextData.source?.kind === 'file' || nextData.source?.kind === 'clipboard-image'
+        ? nextData.source.resourceId
+        : undefined
+      if (currentResourceId !== nextResourceId) {
+        const retained = nextResourceId ? await cloneLocalResource(nextResourceId) : undefined
+        if (nextResourceId && !retained) return
+        await deleteLocalResource(currentResourceId)
+      }
+      updateNode(nodeId, { type: 'content', data: { ...nextData, label, sourceId: source.id, state: nextData.state === 'missing' ? 'ready' : nextData.state, resourceLost: false } })
       return
     }
     const input = refreshInputRef.current
     if (!input) return
-    input.accept = resourceAccept(mode)
+    input.accept = getContentFileAccept(node.data?.category as ContentCategory | undefined)
     input.value = ''
     input.click()
   }
@@ -189,29 +161,58 @@ export function NodeHoverToolbar({ nodeId }: { nodeId: string }) {
     const file = event.target.files?.[0]
     event.target.value = ''
     if (!file) return
-    if (mode === 'table' && (file.type.startsWith('text/') || /\.(csv|tsv)$/i.test(file.name))) {
-      const reader = new FileReader()
-      reader.onload = () => repairResource(String(reader.result || ''), file.name)
-      reader.readAsText(file)
-      return
+    await importContentIntoNode(nodeId, { kind: 'file', file }, node.data?.category as ContentCategory | undefined)
+  }
+
+  const splitMediaResources = () => {
+    if (!splitKind || splitResources.length < 2) return
+    const makeData = (item: typeof splitResources[number], index: number): ContentNodeData => {
+      const mediaLabel = item.label || `${splitKind === 'image' ? '图片' : '视频'} ${index + 1}`
+      const payload = splitKind === 'image'
+        ? { kind: 'image' as const, resources: [cloneFlowValue(item)], activeResourceIndex: 0, alt: mediaLabel, width: item.resource.width, height: item.resource.height }
+        : { kind: 'video' as const, provider: 'direct' as const, playback: 'video' as const, resources: [cloneFlowValue(item)], activeResourceIndex: 0, title: mediaLabel, width: item.resource.width, height: item.resource.height }
+      return {
+        schemaVersion: 2,
+        label: mediaLabel,
+        category: splitKind,
+        subtype: splitKind === 'image' ? 'image' : 'remote-video',
+        state: 'ready',
+        source: null,
+        payload,
+        preview: { title: mediaLabel, badge: splitKind === 'image' ? '图片' : '视频', meta: [`资源 ${index + 1} / ${splitResources.length}`] },
+      }
     }
-    const resource = await storeLocalResource(file)
-    repairResource(resource.url, file.name, resource.resourceId)
+    updateNode(nodeId, { data: makeData(splitResources[0], 0) })
+    const baseX = node.position.x
+    const baseY = node.position.y + Number(node.style?.height ?? node.height ?? 340) + 50
+    splitResources.forEach((item, index) => {
+      if (index === 0) return
+      addNode({
+        type: 'content',
+        position: { x: baseX + ((index - 1) % 3) * 470, y: baseY + Math.floor((index - 1) / 3) * 390 },
+        style: { width: 420, height: 340 },
+        data: makeData(item, index),
+      })
+    })
   }
 
   return (
     <div className="node-hover-toolbar nodrag nowheel" onPointerDown={(event) => event.stopPropagation()}>
-      <div className="node-hover-toolbar-surface flex items-center gap-1 rounded-full border border-border bg-card px-2 py-1.5" role="toolbar" aria-label={`${label}节点操作`}>
-        <span className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full ${chrome.iconClass}`} title={nodeChromeLabels[mode] || '节点类型'}><Icon className="h-5 w-5" /></span>
+      <div className="node-hover-toolbar-surface flex items-center gap-0.5 rounded-full border border-border bg-card px-1.5 py-1" role="toolbar" aria-label={`${label}节点操作`}>
+        <span className={`flex h-8 w-8 shrink-0 items-center justify-center ${chrome.iconClass}`} title={nodeChromeLabels[mode] || '节点类型'}><Icon className="h-4 w-4" /></span>
         {isEditingName
-          ? <input autoFocus value={nameDraft} onFocus={(event) => event.currentTarget.select()} onChange={(event) => setNameDraft(event.target.value)} onBlur={commitName} onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); commitName() } else if (event.key === 'Escape') { event.preventDefault(); setNameDraft(label); setIsEditingName(false) } }} className="nodrag h-8 w-[180px] rounded-md border border-border bg-background px-2 text-sm font-semibold text-foreground outline-none focus:border-primary focus:ring-1 focus:ring-ring" aria-label="节点标题" />
-          : <span className="max-w-[180px] cursor-text truncate px-2 text-sm font-semibold text-foreground" title="双击修改节点标题" onDoubleClick={(event) => { event.stopPropagation(); setNameDraft(label); setIsEditingName(true) }}>{label}</span>}
-        <span className="mx-1 h-6 w-px bg-border" />
+          ? <input autoFocus value={nameDraft} onFocus={(event) => event.currentTarget.select()} onChange={(event) => setNameDraft(event.target.value)} onBlur={commitName} onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); commitName() } else if (event.key === 'Escape') { event.preventDefault(); setNameDraft(label); setIsEditingName(false) } }} className="nodrag h-8 w-[180px] rounded-md border border-border bg-background px-2 text-sm font-semibold text-foreground outline-none focus:border-foreground/30 focus:ring-1 focus:ring-foreground/15" aria-label="节点标题" />
+          : <span className="max-w-[180px] cursor-text truncate px-1.5 text-sm font-semibold text-foreground" title="双击修改节点标题" onDoubleClick={(event) => { event.stopPropagation(); setNameDraft(label); setIsEditingName(true) }}>{label}</span>}
+        <span className="mx-0.5 h-5 w-px bg-border" />
+        {children}
+        {hasRefreshableUpstream && <button type="button" className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground" aria-label="重新获取上游文本" title="重新获取上游文本并覆盖当前内容" onClick={(event) => { event.stopPropagation(); void refreshTextFromUpstream(nodeId) }}><RefreshCw className="h-4 w-4" /></button>}
+        {canSplitResources && <button type="button" className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground" aria-label={`拆分为 ${splitResources.length} 个节点`} title={`拆分为 ${splitResources.length} 个独立${splitKind === 'image' ? '图片' : '视频'}节点`} onClick={(event) => { event.stopPropagation(); splitMediaResources() }}><Scissors className="h-4 w-4" /></button>}
+        {canReparseContent && node.data?.category !== 'text' && !hasRefreshableUpstream && !resourceLost && <button type="button" className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground" aria-label="重新识别内容" title="使用原始资源重新识别" onClick={(event) => { event.stopPropagation(); void reparseContentNode(nodeId) }}><RefreshCw className="h-4 w-4" /></button>}
         {resourceLost
-          ? <button type="button" className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-red-600 transition-colors hover:bg-red-50" aria-label="刷新丢失资源" title="刷新丢失资源" onClick={(event) => { event.stopPropagation(); refreshResource() }}><RefreshCw className="h-4 w-4" /></button>
-          : <><button type="button" className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground" aria-label="复制节点" title="复制节点" onClick={(event) => { event.stopPropagation(); duplicateNode(nodeId) }}><Copy className="h-4 w-4" /></button>
-            <button type="button" className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground ${isSaved ? 'text-amber-500' : ''}`} aria-label={isSaved ? '取消收藏' : '收藏节点'} title={isSaved ? '取消收藏' : '收藏节点'} onClick={(event) => { event.stopPropagation(); toggleFavorite() }}><Bookmark className={`h-4 w-4 ${isSaved ? 'fill-current' : ''}`} /></button></>}
-        <button type="button" className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-destructive" aria-label="关闭并删除节点" title="关闭并删除节点" onClick={(event) => { event.stopPropagation(); deleteNode(nodeId) }}><X className="h-4 w-4" /></button>
+          ? <button type="button" className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-red-600 transition-colors hover:bg-red-50" aria-label="刷新丢失资源" title="刷新丢失资源" onClick={(event) => { event.stopPropagation(); void refreshResource() }}><RefreshCw className="h-4 w-4" /></button>
+          : <><button type="button" className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground" aria-label="复制节点" title="复制节点" onClick={(event) => { event.stopPropagation(); duplicateNode(nodeId) }}><Copy className="h-4 w-4" /></button>
+            <button type="button" className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground ${isSaved ? 'text-amber-500' : ''}`} aria-label={isSaved ? '取消收藏' : '收藏节点'} title={isSaved ? '取消收藏' : '收藏节点'} onClick={(event) => { event.stopPropagation(); toggleFavorite() }}><Bookmark className={`h-4 w-4 ${isSaved ? 'fill-current' : ''}`} /></button></>}
+        <button type="button" className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-destructive" aria-label="关闭并删除节点" title="关闭并删除节点" onClick={(event) => { event.stopPropagation(); deleteNode(nodeId) }}><X className="h-4 w-4" /></button>
         <input ref={refreshInputRef} type="file" className="hidden" tabIndex={-1} aria-hidden="true" onChange={handleResourceSelected} />
       </div>
     </div>
@@ -226,8 +227,16 @@ interface NodeResizeArcProps {
 
 /** A compact bottom-right resize affordance matching the canvas visual language. */
 export function NodeResizeArc({ nodeId, minWidth = 240, minHeight = 160 }: NodeResizeArcProps) {
+  const { getViewport } = useReactFlow()
   const cleanupRef = useRef<(() => void) | null>(null)
+  const frameRef = useRef<number | null>(null)
+  const pendingSizeRef = useRef<{ width: number; height: number } | null>(null)
   const [isResizing, setIsResizing] = useState(false)
+
+  useEffect(() => () => {
+    cleanupRef.current?.()
+    if (frameRef.current !== null) cancelAnimationFrame(frameRef.current)
+  }, [])
 
   const startResize = (event: React.PointerEvent<HTMLDivElement>) => {
     event.preventDefault()
@@ -240,26 +249,68 @@ export function NodeResizeArc({ nodeId, minWidth = 240, minHeight = 160 }: NodeR
     const startHeight = Number(node.height || (node as any).measured?.height || (node.style as any)?.height || minHeight)
     const startX = event.clientX
     const startY = event.clientY
+    // Pointer movement uses screen pixels, while node dimensions use canvas coordinates.
+    const zoom = getViewport().zoom || 1
+    const resizeTarget = event.currentTarget
+    const pointerId = event.pointerId
+    resizeTarget.setPointerCapture(pointerId)
 
-    const move = (moveEvent: PointerEvent) => {
+    const applyPendingSize = () => {
+      frameRef.current = null
+      const size = pendingSizeRef.current
+      pendingSizeRef.current = null
+      if (!size) return
       const current = useFlowStore.getState().nodes.find((item) => item.id === nodeId)
       if (!current) return
-      const width = Math.max(minWidth, startWidth + moveEvent.clientX - startX)
-      const height = Math.max(minHeight, startHeight + moveEvent.clientY - startY)
       useFlowStore.getState().updateNode(nodeId, {
-        style: { ...(current.style || {}), width, height },
+        style: { ...(current.style || {}), width: size.width, height: size.height },
       })
     }
-    const stop = () => {
+
+    const move = (moveEvent: PointerEvent) => {
+      pendingSizeRef.current = {
+        width: Math.max(minWidth, startWidth + (moveEvent.clientX - startX) / zoom),
+        height: Math.max(minHeight, startHeight + (moveEvent.clientY - startY) / zoom),
+      }
+      if (frameRef.current === null) frameRef.current = requestAnimationFrame(applyPendingSize)
+    }
+    const cleanup = () => {
       window.removeEventListener('pointermove', move)
       window.removeEventListener('pointerup', stop)
+      window.removeEventListener('pointercancel', stop)
+      if (frameRef.current !== null) {
+        cancelAnimationFrame(frameRef.current)
+        frameRef.current = null
+      }
+      pendingSizeRef.current = null
+      if (resizeTarget.hasPointerCapture(pointerId)) resizeTarget.releasePointerCapture(pointerId)
       cleanupRef.current = null
-      setIsResizing(false)
     }
-    cleanupRef.current = stop
+    const stop = () => {
+      const shouldCommit = Boolean(useFlowStore.getState().nodes.find((item) => item.id === nodeId))
+      if (frameRef.current !== null) {
+        cancelAnimationFrame(frameRef.current)
+        frameRef.current = null
+      }
+      applyPendingSize()
+      const resizedNode = useFlowStore.getState().nodes.find((item) => item.id === nodeId)
+      if (resizedNode?.type === 'content') {
+        useFlowStore.getState().updateNode(nodeId, {
+          data: { ...resizedNode.data, manualSize: true },
+        })
+      }
+      cleanup()
+      setIsResizing(false)
+      if (shouldCommit) {
+        useFlowStore.getState().addToHistory()
+        useFlowStore.getState().saveCurrentFlow()
+      }
+    }
+    cleanupRef.current = cleanup
     setIsResizing(true)
     window.addEventListener('pointermove', move)
     window.addEventListener('pointerup', stop)
+    window.addEventListener('pointercancel', stop)
   }
 
   return (

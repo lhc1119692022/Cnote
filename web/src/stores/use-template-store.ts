@@ -4,6 +4,40 @@ import { nanoid } from 'nanoid'
 import type { Node, Edge } from 'reactflow'
 import { localForageStorage } from '@/lib/localforage-storage'
 import type { Template } from '@/types/flow'
+import { emptyContentData } from '@/lib/content-import'
+import { deleteLocalResource, retainLocalResource } from '@/lib/resource-storage'
+import { cloneFlowValue } from '@/lib/flow/clone'
+import { AI_NODE_DEFAULT_SIZE } from '@/lib/flow/node-dimensions'
+
+function nodeResourceId(node?: Node) {
+  const source = node?.data?.source
+  return source?.kind === 'file' || source?.kind === 'clipboard-image'
+    ? source.resourceId as string
+    : undefined
+}
+
+function resourceCounts(nodes: Node[]) {
+  const counts = new Map<string, number>()
+  nodes.forEach((node) => {
+    const resourceId = nodeResourceId(node)
+    if (resourceId) counts.set(resourceId, (counts.get(resourceId) || 0) + 1)
+  })
+  return counts
+}
+
+async function adjustResourceReferences(fromNodes: Node[], toNodes: Node[]) {
+  const from = resourceCounts(fromNodes)
+  const to = resourceCounts(toNodes)
+  const resourceIds = new Set([...from.keys(), ...to.keys()])
+  await Promise.all([...resourceIds].map(async (resourceId) => {
+    const delta = (to.get(resourceId) || 0) - (from.get(resourceId) || 0)
+    if (delta > 0) {
+      for (let index = 0; index < delta; index += 1) await retainLocalResource(resourceId)
+    } else {
+      for (let index = 0; index < Math.abs(delta); index += 1) await deleteLocalResource(resourceId)
+    }
+  }))
+}
 
 interface TemplateState {
   templates: Template[]
@@ -44,8 +78,8 @@ export const useTemplateStore = create<TemplateState>()(
           title,
           description,
           thumbnail: undefined,
-          nodes: nodes.map((n) => ({ ...n, selected: false })),
-          edges: edges.map((e) => ({ ...e, selected: false })),
+          nodes: nodes.map((node) => ({ ...cloneFlowValue(node), selected: false })),
+          edges: edges.map((edge) => ({ ...cloneFlowValue(edge), selected: false })),
           category,
           usageCount: 0,
           createdAt: Date.now(),
@@ -54,6 +88,8 @@ export const useTemplateStore = create<TemplateState>()(
         set((state) => ({
           templates: [...state.templates, template],
         }))
+        // 模板本身是独立快照；其本地 Blob 引用必须独立计数。
+        template.nodes.forEach((node) => { void retainLocalResource(nodeResourceId(node)) })
 
         return template
       },
@@ -65,15 +101,20 @@ export const useTemplateStore = create<TemplateState>()(
 
       // 更新模板
       updateTemplate: (id, updates) => {
+        const current = get().templates.find((template) => template.id === id)
+        const nextUpdates = cloneFlowValue(updates)
+        if (current && nextUpdates.nodes) void adjustResourceReferences(current.nodes, nextUpdates.nodes)
         set((state) => ({
           templates: state.templates.map((t) =>
-            t.id === id ? { ...t, ...updates } : t
+            t.id === id ? { ...t, ...nextUpdates } : t
           ),
         }))
       },
 
       // 删除模板
       deleteTemplate: (id) => {
+        const removed = get().templates.find((template) => template.id === id)
+        removed?.nodes.forEach((node) => { void deleteLocalResource(nodeResourceId(node)) })
         set((state) => ({
           templates: state.templates.filter((t) => t.id !== id),
         }))
@@ -85,7 +126,7 @@ export const useTemplateStore = create<TemplateState>()(
         if (!template) throw new Error('Template not found')
 
         const newTemplate: Template = {
-          ...template,
+          ...cloneFlowValue(template),
           id: nanoid(),
           title: `${template.title} (副本)`,
           usageCount: 0,
@@ -95,6 +136,7 @@ export const useTemplateStore = create<TemplateState>()(
         set((state) => ({
           templates: [...state.templates, newTemplate],
         }))
+        newTemplate.nodes.forEach((node) => { void retainLocalResource(nodeResourceId(node)) })
 
         return newTemplate
       },
@@ -134,21 +176,22 @@ export const useTemplateStore = create<TemplateState>()(
             [
               {
                 id: 'content-1',
-                type: 'text',
+                type: 'content',
                 position: { x: 100, y: 100 },
-                data: { label: '文本输入', mode: 'text', content: '' },
+                data: emptyContentData('文本输入'),
               },
               {
                 id: 'ai-1',
                 type: 'ai',
                 position: { x: 400, y: 100 },
+                style: AI_NODE_DEFAULT_SIZE,
                 data: { label: 'AI 处理' },
               },
               {
                 id: 'text-output-1',
-                type: 'text',
+                type: 'content',
                 position: { x: 700, y: 100 },
-                data: { label: '输出结果', mode: 'text', content: '' },
+                data: emptyContentData('输出结果'),
               },
             ],
             [
@@ -165,21 +208,22 @@ export const useTemplateStore = create<TemplateState>()(
             [
               {
                 id: 'content-1',
-                type: 'youtube',
+                type: 'content',
                 position: { x: 100, y: 100 },
-                data: { label: 'YouTube 链接', mode: 'youtube', content: '' },
+                data: { ...emptyContentData('YouTube 链接'), category: 'video', subtype: 'youtube' },
               },
               {
                 id: 'ai-1',
                 type: 'ai',
                 position: { x: 400, y: 100 },
+                style: AI_NODE_DEFAULT_SIZE,
                 data: { label: 'AI 总结' },
               },
               {
                 id: 'text-output-1',
-                type: 'text',
+                type: 'content',
                 position: { x: 700, y: 100 },
-                data: { label: '输出摘要', mode: 'text', content: '' },
+                data: emptyContentData('输出摘要'),
               },
             ],
             [
@@ -198,19 +242,27 @@ export const useTemplateStore = create<TemplateState>()(
                 id: 'browser-1',
                 type: 'browser',
                 position: { x: 100, y: 100 },
-                data: { label: '网页抓取' },
+                data: {
+                  label: '网页抓取',
+                  url: 'https://www.baidu.com/',
+                  confirmedUrl: 'https://www.baidu.com/',
+                  outputMode: 'text',
+                  syncStatus: 'synced',
+                  status: 'loading',
+                },
               },
               {
                 id: 'ai-1',
                 type: 'ai',
                 position: { x: 400, y: 100 },
+                style: AI_NODE_DEFAULT_SIZE,
                 data: { label: 'AI 分析' },
               },
               {
                 id: 'text-output-1',
-                type: 'text',
+                type: 'content',
                 position: { x: 700, y: 100 },
-                data: { label: '分析报告', mode: 'text', content: '' },
+                data: emptyContentData('分析报告'),
               },
             ],
             [

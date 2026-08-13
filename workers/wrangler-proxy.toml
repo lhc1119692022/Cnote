@@ -1,0 +1,6 @@
+name = "cnote-ai-proxy"
+main = "src/proxy.ts"
+compatibility_date = "2024-12-01"
+
+# This optional proxy is intentionally separate from the content service.
+# It has no shared Cnote route; deploy it only into your own Cloudflare account.

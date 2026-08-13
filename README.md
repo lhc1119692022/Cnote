@@ -50,7 +50,7 @@ npm run dev
 npm run build
 ```
 
-### Cloudflare Workers 部署
+### 可选：部署自己的内容解析 Worker
 
 ```bash
 cd workers
@@ -61,14 +61,18 @@ npm install
 # 本地开发
 npm run dev
 
-# 部署到 Cloudflare
+# 部署内容解析 Worker（使用你自己的 Cloudflare 账户）
 npm run deploy
-
-# 部署 scraper worker
-wrangler deploy --config wrangler-scraper.toml
 ```
 
 访问 http://localhost:5173 开始使用。
+
+部署完成后，将生成的 `workers.dev` 地址填写到 Cnote → 设置 → 内容解析服务。
+未配置该 Worker 时，本地文件、URL 输出和 YouTube 播放仍可使用；网页正文、
+YouTube 字幕、社媒和公开网页文档预览会明确提示需要内容解析服务。
+
+AI 渠道与内容 Worker 相互独立。需要解决某个 AI 提供商的浏览器跨域限制时，
+请在“设置 → 渠道”中填写服务商支持的浏览器端接口，或你自己信任的中转地址。
 
 ## 📖 开发计划
 

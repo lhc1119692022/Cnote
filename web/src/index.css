@@ -130,7 +130,7 @@
   box-shadow: none;
 }
 
-.react-flow__node:hover {
+.react-flow__node:not(.react-flow__node-group):hover {
   z-index: 1000 !important;
 }
 
@@ -140,6 +140,59 @@
 
 .node-panel-shadow {
   box-shadow: 0 5px 18px rgb(15 23 42 / 0.055);
+}
+
+.node-selected {
+  border-color: rgb(82 82 91 / 0.52);
+  box-shadow:
+    0 0 0 1px rgb(82 82 91 / 0.16),
+    0 5px 18px rgb(15 23 42 / 0.055);
+}
+
+.dark .node-selected {
+  border-color: rgb(212 212 216 / 0.4);
+  box-shadow:
+    0 0 0 1px rgb(212 212 216 / 0.12),
+    0 5px 18px rgb(0 0 0 / 0.16);
+}
+
+/* The post-selection bounding box must not cover canvas blank space. */
+.react-flow__nodesselection-rect {
+  background: transparent !important;
+  border: 0 !important;
+  pointer-events: none !important;
+}
+
+.react-flow__node-group {
+  box-sizing: border-box;
+  padding: 0 !important;
+  background: transparent !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
+  outline: none !important;
+  z-index: 0 !important;
+}
+
+.react-flow__node-group.selectable:hover,
+.react-flow__node-group.selectable.selected,
+.react-flow__node-group.selectable:focus,
+.react-flow__node-group.selectable:focus-visible {
+  border: 0 !important;
+  box-shadow: none !important;
+  outline: none !important;
+}
+
+.group-node {
+  box-sizing: border-box;
+  border: 0.75px solid rgb(167 139 250 / 0.62);
+  background: rgb(237 233 254 / 0.5);
+  box-shadow: none;
+}
+
+.group-node-selected {
+  border-color: rgb(139 92 246 / 0.78);
+  box-shadow: none;
 }
 
 .node-hover-toolbar {
@@ -170,6 +223,247 @@
   pointer-events: none;
 }
 
+.ai-node-toolbar {
+  position: absolute;
+  right: 0;
+  bottom: 100%;
+  z-index: 40;
+  padding-bottom: 10px;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(4px);
+  transition: opacity 140ms ease, transform 140ms ease;
+}
+
+.ai-node-toolbar-surface {
+  box-shadow: 0 4px 14px rgb(15 23 42 / 0.065);
+}
+
+.react-flow__node:hover .ai-node-toolbar,
+.react-flow__node:focus-within .ai-node-toolbar {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateY(0);
+}
+
+.react-flow__node.dragging .ai-node-toolbar {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.ai-node-toolbar summary::-webkit-details-marker {
+  display: none;
+}
+
+.ai-variable-rail {
+  position: absolute;
+  right: calc(100% + 16px);
+  top: 50%;
+  z-index: 12;
+  display: flex;
+  max-width: 180px;
+  flex-direction: column;
+  gap: 8px;
+  transform: translateY(-50%);
+}
+
+.ai-source-variable,
+.ai-prompt-variable {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--card);
+  color: var(--foreground);
+  box-shadow: 0 2px 9px rgb(15 23 42 / 0.05);
+  font-size: 12px;
+  line-height: 1;
+}
+
+.ai-source-variable {
+  min-width: 0;
+  cursor: grab;
+  padding: 6px 10px;
+  text-align: left;
+}
+
+.ai-source-variable:active {
+  cursor: grabbing;
+}
+
+.ai-source-variable:hover {
+  background: var(--muted);
+}
+
+.media-resource-rail {
+  position: absolute;
+  right: calc(100% + 16px);
+  top: 50%;
+  z-index: 12;
+  display: flex;
+  max-width: 190px;
+  flex-direction: column;
+  gap: 8px;
+  transform: translateY(-50%);
+}
+
+.social-node-drag-handle {
+  position: absolute;
+  left: 50%;
+  top: 7px;
+  z-index: 15;
+  display: flex;
+  width: 72px;
+  height: 22px;
+  align-items: center;
+  justify-content: center;
+  transform: translateX(-50%);
+  cursor: grab;
+  touch-action: none;
+}
+
+.social-node-drag-handle:active {
+  cursor: grabbing;
+}
+
+.social-node-drag-handle > span {
+  width: 32px;
+  height: 4px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--muted-foreground) 40%, transparent);
+  transition: width 140ms ease, background-color 140ms ease;
+}
+
+.social-node-drag-handle:hover > span {
+  width: 42px;
+  background: color-mix(in srgb, var(--foreground) 55%, transparent);
+}
+
+.media-resource-capsule {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 7px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--card);
+  padding: 6px 10px 6px 7px;
+  color: var(--foreground);
+  box-shadow: 0 2px 9px rgb(15 23 42 / 0.05);
+  cursor: grab;
+  font-size: 12px;
+  line-height: 1;
+  text-align: left;
+}
+
+.media-resource-capsule > span:first-child {
+  display: flex;
+  width: 20px;
+  height: 20px;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: var(--muted);
+  color: var(--muted-foreground);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.media-resource-capsule:hover,
+.media-resource-capsule.is-active {
+  border-color: color-mix(in srgb, var(--foreground) 30%, var(--border));
+  background: var(--muted);
+}
+
+.media-resource-capsule.is-active > span:first-child {
+  background: var(--foreground);
+  color: var(--background);
+}
+
+.media-resource-capsule:active {
+  cursor: grabbing;
+}
+
+.ai-source-variable-dot,
+.ai-prompt-variable-dot {
+  width: 7px;
+  height: 7px;
+  flex: 0 0 auto;
+  border-radius: 999px;
+}
+
+.ai-prompt-editor {
+  display: flex;
+  align-items: center;
+  overflow: auto;
+  box-sizing: border-box;
+  min-height: 72px;
+  max-height: 216px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.ai-prompt-editor-content {
+  display: block;
+  width: 100%;
+}
+
+.ai-prompt-editor-content:empty::before {
+  content: attr(data-placeholder);
+  color: var(--muted-foreground);
+  pointer-events: none;
+}
+
+.ai-prompt-variable {
+  margin: 0 2px;
+  padding: 4px 8px;
+  vertical-align: baseline;
+  user-select: none;
+}
+
+.ai-send-button {
+  width: 42px;
+  height: 42px;
+  background: var(--primary);
+}
+
+.ai-send-button:disabled {
+  background: var(--muted);
+  color: color-mix(in oklch, var(--foreground) 72%, transparent);
+}
+
+.ai-send-button:not(:disabled):hover {
+  background: color-mix(in oklch, var(--primary) 88%, black);
+}
+
+.ai-reply-actions {
+  position: absolute;
+  right: 12px;
+  z-index: 20;
+  display: flex;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--card);
+  box-shadow: 0 4px 14px rgb(15 23 42 / 0.08);
+}
+
+.ai-reply-actions button {
+  display: flex;
+  width: 34px;
+  height: 32px;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted-foreground);
+}
+
+.ai-reply-actions button:hover {
+  background: var(--muted);
+  color: var(--foreground);
+}
+
 .react-flow__handle {
   z-index: 10;
 }
@@ -188,7 +482,7 @@
   color: var(--muted-foreground);
   box-shadow: none;
   opacity: 0;
-  pointer-events: auto !important;
+  pointer-events: none !important;
   cursor: crosshair;
   touch-action: none;
   transition: opacity 160ms ease;
@@ -218,10 +512,9 @@
   transition: transform 160ms ease, background-color 160ms ease, color 160ms ease;
 }
 
-.react-flow__node:hover .node-connection-handle,
-.react-flow__node.selected .node-connection-handle,
-.react-flow__node:focus-within .node-connection-handle {
+.react-flow__node:hover .node-connection-handle {
   opacity: 1;
+  pointer-events: auto !important;
 }
 
 .node-connection-handle:hover {
@@ -263,18 +556,34 @@
   filter: drop-shadow(0 1px 1px rgb(15 23 42 / 0.1));
 }
 
+.react-flow__node:hover .node-resize-arc,
+.react-flow__node.selected .node-resize-arc,
 .node-resize-arc:hover,
 .node-resize-arc.is-resizing {
   opacity: 1;
 }
 
 .react-flow__edge-path {
-  stroke: var(--muted-foreground);
-  stroke-width: 2;
+  stroke: var(--border);
+  stroke-width: 1.5;
 }
 
 .react-flow__edge.selected .react-flow__edge-path {
   stroke: var(--primary);
+}
+
+@keyframes youtube-link-feedback-rise {
+  0% { opacity: 0; transform: translateY(3px); }
+  18% { opacity: 1; transform: translateY(0); }
+  72% { opacity: 1; transform: translateY(-5px); }
+  100% { opacity: 0; transform: translateY(-15px); }
+}
+
+.youtube-link-feedback {
+  background: transparent;
+  border: 0;
+  padding: 0;
+  animation: youtube-link-feedback-rise 900ms ease-out forwards;
 }
 
 /* Keep floating surfaces visually close to the canvas instead of heavily elevated. */

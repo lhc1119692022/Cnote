@@ -54,7 +54,7 @@ jobs:
         cd web
         npm run build
       env:
-        VITE_PROXY_URL: ${{ secrets.VITE_PROXY_URL }}
+        # Optional. Leave empty when each user configures their own service.
         VITE_SCRAPER_URL: ${{ secrets.VITE_SCRAPER_URL }}
     
     - name: Deploy to GitHub Pages
@@ -68,8 +68,8 @@ jobs:
 2. **配置 GitHub Secrets**
 
 进入仓库 Settings → Secrets and variables → Actions:
-- 添加 `VITE_PROXY_URL`: 你的 Workers 代理 URL
-- 添加 `VITE_SCRAPER_URL`: 你的 Scraper Worker URL
+- 可选添加 `VITE_SCRAPER_URL`: 你为该站点提供的默认内容解析服务 URL。
+  留空时，每位用户可在设置中连接自己部署的服务。
 
 3. **启用 GitHub Pages**
 
@@ -122,9 +122,8 @@ gh-pages -d dist
 
 3. **配置环境变量**
 
-在项目设置中添加:
-- `VITE_PROXY_URL`: 你的 Workers 代理 URL
-- `VITE_SCRAPER_URL`: 你的 Scraper Worker URL
+如需提供默认内容解析服务，可在项目设置中添加
+`VITE_SCRAPER_URL`。留空时，每位用户可在设置中配置自己的服务。
 
 4. **部署**
 
@@ -164,9 +163,8 @@ wrangler pages deploy dist --project-name=cnote
 
 5. **配置环境变量**
 
-在 Cloudflare Dashboard → Pages → 项目设置 → Environment Variables:
-- `VITE_PROXY_URL`: 你的 Workers 代理 URL
-- `VITE_SCRAPER_URL`: 你的 Scraper Worker URL
+如需提供默认内容解析服务，在 Cloudflare Dashboard → Pages → 项目设置 →
+Environment Variables 中添加 `VITE_SCRAPER_URL`。
 
 访问: `https://cnote.pages.dev`
 
@@ -189,9 +187,8 @@ wrangler pages deploy dist --project-name=cnote
 
 3. **配置环境变量**
 
-在 Site settings → Environment variables:
-- `VITE_PROXY_URL`: 你的 Workers 代理 URL
-- `VITE_SCRAPER_URL`: 你的 Scraper Worker URL
+如需提供默认内容解析服务，在 Site settings → Environment variables 中添加
+`VITE_SCRAPER_URL`。
 
 4. **部署**
 
@@ -209,23 +206,17 @@ wrangler pages deploy dist --project-name=cnote
    - 注册: https://dash.cloudflare.com/sign-up
    - 免费计划即可使用 Workers
 
-2. **安装 Wrangler**
+2. **登录 Cloudflare**
 
 ```bash
-npm install -g wrangler
-```
-
-3. **登录 Cloudflare**
-
-```bash
-wrangler login
+npx wrangler login
 ```
 
 浏览器会打开授权页面，点击授权。
 
 ---
 
-### 部署 AI API 代理
+### 部署内容解析服务
 
 1. **进入 Workers 目录**
 
@@ -234,68 +225,32 @@ cd workers
 npm install
 ```
 
-2. **配置 wrangler.toml**
-
-编辑 `wrangler.toml`:
-
-```toml
-name = "cnote-api-proxy"
-main = "src/proxy.ts"
-compatibility_date = "2024-12-01"
-
-# 开发环境
-[env.dev]
-name = "cnote-api-proxy-dev"
-
-# 生产环境
-[env.production]
-name = "cnote-api-proxy"
-```
-
-3. **本地测试**
+2. **本地测试**
 
 ```bash
 npm run dev
 ```
 
-访问 http://localhost:8787/health 验证
+访问 http://localhost:8787/v1/health 验证。
 
-4. **部署到生产**
+3. **部署到生产**
 
 ```bash
-# 部署到生产环境
-wrangler deploy
-
-# 或指定环境
-wrangler deploy --env production
+npm run deploy
 ```
 
-5. **获取 Worker URL**
+4. **获取 Worker URL**
 
 部署成功后会显示 URL，例如:
 ```
-https://cnote-api-proxy.your-subdomain.workers.dev
+https://cnote-content-service.your-subdomain.workers.dev
 ```
 
-记录这个 URL，用于前端配置。
+在 Cnote 中打开“设置 → 内容解析服务”，测试并保存此 URL。可选的
+`CN_CONTENT_TOKEN` 和 `SCRAPER_ALLOWED_ORIGINS` 详见 `workers/README.md`。
 
----
-
-### 部署 Web Scraper
-
-1. **部署 Scraper Worker**
-
-```bash
-cd workers
-wrangler deploy --config wrangler-scraper.toml
-```
-
-2. **获取 Worker URL**
-
-记录 Scraper Worker 的 URL:
-```
-https://cnote-scraper.your-subdomain.workers.dev
-```
+AI API 代理不是应用的默认组件。若某个 AI 渠道没有提供浏览器 CORS 支持，请在
+“设置 → 渠道”填写你自己部署并信任的中转地址；不要把 API Key 发送到公共代理。
 
 ---
 
@@ -313,25 +268,25 @@ https://cnote-scraper.your-subdomain.workers.dev
 
 ```toml
 [env.production]
-name = "cnote-api-proxy"
+    name = "cnote-content-service"
 routes = [
-  { pattern = "api.cnote.app/*", zone_name = "cnote.app" }
+  { pattern = "content.yourdomain.com/*", zone_name = "yourdomain.com" }
 ]
 ```
 
 方式 B: 在 Cloudflare Dashboard 中配置:
 - Workers → 选择 Worker → Triggers → Routes
-- 添加路由: `api.yourdomain.com/*`
+- 添加路由: `content.yourdomain.com/*`
 
 3. **配置 DNS**
 
 在 Cloudflare DNS 设置中:
 - 类型: AAAA
-- 名称: api
+- 名称: content
 - 内容: 100:: (Workers 占位符)
 - 代理状态: Proxied (橙色云朵)
 
-重复以上步骤为 Scraper Worker 配置子域名 (如 `scraper.yourdomain.com`)
+这会为内容解析服务配置自定义域名。
 
 ---
 
@@ -342,9 +297,8 @@ routes = [
 创建 `web/.env`:
 
 ```env
-# Cloudflare Workers URLs
-VITE_PROXY_URL=https://cnote-api-proxy.your-subdomain.workers.dev
-VITE_SCRAPER_URL=https://cnote-scraper.your-subdomain.workers.dev
+# Optional default Content Service URL
+VITE_SCRAPER_URL=https://cnote-content-service.your-subdomain.workers.dev
 ```
 
 ### 生产环境

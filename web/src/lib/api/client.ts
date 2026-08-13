@@ -2,6 +2,8 @@ import type {
   ProviderConfig,
   ChatCompletionRequest,
   ChatCompletionResponse,
+  ChatContentPart,
+  ChatMessage,
   ResponsesAPIRequest,
   ResponsesAPIResponse,
   StreamChunk,
@@ -46,6 +48,33 @@ export class AIClient {
     }
   }
 
+  private messageText(content: ChatMessage['content']) {
+    return typeof content === 'string'
+      ? content
+      : content.filter((part): part is Extract<ChatContentPart, { type: 'text' }> => part.type === 'text').map((part) => part.text).join('\n')
+  }
+
+  private openAIContent(content: ChatMessage['content'], responses = false) {
+    if (typeof content === 'string') return content
+    return content.map((part) => part.type === 'text'
+      ? { type: responses ? 'input_text' : 'text', text: part.text }
+      : {
+          type: responses ? 'input_image' : 'image_url',
+          ...(responses
+            ? { image_url: part.source.kind === 'url' ? part.source.url : `data:${part.source.mediaType};base64,${part.source.data}` }
+            : { image_url: { url: part.source.kind === 'url' ? part.source.url : `data:${part.source.mediaType};base64,${part.source.data}` } }),
+        })
+  }
+
+  private anthropicContent(content: ChatMessage['content']) {
+    if (typeof content === 'string') return content
+    return content.map((part) => {
+      if (part.type === 'text') return { type: 'text', text: part.text }
+      if (part.source.kind === 'base64') return { type: 'image', source: { type: 'base64', media_type: part.source.mediaType, data: part.source.data } }
+      return { type: 'image', source: { type: 'url', url: part.source.url } }
+    })
+  }
+
   async listModels(): Promise<string[]> {
     const response = await fetch(this.getRequestURL('/v1/models'), {
       method: 'GET',
@@ -71,8 +100,13 @@ export class AIClient {
 
   async complete(request: ChatCompletionRequest): Promise<string> {
     if (this.provider.protocol === 'chatCompletions') {
-      const response = await this.chatCompletion({ ...request, stream: false }) as ChatCompletionResponse
-      return response.choices?.[0]?.message?.content || ''
+      const response = await this.chatCompletion({
+        ...request,
+        messages: request.messages.map((message) => ({ role: message.role, content: this.openAIContent(message.content) })) as ChatMessage[],
+        stream: false,
+      }) as ChatCompletionResponse
+      const content = response.choices?.[0]?.message?.content
+      return typeof content === 'string' ? content : this.messageText(content || '')
     }
 
     if (this.provider.protocol === 'responses') {
@@ -81,7 +115,7 @@ export class AIClient {
         headers: this.getHeaders(),
         body: JSON.stringify({
           model: request.model,
-          input: request.messages,
+          input: request.messages.map((message) => ({ role: message.role, content: this.openAIContent(message.content, true) })),
           temperature: request.temperature,
           max_output_tokens: request.max_tokens,
         }),
@@ -96,10 +130,8 @@ export class AIClient {
         || ''
     }
 
-    const system = request.messages.filter((message) => message.role === 'system').map((message) => message.content).join('\n\n')
-    const messages = request.messages
-      .filter((message) => message.role !== 'system')
-      .map((message) => ({ role: message.role, content: message.content }))
+    const system = request.messages.filter((message) => message.role === 'system').map((message) => this.messageText(message.content)).join('\n\n')
+    const messages = request.messages.filter((message) => message.role !== 'system').map((message) => ({ role: message.role, content: this.anthropicContent(message.content) }))
     const response = await fetch(this.getRequestURL('/v1/messages'), {
       method: 'POST',
       headers: this.getHeaders(),
@@ -117,6 +149,88 @@ export class AIClient {
     }
     const result = await response.json() as { content?: Array<{ type?: string; text?: string }> }
     return result.content?.filter((item) => item.type === 'text').map((item) => item.text || '').join('') || ''
+  }
+
+  /**
+   * Stream plain text deltas through the provider's native SSE protocol.
+   */
+  async *completeStream(request: ChatCompletionRequest): AsyncGenerator<string> {
+    let endpoint = '/v1/chat/completions'
+    let body: Record<string, unknown> = { ...request, stream: true }
+
+    if (this.provider.protocol === 'responses') {
+      endpoint = '/v1/responses'
+      body = {
+        model: request.model,
+        input: request.messages.map((message) => ({ role: message.role, content: this.openAIContent(message.content, true) })),
+        temperature: request.temperature,
+        max_output_tokens: request.max_tokens,
+        stream: true,
+      }
+    } else if (this.provider.protocol === 'messages') {
+      endpoint = '/v1/messages'
+      const system = request.messages
+        .filter((message) => message.role === 'system')
+        .map((message) => this.messageText(message.content))
+        .join('\n\n')
+      body = {
+        model: request.model,
+        system: system || undefined,
+        messages: request.messages.filter((message) => message.role !== 'system').map((message) => ({ role: message.role, content: this.anthropicContent(message.content) })),
+        temperature: request.temperature,
+        max_tokens: request.max_tokens || 4096,
+        stream: true,
+      }
+    }
+
+    if (this.provider.protocol === 'chatCompletions') {
+      body = {
+        ...request,
+        messages: request.messages.map((message) => ({ role: message.role, content: this.openAIContent(message.content) })),
+        stream: true,
+      }
+    }
+
+    const response = await fetch(this.getRequestURL(endpoint), {
+      method: 'POST',
+      headers: this.getHeaders(),
+      body: JSON.stringify(body),
+    })
+    if (!response.ok) {
+      let message = `HTTP ${response.status}`
+      try {
+        const error = await response.json() as APIError
+        message = error.error?.message || message
+      } catch {
+        // Preserve the HTTP status for non-JSON errors.
+      }
+      throw new Error(message)
+    }
+
+    const contentType = response.headers.get('content-type') || ''
+    if (contentType.includes('application/json')) {
+      const result = await response.json() as ChatCompletionResponse & ResponsesAPIResponse & { content?: Array<{ type?: string; text?: string }> }
+      const choiceContent = result.choices?.[0]?.message?.content
+      const text = (typeof choiceContent === 'string' ? choiceContent : this.messageText(choiceContent || ''))
+        || result.output_text
+        || result.output?.flatMap((item) => item.content || []).find((item) => item.type === 'output_text')?.text
+        || result.content?.filter((item) => item.type === 'text').map((item) => item.text || '').join('')
+        || ''
+      if (text) yield text
+      return
+    }
+
+    for await (const payload of this.handleEventStream(response)) {
+      const choiceText = payload.choices?.map((choice: { delta?: { content?: string } }) => choice.delta?.content || '').join('') || ''
+      const responseText = payload.type === 'response.output_text.delta' && typeof payload.delta === 'string'
+        ? payload.delta
+        : ''
+      const messageText = payload.type === 'content_block_delta' && payload.delta?.type === 'text_delta'
+        ? payload.delta.text || ''
+        : ''
+      const text = choiceText || responseText || messageText
+      if (text) yield text
+    }
   }
 
   /**
@@ -214,6 +328,42 @@ export class AIClient {
           }
         }
       }
+    }
+  }
+
+  private async *handleEventStream(response: Response): AsyncGenerator<any> {
+    const reader = response.body?.getReader()
+    if (!reader) throw new Error('Response body is not readable')
+
+    const decoder = new TextDecoder()
+    let buffer = ''
+    const parseEvent = (block: string) => {
+      const data = block
+        .split(/\r?\n/)
+        .filter((line) => line.startsWith('data:'))
+        .map((line) => line.slice(5).trimStart())
+        .join('\n')
+        .trim()
+      if (!data || data === '[DONE]') return undefined
+      try { return JSON.parse(data) } catch { return undefined }
+    }
+
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buffer += decoder.decode(value, { stream: true })
+      const blocks = buffer.split(/\r?\n\r?\n/)
+      buffer = blocks.pop() || ''
+      for (const block of blocks) {
+        const payload = parseEvent(block)
+        if (payload) yield payload
+      }
+    }
+
+    buffer += decoder.decode()
+    if (buffer.trim()) {
+      const payload = parseEvent(buffer)
+      if (payload) yield payload
     }
   }
 

@@ -16,6 +16,7 @@ import {
 import { AppShell } from '@/components/layout/AppShell'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import { ContentServiceSettings } from '@/components/settings/ContentServiceSettings'
 import { AIClient, PROVIDERS, getProvider, validateAPIKey, type ProtocolType } from '@/lib/api'
 import { localForageStorage } from '@/lib/localforage-storage'
 import { useAIStore, type APIChannel, type APIChannelInput } from '@/stores/use-ai-store'
@@ -23,7 +24,7 @@ import { useFlowStore } from '@/stores/use-flow-store'
 import { useSourceStore } from '@/stores/use-source-store'
 import { useTemplateStore } from '@/stores/use-template-store'
 
-type SettingsTab = 'channels' | 'storage'
+type SettingsTab = 'channels' | 'content-service' | 'storage'
 
 interface StorageEstimate {
   usage: number
@@ -191,7 +192,7 @@ export function APIKeysManager() {
       setConnectionMessage(ids.length ? `已拉取 ${ids.length} 个模型，请选择要启用的模型` : '连接成功，但接口没有返回模型')
     } catch (error) {
       const message = error instanceof TypeError
-        ? '连接失败，可能是遇到跨域问题，建议使用 Cloudflare Worker 中转后使用。'
+        ? '连接失败，可能是接口未允许浏览器跨域请求。请改用服务商支持的浏览器端接口，或填写你自己信任的中转地址。'
         : error instanceof Error ? error.message : '拉取模型失败'
       setConnectionMessage(message)
     } finally {
@@ -306,19 +307,15 @@ export function APIKeysManager() {
     <AppShell>
       <main className="flex h-full min-w-0 flex-col overflow-hidden">
         <header className="flex h-[60px] shrink-0 items-center justify-between border-b border-border bg-card px-6">
-          <h1 className="text-[15px] font-semibold text-foreground">API 密钥</h1>
+          <h1 className="text-[15px] font-semibold text-foreground">设置</h1>
           <div className="flex items-center gap-2">
-            <input ref={importInputRef} type="file" accept="application/json,.json" className="hidden" style={{ display: 'none' }} onChange={handleImportConfiguration} />
-            <Button variant="secondary" size="sm" className="gap-1.5" onClick={() => importInputRef.current?.click()}>
-              <Upload className="h-3.5 w-3.5" />导入
-            </Button>
-            <Button variant="secondary" size="sm" className="gap-1.5" onClick={handleExportConfiguration}>
-              <Download className="h-3.5 w-3.5" />导出
-            </Button>
             {activeTab === 'channels' && (
-              <Button size="sm" className="gap-1.5" onClick={openNewChannelDialog}>
-                <Plus className="h-3.5 w-3.5" />新增渠道
-              </Button>
+              <>
+                <input ref={importInputRef} type="file" accept="application/json,.json" className="hidden" style={{ display: 'none' }} onChange={handleImportConfiguration} />
+                <Button variant="secondary" size="sm" className="gap-1.5" onClick={() => importInputRef.current?.click()}><Upload className="h-3.5 w-3.5" />导入</Button>
+                <Button variant="secondary" size="sm" className="gap-1.5" onClick={handleExportConfiguration}><Download className="h-3.5 w-3.5" />导出</Button>
+                <Button size="sm" className="gap-1.5" onClick={openNewChannelDialog}><Plus className="h-3.5 w-3.5" />新增渠道</Button>
+              </>
             )}
           </div>
         </header>
@@ -326,6 +323,7 @@ export function APIKeysManager() {
         <div className="flex-1 overflow-auto p-6">
           <div className="mb-5 flex flex-wrap gap-2">
             <button type="button" onClick={() => setActiveTab('channels')} className={activeTab === 'channels' ? 'rounded-lg bg-primary px-3 py-1.5 text-[13px] text-primary-foreground' : 'rounded-lg border border-border bg-background px-3 py-1.5 text-[13px] text-muted-foreground hover:bg-muted dark:border-0 dark:bg-secondary'}>渠道 ({apiKeys.length})</button>
+            <button type="button" onClick={() => setActiveTab('content-service')} className={activeTab === 'content-service' ? 'rounded-lg bg-primary px-3 py-1.5 text-[13px] text-primary-foreground' : 'rounded-lg border border-border bg-background px-3 py-1.5 text-[13px] text-muted-foreground hover:bg-muted dark:border-0 dark:bg-secondary'}>内容解析服务</button>
             <button type="button" onClick={() => setActiveTab('storage')} className={activeTab === 'storage' ? 'rounded-lg bg-primary px-3 py-1.5 text-[13px] text-primary-foreground' : 'rounded-lg border border-border bg-background px-3 py-1.5 text-[13px] text-muted-foreground hover:bg-muted dark:border-0 dark:bg-secondary'}>本地存储</button>
           </div>
 
@@ -372,6 +370,8 @@ export function APIKeysManager() {
                 </div>
               )}
             </section>
+          ) : activeTab === 'content-service' ? (
+            <ContentServiceSettings />
           ) : (
             <section>
               <div className="rounded-xl border border-border bg-card p-5">

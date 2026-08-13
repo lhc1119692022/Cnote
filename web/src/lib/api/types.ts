@@ -17,9 +17,19 @@ export interface ModelConfig {
 }
 
 // API 请求/响应类型
+export type ChatImageSource =
+  | { kind: 'url'; url: string }
+  | { kind: 'base64'; mediaType: string; data: string }
+
+export type ChatContentPart =
+  | { type: 'text'; text: string }
+  | { type: 'image'; source: ChatImageSource }
+
+export type ChatMessageContent = string | ChatContentPart[]
+
 export interface ChatMessage {
   role: 'system' | 'user' | 'assistant'
-  content: string
+  content: ChatMessageContent
 }
 
 export interface ChatCompletionRequest {

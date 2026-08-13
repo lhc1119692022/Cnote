@@ -19,9 +19,12 @@ import { useFlowStore } from "@/stores/use-flow-store";
 import { useTemplateStore } from "@/stores/use-template-store";
 import { useAIStore } from "@/stores/use-ai-store";
 import { useSourceStore } from "@/stores/use-source-store";
-import { storeLocalResource } from "@/lib/resource-storage";
+import { retainLocalResource } from "@/lib/resource-storage";
 import { captureFlowThumbnail } from "@/lib/flow/thumbnail";
+import { AI_NODE_DEFAULT_SIZE, BROWSER_NODE_DEFAULT_SIZE } from "@/lib/flow/node-dimensions";
 import { getContentCategoryVisual } from "@/lib/content-visuals";
+import { CONTENT_FILE_ACCEPT, emptyContentData } from "@/lib/content-import";
+import { importContentIntoNode } from "@/lib/content-import-controller";
 import { NodeMenuIcon } from "./NodeMenuIcon";
 import { Button } from "@/components/ui/button";
 import {
@@ -32,7 +35,8 @@ import {
 } from "@/components/ui/dialog";
 
 interface ToolbarProps {
-  saveStatus?: "saved" | "unsaved";
+  saveStatus?: "saved" | "saving" | "unsaved";
+  onSave?: () => void | Promise<void>;
   onOpenNodePanel?: () => void;
   onOpenContentLibrary?: () => void;
   onOpenExtensionPanel?: () => void;
@@ -53,6 +57,7 @@ interface ToolbarProps {
 
 export function Toolbar({
   saveStatus = "saved",
+  onSave,
   onOpenNodePanel,
   onOpenContentLibrary,
   onOpenExtensionPanel,
@@ -235,26 +240,25 @@ export function Toolbar({
   };
 
   const getVisibleViewportCenter = (nodeWidth: number, nodeHeight: number) => {
-    const center = reactFlowInstance.project({
+    const center = reactFlowInstance.screenToFlowPosition({
       x: leftInset + (window.innerWidth - leftInset - rightInset) / 2,
       y: window.innerHeight / 2,
     });
     return { x: center.x - nodeWidth / 2, y: center.y - nodeHeight / 2 };
   };
 
-  const addLibraryItem = (item: (typeof libraryItems)[number]) => {
-    const size =
-      item.type === "pdf"
-        ? { width: 320, height: 300 }
-        : { width: 420, height: 360 };
+  const addLibraryItem = async (item: (typeof libraryItems)[number]) => {
+    const size = { width: 420, height: 360 };
+    const resource = item.nodeData.source;
+    if (resource?.kind === "file" || resource?.kind === "clipboard-image") {
+      await retainLocalResource(resource.resourceId);
+    }
     addNode({
-      type: item.type,
+      type: "content",
       position: getVisibleViewportCenter(size.width, size.height),
       data: {
-        ...(item.metadata?.nodeData || {}),
+        ...item.nodeData,
         label: item.title,
-        mode: item.type,
-        content: item.content,
         sourceId: undefined,
       },
     });
@@ -263,10 +267,7 @@ export function Toolbar({
   };
 
   const libraryItemVisual = (item: (typeof libraryItems)[number]) =>
-    getContentCategoryVisual(
-      item.type,
-      item.metadata?.nodeData?.contentCategory,
-    );
+    getContentCategoryVisual(undefined, item.nodeData.category || undefined);
 
   // 生成画布缩略图
   const generateThumbnail = async () => {
@@ -294,16 +295,16 @@ export function Toolbar({
     addNode({
       type: "content",
       position,
-      data: {
-        label: "内容",
-        content: "",
-      },
+      data: emptyContentData("内容"),
     });
   };
 
   // 添加 AI 节点
   const handleAddAI = () => {
-    const position = getVisibleViewportCenter(380, 360);
+    const position = getVisibleViewportCenter(
+      AI_NODE_DEFAULT_SIZE.width,
+      AI_NODE_DEFAULT_SIZE.height,
+    );
 
     const defaultChannel = apiKeys.find(
       (channel) =>
@@ -312,21 +313,34 @@ export function Toolbar({
     addNode({
       type: "ai",
       position,
+      style: AI_NODE_DEFAULT_SIZE,
       data: {
         label: "AI 节点",
         channelId: defaultChannel?.id,
         model: defaultChannel?.modelIds?.[0],
         systemPrompt: "Generate content based on the inputs.",
+        prompt: "",
+        temperature: 1,
+        maxTokens: 258000,
+        autoCompressThreshold: 0.7,
+        webSearch: "auto",
+        reasoningLevel: "medium",
         messages: [],
+        sessions: [],
       },
     });
+    setShowLibrarySubmenu(false);
+    setShowAddMenu(false);
   };
 
   const handleAddBrowser = () => {
     addNode({
       type: "browser",
-      position: getVisibleViewportCenter(320, 390),
-      data: { label: "浏览器节点", url: "", status: "idle" },
+      position: getVisibleViewportCenter(
+        BROWSER_NODE_DEFAULT_SIZE.width,
+        BROWSER_NODE_DEFAULT_SIZE.height,
+      ),
+      data: { label: "浏览器节点", url: "https://www.baidu.com/", confirmedUrl: "https://www.baidu.com/", outputMode: "url", syncStatus: "synced", status: "loading" },
     });
     setShowLibrarySubmenu(false);
     setShowAddMenu(false);
@@ -334,9 +348,12 @@ export function Toolbar({
 
   // 保存
   const handleSave = async () => {
+    if (onSave) {
+      await onSave();
+      return;
+    }
     const thumbnail = await generateThumbnail();
     saveCurrentFlow(thumbnail);
-    // TODO: 显示保存成功提示
   };
 
   // 保存为模板
@@ -411,8 +428,7 @@ export function Toolbar({
   const handleImport = () => {
     const input = document.createElement("input");
     input.type = "file";
-    input.accept =
-      ".json,.txt,.md,.markdown,.csv,.tsv,.pdf,.png,.jpg,.jpeg,.gif,.webp,.mp4,.webm,.mov";
+    input.accept = `.json,${CONTENT_FILE_ACCEPT}`;
     input.onchange = async (e) => {
       const file = (e.target as HTMLInputElement).files?.[0];
       if (!file) return;
@@ -429,50 +445,12 @@ export function Toolbar({
         reader.readAsText(file);
         return;
       }
-      const mode = ["png", "jpg", "jpeg", "gif", "webp"].includes(
-        extension || "",
-      )
-        ? "image"
-        : ["mp4", "webm", "mov"].includes(extension || "")
-          ? "video"
-          : extension === "pdf"
-            ? "pdf"
-            : "text";
-      const leafMode =
-        extension === "csv" || extension === "tsv" ? "table" : mode;
-      if (leafMode === "text" || leafMode === "table") {
-        const reader = new FileReader();
-        reader.onload = (event) =>
-          addNode({
-            type: leafMode,
-            position: { x: 180, y: 180 },
-            data: {
-              label: leafMode === "table" ? "表格节点" : "文本节点",
-              mode: leafMode,
-              content: event.target?.result as string,
-              fileName: file.name,
-            },
-          });
-        reader.readAsText(file);
-      } else {
-        const resource = await storeLocalResource(file);
-        addNode({
-          type: leafMode,
-          position: { x: 180, y: 180 },
-          data: {
-            label:
-              leafMode === "image"
-                ? "图片节点"
-                : leafMode === "video"
-                  ? "视频节点"
-                  : "PDF 节点",
-            mode: leafMode,
-            content: resource.url,
-            resourceId: resource.resourceId,
-            fileName: file.name,
-          },
-        });
-      }
+      const created = addNode({
+        type: "content",
+        position: getVisibleViewportCenter(420, 360),
+        data: emptyContentData(file.name || "内容"),
+      });
+      void importContentIntoNode(created.id, { kind: "file", file, fileName: file.name });
     };
     input.click();
   };
@@ -536,9 +514,9 @@ export function Toolbar({
                 </h1>
               )}
               <p
-                className={`truncate text-[10px] ${saveStatus === "unsaved" ? "text-amber-600" : "text-muted-foreground"}`}
+                className={`truncate text-[10px] ${saveStatus === "unsaved" ? "text-amber-600" : saveStatus === "saving" ? "text-blue-600" : "text-muted-foreground"}`}
               >
-                {saveStatus === "unsaved" ? "有更改未保存" : "所有更改已保存"}
+                {saveStatus === "unsaved" ? "有更改未保存" : saveStatus === "saving" ? "正在保存..." : "所有更改已保存"}
               </p>
             </div>
           )}
@@ -657,7 +635,7 @@ export function Toolbar({
                           <button
                             key={item.id}
                             className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-xs hover:bg-muted"
-                            onClick={() => addLibraryItem(item)}
+                            onClick={() => void addLibraryItem(item)}
                           >
                             <span className="flex h-6 w-6 shrink-0 items-center justify-center">
                               <Icon

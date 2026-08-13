@@ -4,26 +4,29 @@ import { AppShell } from '@/components/layout/AppShell'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { useSourceStore } from '@/stores/use-source-store'
-import type { ContentMode } from '@/types/flow'
+import type { ContentCategory, ContentNodeData } from '@/types/flow'
 import { getContentCategoryVisual } from '@/lib/content-visuals'
+import { emptyContentData } from '@/lib/content-import'
+import { checksumText } from '@/lib/resource-storage'
 
-const CONTENT_TYPES: { value: ContentMode; label: string }[] = [
-  { value: 'text', label: '文本' },
-  { value: 'youtube', label: 'YouTube' },
-  { value: 'image', label: '图片' },
+const CONTENT_TYPES: { value: ContentCategory; label: string }[] = [
   { value: 'video', label: '视频' },
-  { value: 'table', label: '表格' },
-  { value: 'pdf', label: 'PDF' },
+  { value: 'social', label: '社媒' },
+  { value: 'document', label: '文档' },
+  { value: 'data', label: '数据' },
+  { value: 'presentation', label: '演示文稿' },
+  { value: 'mindmap', label: '思维导图' },
+  { value: 'image', label: '图片' },
 ]
 
 export function SourcesManager() {
-  const { sources, createSource, deleteSource, searchSources, getSourcesByType, initialize } = useSourceStore()
+  const { sources, createSource, deleteSource, searchSources, getSourcesByCategory, initialize } = useSourceStore()
   const [searchQuery, setSearchQuery] = useState('')
-  const [selectedType, setSelectedType] = useState<ContentMode | null>(null)
+  const [selectedType, setSelectedType] = useState<ContentCategory | null>(null)
   const [showNewDialog, setShowNewDialog] = useState(false)
   const [newTitle, setNewTitle] = useState('')
   const [newContent, setNewContent] = useState('')
-  const [newType, setNewType] = useState<ContentMode>('text')
+  const [newType, setNewType] = useState<ContentCategory>('document')
 
   useEffect(() => {
     initialize()
@@ -32,19 +35,29 @@ export function SourcesManager() {
   const filteredSources = searchQuery
     ? searchSources(searchQuery)
     : selectedType
-      ? getSourcesByType(selectedType)
+      ? getSourcesByCategory(selectedType)
       : sources
 
   const resetDialog = () => {
     setShowNewDialog(false)
     setNewTitle('')
     setNewContent('')
-    setNewType('text')
+    setNewType('document')
   }
 
-  const handleCreateSource = () => {
+  const handleCreateSource = async () => {
     if (!newTitle.trim() || !newContent.trim()) return
-    createSource(newTitle, newContent, newType)
+    const checksum = await checksumText(newContent)
+    const nodeData: ContentNodeData = {
+      ...emptyContentData(newTitle),
+      category: newType,
+      subtype: newType === 'document' ? 'plain-text' : null,
+      state: 'ready',
+      source: { kind: 'text', text: newContent, checksum, mimeType: 'text/plain' },
+      payload: newType === 'document' ? { kind: 'document', rawText: newContent, plainText: newContent } : undefined,
+      preview: { title: newTitle, description: newContent.slice(0, 160), badge: CONTENT_TYPES.find((item) => item.value === newType)?.label },
+    }
+    createSource(newTitle, nodeData)
     resetDialog()
   }
 
@@ -58,11 +71,19 @@ export function SourcesManager() {
     return `${date.getMonth() + 1}月${date.getDate()}日`
   }
 
-  const getTypeLabel = (type: ContentMode) =>
+  const getTypeLabel = (type: ContentCategory | null) =>
     CONTENT_TYPES.find((item) => item.value === type)?.label || type
 
   const getSourceVisual = (source: (typeof sources)[number]) =>
-    getContentCategoryVisual(source.type, source.metadata?.nodeData?.contentCategory)
+    getContentCategoryVisual(undefined, source.nodeData.category || undefined)
+
+  const sourceDescription = (source: (typeof sources)[number]) => {
+    const payload = source.nodeData.payload
+    if (payload?.kind === 'document') return payload.plainText
+    if (payload?.kind === 'social') return payload.bodyText
+    if (payload?.kind === 'video') return payload.transcript || payload.title || source.nodeData.preview?.description || ''
+    return source.nodeData.preview?.description || JSON.stringify(payload || '')
+  }
 
   return (
     <AppShell>
@@ -103,7 +124,7 @@ export function SourcesManager() {
                 className={selectedType === type.value ? 'flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-[13px] text-primary-foreground' : 'flex items-center gap-1.5 rounded-lg border border-border bg-background px-3 py-1.5 text-[13px] text-muted-foreground hover:bg-muted dark:border-0 dark:bg-secondary'}
               >
                 <Icon className={`h-3.5 w-3.5 ${selectedType === type.value ? '' : visual?.iconClass || ''}`} />
-                {type.label} ({getSourcesByType(type.value).length})
+                {type.label} ({getSourcesByCategory(type.value).length})
               </button>
             )})}
           </div>
@@ -128,10 +149,10 @@ export function SourcesManager() {
                   <div className="p-4">
                     <h3 className="truncate text-sm font-medium">{source.title}</h3>
                     <div className="mt-2 flex gap-2 text-xs text-muted-foreground">
-                      <span className="rounded bg-muted px-2 py-0.5">{getTypeLabel(source.type)}</span>
+                      <span className="rounded bg-muted px-2 py-0.5">{getTypeLabel(source.nodeData.category)}</span>
                       <span>{formatDate(source.createdAt)}</span>
                     </div>
-                    <p className="mt-3 line-clamp-2 text-xs leading-relaxed text-muted-foreground">{source.content}</p>
+                    <p className="mt-3 line-clamp-2 text-xs leading-relaxed text-muted-foreground">{sourceDescription(source)}</p>
                     <div className="mt-4 flex justify-end">
                       <button type="button" onClick={(event) => handleDeleteSource(event, source.id)} className="text-xs text-muted-foreground opacity-0 transition-opacity hover:text-destructive group-hover:opacity-100">删除</button>
                     </div>

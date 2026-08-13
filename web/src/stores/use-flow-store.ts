@@ -7,23 +7,28 @@ import type { Flow, Folder } from '@/types/flow'
 import { FlowExecutor, type ExecutionContext } from '@/lib/flow'
 import { useAIStore } from '@/stores/use-ai-store'
 import { localForageStorage } from '@/lib/localforage-storage'
+import { deleteLocalResource, retainLocalResource } from '@/lib/resource-storage'
+import { cloneFlowValue } from '@/lib/flow/clone'
+import {
+  AI_NODE_DEFAULT_SIZE,
+  BROWSER_NODE_DEFAULT_SIZE,
+  CONTENT_NODE_DEFAULT_SIZE,
+  GROUP_NODE_PADDING,
+  STICKY_NODE_DEFAULT_SIZE,
+} from '@/lib/flow/node-dimensions'
+import { tryGetContentServiceClient } from '@/lib/content-service'
+
+type FlowHistoryEntry = { nodes: Node[]; edges: Edge[] }
 
 const nodeLabelDefaults: Record<string, string> = {
   ai: 'AI 节点',
   browser: '浏览器节点',
   sticky: '贴纸',
   content: '内容类型选择',
-  text: '文本节点',
-  youtube: 'YouTube 节点',
-  pdf: 'PDF 节点',
-  image: '图片节点',
-  video: '视频节点',
-  table: '表格节点',
 }
 
 function getNodeLabel(node: Pick<Node, 'type' | 'data'>) {
-  const mode = node.type === 'content' ? node.data?.mode : node.type
-  return String(node.data?.label || nodeLabelDefaults[mode || ''] || '节点').trim() || '节点'
+  return String(node.data?.label || nodeLabelDefaults[node.type || ''] || '节点').trim() || '节点'
 }
 
 function getUniqueNodeLabel(requestedLabel: string, usedLabels: Set<string>) {
@@ -53,35 +58,151 @@ function ensureUniqueNodeLabels(nodes: Node[]) {
   })
 }
 
-function normalizeLegacyNodes(nodes: Node[]) {
+function withDefaultNodeDimensions<T extends { type?: string; style?: Node['style'] }>(node: T): T {
+  const defaults = node.type === 'browser'
+    ? BROWSER_NODE_DEFAULT_SIZE
+    : node.type === 'ai'
+      ? AI_NODE_DEFAULT_SIZE
+      : node.type === 'content'
+        ? CONTENT_NODE_DEFAULT_SIZE
+        : node.type === 'sticky'
+          ? STICKY_NODE_DEFAULT_SIZE
+          : undefined
+  if (!defaults) return node
+  const style = node.style || {}
+  const hasWidth = style.width !== undefined
+  const hasHeight = style.height !== undefined
+  if (hasWidth && hasHeight) return node
+
+  return {
+    ...node,
+    style: {
+      ...style,
+      ...(hasWidth ? {} : { width: defaults.width }),
+      ...(hasHeight ? {} : { height: defaults.height }),
+    },
+  } as T
+}
+
+function recoverLegacyContentNodeDimensions(node: Node): Node {
+  if (node.type !== 'content') return node
+
+  const data = node.data as {
+    category?: string | null
+    layoutRecoveryVersion?: number
+  }
+  const height = Number(node.style?.height ?? node.height)
+  const isNonMediaContent = data.category !== 'image' && data.category !== 'video'
+
+  // Older builds could store a zoom-scaled text/details measurement as the
+  // node height. Recover that specific legacy value once, then preserve any
+  // later manual resize the user makes.
+  if (!isNonMediaContent || data.layoutRecoveryVersion === 1 || height <= 1200) return node
+
+  return {
+    ...node,
+    style: { ...(node.style || {}), height: CONTENT_NODE_DEFAULT_SIZE.height },
+    data: { ...node.data, layoutRecoveryVersion: 1 },
+  }
+}
+
+function normalizeGroupPadding(nodes: Node[]) {
+  const legacyGroupPadding = 28
+  const groupPaddingDeltas = new Map<string, number>()
+
+  nodes.forEach((node) => {
+    if (node.type !== 'group') return
+    const currentPadding = Number(node.data?.padding)
+    const padding = Number.isFinite(currentPadding) ? currentPadding : legacyGroupPadding
+    if (padding < GROUP_NODE_PADDING) groupPaddingDeltas.set(node.id, GROUP_NODE_PADDING - padding)
+  })
+
+  if (!groupPaddingDeltas.size) return nodes
+
   return nodes.map((node) => {
-    if (node.type === 'output' || node.type === 'editor') {
+    if (node.type === 'group') {
+      const delta = groupPaddingDeltas.get(node.id)
+      if (!delta) return node
+      const width = Number(node.style?.width ?? node.width) || 160
+      const height = Number(node.style?.height ?? node.height) || 120
       return {
         ...node,
-        type: 'text',
-        data: {
-          ...node.data,
-          mode: 'text',
-          content: node.data?.content || node.data?.output || '',
-        },
+        position: { x: node.position.x - delta, y: node.position.y - delta },
+        style: { ...(node.style || {}), width: width + delta * 2, height: height + delta * 2 },
+        data: { ...node.data, padding: GROUP_NODE_PADDING },
       }
     }
-    if (node.type === 'group') {
-      return {
-        ...node,
-        type: 'sticky',
-        data: { ...node.data, text: node.data?.text || node.data?.label || '' },
-      }
+
+    const delta = node.parentNode ? groupPaddingDeltas.get(node.parentNode) : undefined
+    return delta
+      ? { ...node, position: { x: node.position.x + delta, y: node.position.y + delta } }
+      : node
+  })
+}
+
+function normalizeGroupBehavior(nodes: Node[]) {
+  const groupIds = new Set(nodes.filter((node) => node.type === 'group').map((node) => node.id))
+
+  return nodes.map((node) => {
+    // Groups are movable backplanes, not containment boundaries. Keep the
+    // parent relationship so a backplane carries its members, but drop the
+    // React Flow extent constraint that prevents members from leaving it.
+    if (node.parentNode && groupIds.has(node.parentNode) && node.extent !== undefined) {
+      return { ...node, extent: undefined, expandParent: undefined }
     }
     return node
   })
 }
 
-function getPersistableNodes(nodes: Node[]) {
-  return nodes.map((node) => {
-    if (!node.data?.resourceId || !String(node.data?.content || '').startsWith('blob:')) return node
-    return { ...node, data: { ...node.data, content: '' } }
+function normalizeNodes(nodes: Node[]) {
+  return normalizeGroupBehavior(normalizeGroupPadding(nodes
+    .map(withDefaultNodeDimensions)
+    .map(recoverLegacyContentNodeDimensions)))
+}
+
+function getPersistableNodes(nodes: Node[]) { return nodes }
+
+function nodeResourceId(node?: Node) {
+  if (!node) return undefined
+  const source = node.data?.source
+  return source?.kind === 'file' || source?.kind === 'clipboard-image' ? source.resourceId as string : undefined
+}
+
+function resourceCounts(nodes: Node[]) {
+  const counts = new Map<string, number>()
+  nodes.forEach((node) => {
+    const resourceId = nodeResourceId(node)
+    if (resourceId) counts.set(resourceId, (counts.get(resourceId) || 0) + 1)
   })
+  return counts
+}
+
+async function adjustResourceReferences(fromNodes: Node[], toNodes: Node[]) {
+  const from = resourceCounts(fromNodes)
+  const to = resourceCounts(toNodes)
+  const resourceIds = new Set([...from.keys(), ...to.keys()])
+  await Promise.all([...resourceIds].map(async (resourceId) => {
+    const delta = (to.get(resourceId) || 0) - (from.get(resourceId) || 0)
+    if (delta > 0) {
+      for (let index = 0; index < delta; index += 1) await retainLocalResource(resourceId)
+    } else {
+      for (let index = 0; index < Math.abs(delta); index += 1) await deleteLocalResource(resourceId)
+    }
+  }))
+}
+
+function cloneHistoryEntry(nodes: Node[], edges: Edge[]): FlowHistoryEntry {
+  return { nodes: cloneFlowValue(nodes), edges: cloneFlowValue(edges) }
+}
+
+async function replaceHistoryResourceReferences(
+  previous: FlowHistoryEntry[],
+  next: FlowHistoryEntry[],
+) {
+  // Retain incoming snapshots first so a resource shared across the boundary
+  // can never briefly reach zero references and lose its Blob.
+  for (const entry of next) await adjustResourceReferences([], entry.nodes)
+  for (const entry of previous) await adjustResourceReferences(entry.nodes, [])
 }
 
 interface FlowState {
@@ -100,7 +221,7 @@ interface FlowState {
   edges: Edge[]
 
   // 撤销/重做历史
-  history: { nodes: Node[]; edges: Edge[] }[]
+  history: FlowHistoryEntry[]
   historyIndex: number
   maxHistory: number
 
@@ -132,10 +253,11 @@ interface FlowState {
   moveFlowToFolder: (flowId: string, folderId: string | null) => void
 
   // 节点操作
-  addNode: (node: Omit<Node, 'id'>) => void
+  addNode: (node: Omit<Node, 'id'>) => Node
   deleteNode: (id: string) => void
   updateNode: (id: string, updates: Partial<Node>) => void
   duplicateNode: (id: string) => void
+  replaceGraph: (nodes: Node[], edges: Edge[], recordHistory?: boolean) => void
 
   // 边操作
   addEdge: (edge: Omit<Edge, 'id'>) => void
@@ -151,6 +273,7 @@ interface FlowState {
   canUndo: () => boolean
   canRedo: () => boolean
   addToHistory: () => void
+  clearHistory: () => void
 
   // 画布控制
   toggleLock: () => void
@@ -256,19 +379,19 @@ export const useFlowStore = create<FlowState>()(
       // 创建新 Flow
       createFlow: (name, description, folderId, initialGraph) => {
         flushScheduledFlowSave(get)
+        const previousHistory = get().history
         const nodeIdMap = new Map<string, string>()
-        const initialNodes = ensureUniqueNodeLabels(normalizeLegacyNodes((initialGraph?.nodes || []).map((node) => {
+        const initialNodes = ensureUniqueNodeLabels(normalizeNodes((initialGraph?.nodes || []).map((node) => {
           const id = nanoid()
           nodeIdMap.set(node.id, id)
           return {
-            ...node,
+            ...cloneFlowValue(node),
             id,
-            data: { ...node.data },
             selected: false,
           }
         })))
         const initialEdges = (initialGraph?.edges || []).map((edge) => ({
-          ...edge,
+          ...cloneFlowValue(edge),
           id: nanoid(),
           source: nodeIdMap.get(edge.source) || edge.source,
           target: nodeIdMap.get(edge.target) || edge.target,
@@ -285,6 +408,7 @@ export const useFlowStore = create<FlowState>()(
           createdAt: Date.now(),
           updatedAt: Date.now(),
         }
+        const initialHistory = cloneHistoryEntry(initialNodes, initialEdges)
 
         set((state) => ({
           flows: [...state.flows, newFlow],
@@ -292,18 +416,25 @@ export const useFlowStore = create<FlowState>()(
           currentFlowId: newFlow.id,
           nodes: initialNodes,
           edges: initialEdges,
-          history: [{ nodes: initialNodes, edges: initialEdges }],
+          history: [initialHistory],
           historyIndex: 0,
         }))
+        void adjustResourceReferences([], initialNodes)
+        void replaceHistoryResourceReferences(previousHistory, [initialHistory])
 
         return newFlow
       },
 
       // 删除 Flow
       deleteFlow: (id) => {
+        if (get().currentFlowId === id) flushScheduledFlowSave(get)
+        const currentState = get()
+        const removed = currentState.flows.find((flow) => flow.id === id)
+        const isCurrentFlow = currentState.currentFlowId === id
+        if (removed) void adjustResourceReferences(removed.nodes, [])
+        if (isCurrentFlow) void replaceHistoryResourceReferences(currentState.history, [])
         set((state) => {
           const newFlows = state.flows.filter((f) => f.id !== id)
-          const isCurrentFlow = state.currentFlowId === id
 
           return {
             flows: newFlows,
@@ -311,6 +442,8 @@ export const useFlowStore = create<FlowState>()(
             currentFlowId: isCurrentFlow ? null : state.currentFlowId,
             nodes: isCurrentFlow ? [] : state.nodes,
             edges: isCurrentFlow ? [] : state.edges,
+            history: isCurrentFlow ? [] : state.history,
+            historyIndex: isCurrentFlow ? -1 : state.historyIndex,
           }
         })
       },
@@ -331,20 +464,24 @@ export const useFlowStore = create<FlowState>()(
       // 加载 Flow
       loadFlow: (id) => {
         flushScheduledFlowSave(get)
+        const previousHistory = get().history
         const flow = get().flows.find((f) => f.id === id)
         if (!flow) return
-        const nodes = ensureUniqueNodeLabels(normalizeLegacyNodes(flow.nodes || []))
-        const normalizedFlow = { ...flow, nodes }
+        const nodes = ensureUniqueNodeLabels(normalizeNodes(cloneFlowValue(flow.nodes || [])))
+        const edges = cloneFlowValue(flow.edges || [])
+        const normalizedFlow = { ...flow, nodes: cloneFlowValue(nodes), edges: cloneFlowValue(edges) }
+        const initialHistory = cloneHistoryEntry(nodes, edges)
 
         set((state) => ({
           flows: state.flows.map((item) => item.id === id ? normalizedFlow : item),
           currentFlow: normalizedFlow,
           currentFlowId: id,
           nodes,
-          edges: flow.edges || [],
-          history: [{ nodes, edges: flow.edges || [] }],
+          edges,
+          history: [initialHistory],
           historyIndex: 0,
         }))
+        void replaceHistoryResourceReferences(previousHistory, [initialHistory])
       },
 
       // 保存当前 Flow
@@ -358,8 +495,8 @@ export const useFlowStore = create<FlowState>()(
 
         const updatedAt = Date.now()
         const updates: Partial<Flow> = {
-          nodes: getPersistableNodes(nodes),
-          edges,
+          nodes: cloneFlowValue(getPersistableNodes(nodes)),
+          edges: cloneFlowValue(edges),
           updatedAt,
         }
         if (thumbnail) updates.thumbnail = thumbnail
@@ -395,14 +532,23 @@ export const useFlowStore = create<FlowState>()(
         const flow = get().flows.find((f) => f.id === id)
         if (!flow) throw new Error('Flow not found')
 
+        const nodeIdMap = new Map<string, string>()
+        const newNodes = flow.nodes.map((node) => {
+          const id = nanoid()
+          nodeIdMap.set(node.id, id)
+          return { ...cloneFlowValue(node), id, selected: false }
+        })
         const newFlow: Flow = {
-          ...flow,
+          ...cloneFlowValue(flow),
           id: nanoid(),
           name: `${flow.name} (副本)`,
           title: `${flow.title} (副本)`,
           createdAt: Date.now(),
           updatedAt: Date.now(),
+          nodes: newNodes,
+          edges: flow.edges.map((edge) => ({ ...cloneFlowValue(edge), id: nanoid(), source: nodeIdMap.get(edge.source) || edge.source, target: nodeIdMap.get(edge.target) || edge.target, selected: false })),
         }
+        void adjustResourceReferences([], newFlow.nodes)
 
         set((state) => ({
           flows: [...state.flows, newFlow],
@@ -413,24 +559,50 @@ export const useFlowStore = create<FlowState>()(
 
       // 添加节点
       addNode: (node) => {
+        let createdNode!: Node
         set((state) => {
+          const clonedNode = withDefaultNodeDimensions(cloneFlowValue(node))
           const usedLabels = new Set(state.nodes.map(getNodeLabel))
-          const label = getUniqueNodeLabel(getNodeLabel(node), usedLabels)
+          const label = getUniqueNodeLabel(getNodeLabel(clonedNode), usedLabels)
           const newNode: Node = {
-            ...node,
+            ...clonedNode,
             id: nanoid(),
-            data: { ...node.data, label },
+            data: { ...clonedNode.data, label },
           }
+          createdNode = newNode
           const newNodes = [...state.nodes, newNode]
           return { nodes: newNodes }
         })
 
         get().addToHistory()
         get().saveCurrentFlow()
+        return createdNode
       },
 
       // 删除节点
       deleteNode: (id) => {
+        const removed = get().nodes.find((node) => node.id === id)
+        if (!removed) return
+        if (removed.type === 'group') {
+          set((state) => ({
+            nodes: state.nodes.map((node) => {
+              if (node.parentNode !== id) return node
+              return {
+                ...node,
+                parentNode: undefined,
+                extent: undefined,
+                position: {
+                  x: removed.position.x + node.position.x,
+                  y: removed.position.y + node.position.y,
+                },
+              }
+            }).filter((node) => node.id !== id),
+          }))
+          get().addToHistory()
+          get().saveCurrentFlow()
+          return
+        }
+        void deleteLocalResource(nodeResourceId(removed))
         set((state) => ({
           nodes: state.nodes.filter((n) => n.id !== id),
           edges: state.edges.filter((e) => e.source !== id && e.target !== id),
@@ -442,13 +614,14 @@ export const useFlowStore = create<FlowState>()(
 
       // 更新节点
       updateNode: (id, updates) => {
+        const clonedUpdates = cloneFlowValue(updates)
         set((state) => {
           const current = state.nodes.find((node) => node.id === id)
           if (!current) return state
           const merged = {
             ...current,
-            ...updates,
-            data: updates.data ? { ...current.data, ...updates.data } : current.data,
+            ...clonedUpdates,
+            data: clonedUpdates.data ? { ...current.data, ...clonedUpdates.data } : current.data,
           }
           const usedLabels = new Set(state.nodes.filter((node) => node.id !== id).map(getNodeLabel))
           const label = getUniqueNodeLabel(getNodeLabel(merged), usedLabels)
@@ -462,15 +635,16 @@ export const useFlowStore = create<FlowState>()(
       duplicateNode: (id) => {
         const node = get().nodes.find((n) => n.id === id)
         if (!node) return
+        void retainLocalResource(nodeResourceId(node))
 
         set((state) => {
           const usedLabels = new Set(state.nodes.map(getNodeLabel))
           const label = getUniqueNodeLabel(getNodeLabel(node), usedLabels)
           const newNode: Node = {
-            ...node,
+            ...cloneFlowValue(node),
             id: nanoid(),
             selected: false,
-            data: { ...node.data, label, sourceId: undefined },
+            data: { ...cloneFlowValue(node.data), label, sourceId: undefined },
             position: {
               x: node.position.x + 50,
               y: node.position.y + 50,
@@ -483,10 +657,22 @@ export const useFlowStore = create<FlowState>()(
         get().saveCurrentFlow()
       },
 
+      replaceGraph: (nodes, edges, recordHistory = true) => {
+        const previousNodes = get().nodes
+        const nextNodes = cloneFlowValue(nodes)
+        const nextEdges = cloneFlowValue(edges)
+        set({ nodes: nextNodes, edges: nextEdges })
+        void adjustResourceReferences(previousNodes, nextNodes)
+        if (recordHistory) {
+          get().addToHistory()
+          get().saveCurrentFlow()
+        }
+      },
+
       // 添加边
       addEdge: (edge) => {
         const newEdge: Edge = {
-          ...edge,
+          ...cloneFlowValue(edge),
           id: nanoid(),
         }
 
@@ -500,6 +686,7 @@ export const useFlowStore = create<FlowState>()(
 
       // 删除边
       deleteEdge: (id) => {
+        if (!get().edges.some((edge) => edge.id === id)) return
         set((state) => ({
           edges: state.edges.filter((e) => e.id !== id),
         }))
@@ -510,6 +697,12 @@ export const useFlowStore = create<FlowState>()(
 
       // React Flow 节点变更处理
       onNodesChange: (changes) => {
+        const currentNodes = get().nodes
+        const removedIds = changes
+          .filter((change) => change.type === 'remove')
+          .map((change) => change.id)
+          .filter((id) => currentNodes.some((node) => node.id === id))
+        removedIds.forEach((id) => { void deleteLocalResource(nodeResourceId(currentNodes.find((node) => node.id === id))) })
         set((state) => ({
           nodes: applyNodeChanges(changes, state.nodes),
         }))
@@ -522,6 +715,7 @@ export const useFlowStore = create<FlowState>()(
         if (changes.some((change) => change.type === 'position' && change.dragging === false)) {
           get().addToHistory()
         }
+        if (removedIds.length) get().addToHistory()
       },
 
       // React Flow 边变更处理
@@ -537,14 +731,18 @@ export const useFlowStore = create<FlowState>()(
 
       // 添加到历史记录
       addToHistory: () => {
+        const snapshot = cloneHistoryEntry(get().nodes, get().edges)
+        const removedEntries: FlowHistoryEntry[] = []
         set((state) => {
-          const { nodes, edges, history, historyIndex, maxHistory } = state
+          const { history, historyIndex, maxHistory } = state
+          removedEntries.push(...history.slice(historyIndex + 1))
           const newHistory = history.slice(0, historyIndex + 1)
-          newHistory.push({ nodes: [...nodes], edges: [...edges] })
+          newHistory.push(snapshot)
 
           // 限制历史记录数量
           if (newHistory.length > maxHistory) {
-            newHistory.shift()
+            const removed = newHistory.shift()
+            if (removed) removedEntries.push(removed)
           }
 
           return {
@@ -552,6 +750,14 @@ export const useFlowStore = create<FlowState>()(
             historyIndex: newHistory.length - 1,
           }
         })
+        void replaceHistoryResourceReferences(removedEntries, [snapshot])
+      },
+
+      clearHistory: () => {
+        const previousHistory = get().history
+        if (previousHistory.length === 0) return
+        set({ history: [], historyIndex: -1 })
+        void replaceHistoryResourceReferences(previousHistory, [])
       },
 
       // 撤销
@@ -560,9 +766,11 @@ export const useFlowStore = create<FlowState>()(
         if (historyIndex <= 0) return
 
         const prevState = history[historyIndex - 1]
+        const nextState = cloneHistoryEntry(prevState.nodes, prevState.edges)
+        void adjustResourceReferences(get().nodes, nextState.nodes)
         set({
-          nodes: prevState.nodes,
-          edges: prevState.edges,
+          nodes: nextState.nodes,
+          edges: nextState.edges,
           historyIndex: historyIndex - 1,
         })
 
@@ -574,7 +782,9 @@ export const useFlowStore = create<FlowState>()(
         const { history, historyIndex } = get()
         if (historyIndex >= history.length - 1) return
 
-        const nextState = history[historyIndex + 1]
+        const historyState = history[historyIndex + 1]
+        const nextState = cloneHistoryEntry(historyState.nodes, historyState.edges)
+        void adjustResourceReferences(get().nodes, nextState.nodes)
         set({
           nodes: nextState.nodes,
           edges: nextState.edges,
@@ -633,17 +843,22 @@ export const useFlowStore = create<FlowState>()(
       // 从 JSON 导入
       importFlowFromJSON: (json) => {
         try {
+          flushScheduledFlowSave(get)
+          const previousHistory = get().history
           const data = JSON.parse(json)
+          const nodes = ensureUniqueNodeLabels(normalizeNodes(cloneFlowValue(data.nodes || [])))
+          const edges = cloneFlowValue(data.edges || [])
           const newFlow: Flow = {
             id: nanoid(),
             name: data.name || '导入的 Flow',
             title: data.title || data.name || '导入的 Flow',
             description: data.description || '',
-            nodes: ensureUniqueNodeLabels(normalizeLegacyNodes(data.nodes || [])),
-            edges: data.edges || [],
+            nodes,
+            edges,
             createdAt: Date.now(),
             updatedAt: Date.now(),
           }
+          const initialHistory = cloneHistoryEntry(nodes, edges)
 
           set((state) => ({
             flows: [...state.flows, newFlow],
@@ -651,7 +866,11 @@ export const useFlowStore = create<FlowState>()(
             currentFlowId: newFlow.id,
             nodes: newFlow.nodes,
             edges: newFlow.edges,
+            history: [initialHistory],
+            historyIndex: 0,
           }))
+          void adjustResourceReferences([], newFlow.nodes)
+          void replaceHistoryResourceReferences(previousHistory, [initialHistory])
         } catch (error) {
           console.error('导入失败:', error)
           throw new Error('无效的 JSON 格式')
@@ -674,18 +893,24 @@ export const useFlowStore = create<FlowState>()(
       executeFlow: async (aiClient, scraperClient) => {
         const { nodes, edges } = get()
         if (get().isExecuting) return
+        const executableNodes = nodes.filter((node) => node.type !== 'group')
+        const executableIds = new Set(executableNodes.map((node) => node.id))
+        const executableEdges = edges.filter((edge) => executableIds.has(edge.source) && executableIds.has(edge.target))
+
+        const resolvedScraperClient = scraperClient || tryGetContentServiceClient()
 
         set({ isExecuting: true, executionContexts: new Map() })
 
         try {
           const executor = new FlowExecutor(
-            nodes.map((n) => ({ ...n, data: n.data || {} })),
-            edges.map((e) => ({ ...e, type: e.type || 'smoothstep' })),
+            executableNodes.map((n) => ({ ...n, data: n.data || {} })),
+            executableEdges.map((e) => ({ ...e, type: e.type || 'smoothstep' })),
             aiClient,
-            scraperClient,
+            resolvedScraperClient,
             (channelId) => channelId
               ? useAIStore.getState().createClientForChannel(channelId) || undefined
-              : undefined
+              : undefined,
+            (nodeId, data) => get().updateNode(nodeId, { data })
           )
 
           const result = await executor.execute()

@@ -281,11 +281,8 @@ npx wrangler pages publish dist
 ```bash
 cd workers
 
-# 部署 AI API 代理
+# 部署内容解析服务
 npm run deploy
-
-# 部署 Web Scraper
-wrangler deploy --config wrangler-scraper.toml
 ```
 
 **注意**: 需要配置 Cloudflare 账号和 Workers 域名
@@ -294,8 +291,8 @@ wrangler deploy --config wrangler-scraper.toml
 
 创建 `web/.env`:
 ```env
-VITE_PROXY_URL=https://api.cnote.app
-VITE_SCRAPER_URL=https://scraper.cnote.app
+# 可选：为整站提供默认内容解析服务
+VITE_SCRAPER_URL=
 ```
 
 ---

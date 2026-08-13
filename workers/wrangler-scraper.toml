@@ -1,7 +1,10 @@
-name = "cnote-scraper"
+name = "cnote-content-service"
 main = "src/scraper.ts"
 compatibility_date = "2024-12-01"
 
 [env.production]
-name = "cnote-scraper"
-route = "scraper.cnote.app/*"
+name = "cnote-content-service"
+
+# 可选配置：
+# npx wrangler secret put CN_CONTENT_TOKEN --config wrangler-scraper.toml
+# SCRAPER_ALLOWED_ORIGINS 可在 Cloudflare Dashboard 中设置为逗号分隔的 Cnote 地址。

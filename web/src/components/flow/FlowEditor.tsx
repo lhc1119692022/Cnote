@@ -9,24 +9,32 @@ import {
   type ReactNode,
 } from "react";
 import { useParams } from "react-router-dom";
+import { nanoid } from "nanoid";
 import ReactFlow, {
   Background,
+  NodeToolbar,
   useReactFlow,
   useStore,
   ReactFlowProvider,
   ConnectionLineType,
+  Position,
   type NodeTypes,
   type EdgeTypes,
+  type Node,
+  type NodeChange,
   type Viewport,
 } from "reactflow";
 import {
+  AlertTriangle,
   Check,
   CheckSquare,
   ChevronDown,
   ChevronRight,
+  ClipboardPaste,
   Download,
   Globe,
   Layers3,
+  FolderPlus,
   Sparkles,
   Square,
   StickyNote,
@@ -37,27 +45,42 @@ import "reactflow/dist/style.css";
 import { useFlowStore } from "@/stores/use-flow-store";
 import { useAIStore } from "@/stores/use-ai-store";
 import { useSourceStore } from "@/stores/use-source-store";
+import { useContentEditorStore } from "@/stores/use-content-editor-store";
 import { captureFlowThumbnail } from "@/lib/flow/thumbnail";
 import {
   revokeAllManagedObjectUrls,
-  storeLocalResource,
+  retainLocalResource,
 } from "@/lib/resource-storage";
 import {
   getContentCategoryVisual,
-  inferContentCategory,
 } from "@/lib/content-visuals";
+import {
+  CONTENT_FILE_ACCEPT,
+  emptyContentData,
+  type ContentImportInput,
+} from "@/lib/content-import";
+import {
+  canNodeOutputText,
+  importContentIntoNode,
+  refreshMediaFromUpstream,
+  refreshTextFromUpstream,
+  textNodeNeedsUpstreamRefresh,
+} from "@/lib/content-import-controller";
+import { cloneFlowValue } from "@/lib/flow/clone";
+import { AI_NODE_DEFAULT_SIZE, GROUP_NODE_PADDING } from "@/lib/flow/node-dimensions";
+import type { ContentNodeData } from "@/types/flow";
 import { useLocalResourceUrl } from "@/hooks/use-local-resource-url";
 import { NodeMenuIcon } from "./NodeMenuIcon";
 import { Toolbar } from "./Toolbar";
 import { CanvasControls } from "./CanvasControls";
 import { InteractiveEdge } from "./InteractiveEdge";
+import { ContentEditorPanel } from "./ContentEditorPanel";
 import {
   ContentNode,
-  ContentLeafNode,
   AINode,
   BrowserNode,
   StickyNode,
-  PDFNode,
+  GroupNode,
 } from "./nodes";
 
 const MINIMAP_WIDTH = 280;
@@ -69,17 +92,76 @@ const NODE_PANEL_INSET = 284;
 const EXTENSION_PANEL_MARGIN = 28;
 const TOOLBAR_HORIZONTAL_PADDING = 32;
 const MIN_TOOLBAR_GROUP_GAP = 40;
+const CLIPBOARD_READ_TIMEOUT_MS = 2000;
+const CONNECTION_LINE_STYLE = {
+  stroke: "var(--muted-foreground)",
+  strokeWidth: 2,
+  strokeDasharray: "8 8",
+} as const;
+const DEFAULT_EDGE_OPTIONS = {
+  type: "interactive",
+  animated: false,
+  style: { stroke: "var(--border)", strokeWidth: 1.5 },
+} as const;
+const FLOW_FIT_VIEW_OPTIONS = { padding: 0.2, maxZoom: 0.8 } as const;
+const MULTI_SELECTION_KEYS = ["Control", "Meta"];
 const panelFilterLabels: Record<string, string> = {
   all: "全部",
   ai: "AI 节点",
   browser: "浏览器",
+  "category:text": "文本",
   "category:video": "视频",
   "category:social": "社媒",
   "category:document": "文档",
   "category:data": "数据",
   "category:presentation": "演示文稿",
   "category:mindmap": "思维导图",
+  "category:image": "图片",
 };
+
+function nodeDimension(node: Node, axis: "width" | "height") {
+  const measured = (node as Node & { measured?: { width?: number; height?: number } }).measured;
+  const value = node[axis] ?? measured?.[axis] ?? node.style?.[axis];
+  const dimension = typeof value === "number" ? value : Number(value);
+  if (Number.isFinite(dimension) && dimension > 0) return dimension;
+  return axis === "width" ? 240 : 150;
+}
+
+function nodesBounds(nodes: Node[]) {
+  const left = Math.min(...nodes.map((node) => node.position.x));
+  const top = Math.min(...nodes.map((node) => node.position.y));
+  const right = Math.max(...nodes.map((node) => node.position.x + nodeDimension(node, "width")));
+  const bottom = Math.max(...nodes.map((node) => node.position.y + nodeDimension(node, "height")));
+  return { left, top, right, bottom, width: right - left, height: bottom - top };
+}
+
+function absoluteNodePosition(node: Node, nodes: Node[]) {
+  let position = { ...node.position };
+  let parentId = node.parentNode;
+  const visited = new Set<string>();
+
+  while (parentId && !visited.has(parentId)) {
+    visited.add(parentId);
+    const parent = nodes.find((candidate) => candidate.id === parentId);
+    if (!parent) break;
+    position = { x: position.x + parent.position.x, y: position.y + parent.position.y };
+    parentId = parent.parentNode;
+  }
+
+  return position;
+}
+
+function copyLabel(label: string, usedLabels: Set<string>) {
+  const base = `${label || "节点"} (副本)`;
+  let candidate = base;
+  let index = 2;
+  while (usedLabels.has(candidate)) {
+    candidate = `${base} ${index}`;
+    index += 1;
+  }
+  usedLabels.add(candidate);
+  return candidate;
+}
 
 function PanelNodeIcon({
   node,
@@ -90,11 +172,16 @@ function PanelNodeIcon({
   isSourceItem: boolean;
   fallback: ReactNode;
 }) {
+  const source = node.data?.source;
+  const resourceId =
+    source?.kind === "file" || source?.kind === "clipboard-image"
+      ? source.resourceId
+      : undefined;
   const isLocalMedia =
-    Boolean(node.data?.resourceId) &&
-    (node.data?.mode === "image" || node.data?.mode === "video");
+    Boolean(resourceId) &&
+    (node.data?.category === "image" || node.data?.category === "video");
   const resourceUrl = useLocalResourceUrl(
-    isLocalMedia ? node.data.resourceId : undefined,
+    isLocalMedia ? resourceId : undefined,
     undefined,
   );
 
@@ -113,7 +200,7 @@ function PanelNodeIcon({
   };
 
   if (isLocalMedia && resourceUrl) {
-    return node.data.mode === "video" ? (
+    return node.data.category === "video" ? (
       <video
         src={resourceUrl}
         muted
@@ -137,38 +224,32 @@ function PanelNodeIcon({
 }
 const panelFilterOptions = Object.entries(panelFilterLabels);
 
-const leafContentModes = new Set([
-  "text",
-  "image",
-  "video",
-  "table",
-  "youtube",
-  "pdf",
-]);
 function getNodeContentMode(node: { type?: string; data?: any }) {
-  if (node.type === "content") return node.data?.mode;
-  return leafContentModes.has(node.type || "") ? node.type : undefined;
+  return node.type === "content" ? node.data?.subtype : undefined;
 }
 
 function getNodeContentCategory(node: { type?: string; data?: any }) {
-  return inferContentCategory(
-    getNodeContentMode(node),
-    node.data?.contentCategory,
-  );
+  return node.type === "content" ? node.data?.category : undefined;
+}
+
+function getContentResourceId(data?: ContentNodeData) {
+  const source = data?.source;
+  return source?.kind === "file" || source?.kind === "clipboard-image"
+    ? source.resourceId
+    : undefined;
+}
+
+function isLocalVideoNode(node?: Node) {
+  if (node?.type !== "content") return false;
+  const data = node.data as ContentNodeData;
+  return data.category === "video" && data.source?.kind === "file";
 }
 
 function isNodeDisabled(node: { type?: string; data?: any }) {
-  const mode = getNodeContentMode(node);
-  const pendingMedia =
-    ["image", "video"].includes(mode || "") &&
-    !node.data?.content &&
-    !node.data?.resourceLost;
-  if (pendingMedia) return false;
   if (node.data?.resourceLost) return false;
   if (node.data?.disabled || node.data?.enabled === false || node.data?.hidden)
     return true;
   if (node.type === "ai") return !node.data?.channelId || !node.data?.model;
-  // 空的图片/视频节点代表“等待添加资源”，仍然是可用状态。
   return false;
 }
 
@@ -181,6 +262,25 @@ function getPointerPosition(event: MouseEvent | TouchEvent | PointerEvent) {
       y: event.changedTouches[0].clientY,
     };
   return { x: (event as MouseEvent).clientX, y: (event as MouseEvent).clientY };
+}
+
+function withClipboardTimeout<T>(promise: Promise<T>): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timeoutId = window.setTimeout(() => {
+      reject(new Error("CLIPBOARD_READ_TIMEOUT"));
+    }, CLIPBOARD_READ_TIMEOUT_MS);
+
+    promise.then(
+      (value) => {
+        window.clearTimeout(timeoutId);
+        resolve(value);
+      },
+      (error) => {
+        window.clearTimeout(timeoutId);
+        reject(error);
+      },
+    );
+  });
 }
 
 function InteractiveMiniMap({ right }: { right: number }) {
@@ -339,25 +439,34 @@ function InteractiveMiniMap({ right }: { right: number }) {
 // 注册自定义节点类型
 const nodeTypes: NodeTypes = {
   content: ContentNode,
-  text: ContentLeafNode,
-  youtube: ContentLeafNode,
-  image: ContentLeafNode,
-  video: ContentLeafNode,
-  table: ContentLeafNode,
-  pdf: PDFNode,
   ai: AINode,
   browser: BrowserNode,
   sticky: StickyNode,
+  group: GroupNode,
 };
 const edgeTypes: EdgeTypes = { interactive: InteractiveEdge };
+
+// React Flow 11 在 React 19 开发模式的严格检查中会对稳定的类型表重复发出 #002。
+// 类型表已由 ref 固定；保留其余运行时错误，避免掩盖真正的画布问题。
+const handleReactFlowError = (code: string, message: string) => {
+  if (code !== "002") console.warn(`[React Flow]: ${message}`);
+};
 
 function FlowEditorInner() {
   const { flowId } = useParams();
   const reactFlowInstance = useReactFlow();
+  const stableNodeTypes = useRef(nodeTypes).current;
+  const stableEdgeTypes = useRef(edgeTypes).current;
   const reactFlowWrapper = useRef<HTMLDivElement>(null);
-  const [saveStatus, setSaveStatus] = useState<"saved" | "unsaved">("saved");
+  const [saveStatus, setSaveStatus] = useState<"saved" | "saving" | "unsaved">("saved");
+  const [localVideoAiWarning, setLocalVideoAiWarning] = useState(false);
   const [showNodePanel, setShowNodePanel] = useState(false);
   const [showExtensionPanel, setShowExtensionPanel] = useState(false);
+  const editorNodeId = useContentEditorStore((state) => state.nodeId);
+  const contentEditorMode = useContentEditorStore((state) => state.mode);
+  const previewContentEditor = useContentEditorStore((state) => state.preview);
+  const openContentEditor = useContentEditorStore((state) => state.open);
+  const closeContentEditor = useContentEditorStore((state) => state.close);
   const [showMinimap, setShowMinimap] = useState(true);
   const [showGuide, setShowGuide] = useState(false);
   const [panelTab, setPanelTab] = useState<"nodes" | "content">("nodes");
@@ -395,7 +504,21 @@ function FlowEditorInner() {
     top: number;
     maxHeight: number;
   } | null>(null);
+  const [canvasContextMenu, setCanvasContextMenu] = useState<{
+    x: number;
+    y: number;
+    clientX: number;
+    clientY: number;
+  } | null>(null);
+  const [marqueeSelectionIds, setMarqueeSelectionIds] = useState<string[]>([]);
   const clipboardRef = useRef<any[]>([]);
+  const additiveSelectionRef = useRef<Set<string> | null>(null);
+  const altDragRef = useRef<{
+    originalToClone: Map<string, string>;
+    originalPositions: Map<string, { x: number; y: number }>;
+    clonePositions: Map<string, { x: number; y: number }>;
+  } | null>(null);
+  const suppressContentPasteUntilRef = useRef(0);
   const addMenuRef = useRef<HTMLDivElement>(null);
   const libraryTriggerRef = useRef<HTMLDivElement>(null);
   const libraryMenuRef = useRef<HTMLDivElement>(null);
@@ -410,11 +533,35 @@ function FlowEditorInner() {
     y: number;
   } | null>(null);
   const connectionCreatedRef = useRef(false);
+  const localVideoAiWarningTimerRef = useRef<number | null>(null);
+  const savedGraphSignatureRef = useRef<string | null>(null);
+  const savedFlowIdRef = useRef<string | null>(null);
+
+  const isEditableTarget = useCallback((target: EventTarget | null) => {
+    const element = target instanceof HTMLElement ? target : null;
+    return Boolean(
+      element?.closest(
+        'input, textarea, select, [contenteditable="true"], [role="textbox"]',
+      ),
+    );
+  }, []);
 
   const closeCanvasMenus = useCallback(() => {
     setAddMenu(null);
     setLibraryMenuOpen(false);
     setConnectionMenu(null);
+    setCanvasContextMenu(null);
+  }, []);
+
+  const showLocalVideoAiWarning = useCallback(() => {
+    setLocalVideoAiWarning(true);
+    if (localVideoAiWarningTimerRef.current !== null) {
+      window.clearTimeout(localVideoAiWarningTimerRef.current);
+    }
+    localVideoAiWarningTimerRef.current = window.setTimeout(() => {
+      localVideoAiWarningTimerRef.current = null;
+      setLocalVideoAiWarning(false);
+    }, 3_000);
   }, []);
 
   const handleCanvasDoubleClick = useCallback((event: ReactMouseEvent) => {
@@ -444,17 +591,24 @@ function FlowEditorInner() {
 
   const nodes = useFlowStore((state) => state.nodes);
   const edges = useFlowStore((state) => state.edges);
+  const graphSignature = useMemo(() => JSON.stringify({ nodes, edges }), [edges, nodes]);
   const onNodesChange = useFlowStore((state) => state.onNodesChange);
   const onEdgesChange = useFlowStore((state) => state.onEdgesChange);
   const addEdgeToStore = useFlowStore((state) => state.addEdge);
   const isLocked = useFlowStore((state) => state.isLocked);
   const currentFlow = useFlowStore((state) => state.currentFlow);
   const currentFlowId = useFlowStore((state) => state.currentFlowId);
+  const isCurrentFlowReady = Boolean(
+    currentFlowId && (!flowId || currentFlowId === flowId),
+  );
   const loadFlow = useFlowStore((state) => state.loadFlow);
   const initialize = useFlowStore((state) => state.initialize);
   const saveCurrentFlow = useFlowStore((state) => state.saveCurrentFlow);
+  const clearHistory = useFlowStore((state) => state.clearHistory);
   const addNode = useFlowStore((state) => state.addNode);
   const deleteNode = useFlowStore((state) => state.deleteNode);
+  const deleteEdge = useFlowStore((state) => state.deleteEdge);
+  const replaceGraph = useFlowStore((state) => state.replaceGraph);
   const sources = useSourceStore((state) => state.sources);
   const deleteSource = useSourceStore((state) => state.deleteSource);
   const editorWidth =
@@ -538,6 +692,228 @@ function FlowEditorInner() {
     () => edges.map((edge) => ({ ...edge, type: "interactive" })),
     [edges],
   );
+  const createGroup = useCallback(() => {
+    const selectedIds = new Set(marqueeSelectionIds);
+    const members = nodes.filter((node) =>
+      selectedIds.has(node.id) && node.type !== "group" && !node.parentNode,
+    );
+    if (members.length < 2) return;
+
+    const bounds = nodesBounds(members);
+    const groupId = nanoid();
+    const groupCount = nodes.filter((node) => node.type === "group").length + 1;
+    const label = groupCount === 1 ? "编组" : `编组 ${groupCount}`;
+    const groupNode: Node = {
+      id: groupId,
+      type: "group",
+      position: { x: bounds.left - GROUP_NODE_PADDING, y: bounds.top - GROUP_NODE_PADDING },
+      style: {
+        width: Math.max(160, bounds.width + GROUP_NODE_PADDING * 2),
+        height: Math.max(120, bounds.height + GROUP_NODE_PADDING * 2),
+      },
+      data: { label, memberCount: members.length, padding: GROUP_NODE_PADDING },
+      selected: true,
+      zIndex: 0,
+    };
+    const memberIds = new Set(members.map((node) => node.id));
+    const nextNodes = [
+      groupNode,
+      ...nodes.map((node) => {
+        if (!memberIds.has(node.id)) return { ...node, selected: false };
+        return {
+          ...node,
+          parentNode: groupId,
+          position: {
+            x: node.position.x - groupNode.position.x,
+            y: node.position.y - groupNode.position.y,
+          },
+          selected: false,
+          zIndex: 1,
+        };
+      }),
+    ];
+    replaceGraph(nextNodes, edges);
+    setMarqueeSelectionIds([]);
+  }, [edges, marqueeSelectionIds, nodes, replaceGraph]);
+
+  const assignNodeToUnderlyingGroup = useCallback((nodeId: string) => {
+    const store = useFlowStore.getState();
+    const node = store.nodes.find((item) => item.id === nodeId);
+    if (!node || node.type === "group") return false;
+
+    const nodePosition = absoluteNodePosition(node, store.nodes);
+    const width = nodeDimension(node, "width");
+    const height = nodeDimension(node, "height");
+    const center = { x: nodePosition.x + width / 2, y: nodePosition.y + height / 2 };
+    const matchingGroups = store.nodes
+      .filter((item) => {
+        if (item.type !== "group") return false;
+        const size = { width: nodeDimension(item, "width"), height: nodeDimension(item, "height") };
+        return center.x >= item.position.x && center.x <= item.position.x + size.width
+          && center.y >= item.position.y && center.y <= item.position.y + size.height;
+      });
+    const group = matchingGroups[matchingGroups.length - 1];
+
+    if (!group || group.id === node.parentNode) return false;
+
+    store.replaceGraph(
+      store.nodes.map((item) => item.id === nodeId
+        ? {
+            ...item,
+            parentNode: group.id,
+            extent: undefined,
+            expandParent: undefined,
+            position: {
+              x: nodePosition.x - group.position.x,
+              y: nodePosition.y - group.position.y,
+            },
+            zIndex: 1,
+          }
+        : item),
+      store.edges,
+    );
+    return true;
+  }, []);
+
+  const handleNodesChange = useCallback((changes: Parameters<typeof onNodesChange>[0]) => {
+    const activeAltDrag = altDragRef.current;
+    if (!activeAltDrag) {
+      onNodesChange(changes);
+      return;
+    }
+    const translatedChanges: NodeChange[] = [];
+    changes.forEach((change) => {
+      if (!("id" in change)) {
+        translatedChanges.push(change);
+        return;
+      }
+      const cloneId = activeAltDrag.originalToClone.get(change.id);
+      if (!cloneId) {
+        translatedChanges.push(change);
+        return;
+      }
+      if (change.type === "position") {
+        // The regular change handler records history for dragging:false. Keep this
+        // transient until onNodeDragStop, where the whole copy operation commits once.
+        const originalPosition = activeAltDrag.originalPositions.get(change.id);
+        const clonePosition = activeAltDrag.clonePositions.get(cloneId);
+        if (!change.position) {
+          // React Flow's final position change normally carries only
+          // dragging:false. Preserve the last drag coordinate instead of
+          // interpreting this as a return to the node's starting point.
+          translatedChanges.push({ ...change, id: cloneId, dragging: true });
+          return;
+        }
+        const changedPosition = change.position;
+        const position = originalPosition && clonePosition
+          ? {
+              x: clonePosition.x + changedPosition.x - originalPosition.x,
+              y: clonePosition.y + changedPosition.y - originalPosition.y,
+            }
+          : changedPosition;
+        translatedChanges.push({
+          ...change,
+          id: cloneId,
+          position,
+          ...(change.dragging === false ? { dragging: true } : {}),
+        });
+        return;
+      }
+      if (change.type === "select") translatedChanges.push({ ...change, id: cloneId });
+    });
+    if (translatedChanges.length) onNodesChange(translatedChanges);
+  }, [onNodesChange]);
+
+  const handleNodeDragStart = useCallback((event: ReactMouseEvent, node: Node, draggedNodes: Node[]) => {
+    if (!event.altKey || node.type === "group" || altDragRef.current) return;
+    const selected = draggedNodes.filter((item) => item.type !== "group");
+    if (!selected.length) return;
+
+    const usedLabels = new Set(nodes.map((item) => String(item.data?.label || "节点")));
+    const originalToClone = new Map<string, string>();
+    const originalPositions = new Map<string, { x: number; y: number }>();
+    const clonePositions = new Map<string, { x: number; y: number }>();
+    const clones = selected.map((item) => {
+      const id = nanoid();
+      originalToClone.set(item.id, id);
+      originalPositions.set(item.id, { ...item.position });
+      const parent = item.parentNode
+        ? nodes.find((candidate) => candidate.id === item.parentNode)
+        : undefined;
+      const position = parent
+        ? { x: parent.position.x + item.position.x, y: parent.position.y + item.position.y }
+        : { ...item.position };
+      clonePositions.set(id, position);
+      return {
+        ...cloneFlowValue(item),
+        id,
+        parentNode: undefined,
+        extent: undefined,
+        position,
+        selected: true,
+        data: {
+          ...cloneFlowValue(item.data),
+          label: copyLabel(String(item.data?.label || "节点"), usedLabels),
+          sourceId: undefined,
+        },
+      };
+    });
+    const copiedEdges = edges
+      .filter((edge) => originalToClone.has(edge.source) || originalToClone.has(edge.target))
+      .map((edge) => ({
+        ...cloneFlowValue(edge),
+        id: nanoid(),
+        source: originalToClone.get(edge.source) || edge.source,
+        target: originalToClone.get(edge.target) || edge.target,
+        selected: false,
+      }));
+    altDragRef.current = { originalToClone, originalPositions, clonePositions };
+    replaceGraph(
+      [...nodes.map((item) => ({ ...item, selected: false })), ...clones],
+      [...edges, ...copiedEdges],
+      false,
+    );
+  }, [edges, nodes, replaceGraph]);
+
+  const handleNodeDragStop = useCallback((_: ReactMouseEvent, node: Node) => {
+    const activeAltDrag = altDragRef.current;
+    window.requestAnimationFrame(() => {
+      const store = useFlowStore.getState();
+      if (activeAltDrag && altDragRef.current === activeAltDrag) {
+        activeAltDrag.originalToClone.forEach((cloneId) => {
+          store.updateNode(cloneId, { dragging: false });
+          assignNodeToUnderlyingGroup(cloneId);
+        });
+        store.addToHistory();
+        store.saveCurrentFlow();
+        altDragRef.current = null;
+        return;
+      }
+      assignNodeToUnderlyingGroup(node.id);
+    });
+  }, [assignNodeToUnderlyingGroup]);
+
+  const handleNodeDrag = useCallback((_: ReactMouseEvent, node: Node) => {
+    const activeAltDrag = altDragRef.current;
+    if (!activeAltDrag) return;
+    const cloneId = activeAltDrag.originalToClone.get(node.id);
+    const originalPosition = activeAltDrag.originalPositions.get(node.id);
+    const cloneStartPosition = cloneId
+      ? activeAltDrag.clonePositions.get(cloneId)
+      : undefined;
+    if (!cloneId || !originalPosition || !cloneStartPosition) return;
+
+    const position = {
+      x: cloneStartPosition.x + node.position.x - originalPosition.x,
+      y: cloneStartPosition.y + node.position.y - originalPosition.y,
+    };
+    useFlowStore.getState().onNodesChange([{
+      type: "position",
+      id: cloneId,
+      position,
+      dragging: true,
+    }]);
+  }, []);
 
   useEffect(() => {
     const updateViewportSize = () => {
@@ -590,17 +966,66 @@ function FlowEditorInner() {
     };
   }, [flowId, initialize, loadFlow]);
 
-  useEffect(
-    () => () => {
+  useLayoutEffect(() => {
+    if (!isCurrentFlowReady) return;
+    const flowRoot = reactFlowWrapper.current?.querySelector<HTMLElement>(
+      ".react-flow",
+    );
+    if (!flowRoot) return;
+
+    let resetFrame: number | null = null;
+    let followUpFrame: number | null = null;
+
+    // React Flow uses its viewport transform for navigation. Keep the host element
+    // at its native origin when focused embedded content tries to scroll it.
+    const resetNativeScroll = () => {
+      if (flowRoot.scrollLeft !== 0) flowRoot.scrollLeft = 0;
+      if (flowRoot.scrollTop !== 0) flowRoot.scrollTop = 0;
+    };
+    const scheduleReset = () => {
+      if (resetFrame !== null) return;
+      resetFrame = window.requestAnimationFrame(() => {
+        resetFrame = null;
+        resetNativeScroll();
+      });
+    };
+
+    resetNativeScroll();
+    resetFrame = window.requestAnimationFrame(() => {
+      resetFrame = null;
+      resetNativeScroll();
+      followUpFrame = window.requestAnimationFrame(() => {
+        followUpFrame = null;
+        resetNativeScroll();
+      });
+    });
+
+    const resizeObserver = new ResizeObserver(scheduleReset);
+    resizeObserver.observe(flowRoot);
+    flowRoot.addEventListener("scroll", resetNativeScroll, { passive: true });
+
+    return () => {
+      resizeObserver.disconnect();
+      flowRoot.removeEventListener("scroll", resetNativeScroll);
+      if (resetFrame !== null) window.cancelAnimationFrame(resetFrame);
+      if (followUpFrame !== null) window.cancelAnimationFrame(followUpFrame);
+    };
+  }, [currentFlowId, isCurrentFlowReady]);
+
+  useEffect(() => {
+    const releaseTransientHistory = () => clearHistory();
+    window.addEventListener("pagehide", releaseTransientHistory);
+    return () => {
+      window.removeEventListener("pagehide", releaseTransientHistory);
+      clearHistory();
       resizeCleanupRef.current?.();
       if (resizeFrameRef.current !== null)
         cancelAnimationFrame(resizeFrameRef.current);
       if (libraryCloseTimerRef.current !== null)
         window.clearTimeout(libraryCloseTimerRef.current);
       revokeAllManagedObjectUrls();
-    },
-    [],
-  );
+    };
+  }, [clearHistory]);
 
   useEffect(() => {
     if (!addMenu) return;
@@ -619,6 +1044,61 @@ function FlowEditorInner() {
       document.removeEventListener("keydown", closeOnOutsideAction, true);
     };
   }, [addMenu, closeCanvasMenus]);
+
+  useEffect(() => {
+    if (!canvasContextMenu) return;
+    const close = (event: PointerEvent | KeyboardEvent) => {
+      if (
+        event.target instanceof HTMLElement &&
+        event.target.closest("[data-canvas-context-menu]")
+      )
+        return;
+      setCanvasContextMenu(null);
+    };
+    document.addEventListener("pointerdown", close, true);
+    document.addEventListener("keydown", close, true);
+    return () => {
+      document.removeEventListener("pointerdown", close, true);
+      document.removeEventListener("keydown", close, true);
+    };
+  }, [canvasContextMenu]);
+
+  useEffect(() => {
+    if (!editorNodeId || contentEditorMode !== 'panel') return;
+    setShowExtensionPanel(true);
+    setKeepExtensionPanelOpen(true);
+  }, [contentEditorMode, editorNodeId]);
+
+  useEffect(() => {
+    if (!editorNodeId || nodes.some((node) => node.id === editorNodeId)) return;
+    closeContentEditor();
+    setShowExtensionPanel(false);
+    setKeepExtensionPanelOpen(false);
+    setExtensionWidth(370);
+  }, [closeContentEditor, editorNodeId, nodes]);
+
+  useEffect(() => {
+    if (!showExtensionPanel) return;
+    const selectedNodes = nodes.filter((node) => node.selected);
+    if (selectedNodes.length !== 1) return;
+    const selectedNode = selectedNodes[0];
+    const isEditableContent =
+      selectedNode.type === "content" &&
+      (selectedNode.data?.category === "text" ||
+        selectedNode.data?.category === "mindmap");
+    if (isEditableContent) {
+      if (editorNodeId !== selectedNode.id) previewContentEditor(selectedNode.id);
+    } else if (editorNodeId) {
+      closeContentEditor();
+    }
+  }, [closeContentEditor, editorNodeId, nodes, previewContentEditor, showExtensionPanel]);
+
+  useEffect(() => {
+    const unsyncedTextNodes = nodes.filter((node) => textNodeNeedsUpstreamRefresh(node.id));
+    unsyncedTextNodes.forEach((node) => {
+      void refreshTextFromUpstream(node.id);
+    });
+  }, [edges, nodes]);
 
   useLayoutEffect(() => {
     if (!addMenu || !addMenuRef.current) return;
@@ -670,26 +1150,58 @@ function FlowEditorInner() {
     return captureFlowThumbnail();
   }, [nodes.length]);
 
+  const flushNodeEditors = useCallback(async () => {
+    const tasks: Promise<unknown>[] = [];
+    document.dispatchEvent(
+      new CustomEvent("cnote:flush-node-editors", { detail: { tasks } }),
+    );
+    if (tasks.length) await Promise.allSettled(tasks);
+  }, []);
+
   const saveWithThumbnail = useCallback(
     async (viewport?: Viewport) => {
-      const thumbnail = await generateThumbnail();
-      saveCurrentFlow(thumbnail, viewport || reactFlowInstance.getViewport());
-      setSaveStatus("saved");
+      setSaveStatus("saving");
+      try {
+        await flushNodeEditors();
+        // Thumbnail capture is optional. A capture failure must never stop the
+        // actual graph from being persisted.
+        const thumbnail = await generateThumbnail().catch(() => undefined);
+        saveCurrentFlow(thumbnail, viewport || reactFlowInstance.getViewport());
+        savedGraphSignatureRef.current = JSON.stringify({
+          nodes: useFlowStore.getState().nodes,
+          edges: useFlowStore.getState().edges,
+        });
+        setSaveStatus("saved");
+      } catch (error) {
+        console.error("保存 Flow 失败:", error);
+        setSaveStatus("unsaved");
+      }
     },
-    [generateThumbnail, reactFlowInstance, saveCurrentFlow],
+    [flushNodeEditors, generateThumbnail, reactFlowInstance, saveCurrentFlow],
   );
 
   const saveLightweight = useCallback(
     (viewport?: Viewport) => {
       saveCurrentFlow(undefined, viewport || reactFlowInstance.getViewport());
+      savedGraphSignatureRef.current = JSON.stringify({
+        nodes: useFlowStore.getState().nodes,
+        edges: useFlowStore.getState().edges,
+      });
       setSaveStatus("saved");
     },
     [reactFlowInstance, saveCurrentFlow],
   );
 
   useEffect(() => {
-    if (nodes.length || edges.length) setSaveStatus("unsaved");
-  }, [nodes, edges]);
+    if (!isCurrentFlowReady) return;
+    if (savedFlowIdRef.current !== currentFlowId) {
+      savedFlowIdRef.current = currentFlowId;
+      savedGraphSignatureRef.current = graphSignature;
+      setSaveStatus("saved");
+      return;
+    }
+    if (savedGraphSignatureRef.current !== graphSignature) setSaveStatus("unsaved");
+  }, [currentFlowId, graphSignature, isCurrentFlowReady]);
 
   const focusNode = useCallback(
     (nodeId: string) => {
@@ -738,7 +1250,7 @@ function FlowEditorInner() {
         (panelFilter.startsWith("category:") &&
           category === panelFilter.slice(9));
       const searchText =
-        `${node.data?.label || ""} ${node.type || ""} ${node.data?.mode || ""} ${node.data?.description || ""} ${node.data?.content || ""}`.toLowerCase();
+        `${node.data?.label || ""} ${node.type || ""} ${node.data?.category || ""} ${node.data?.subtype || ""} ${node.data?.description || ""} ${JSON.stringify(node.data?.payload || {})} ${JSON.stringify(node.data?.preview || {})}`.toLowerCase();
       return (
         typeMatch &&
         (!normalizedSearch || searchText.includes(normalizedSearch))
@@ -802,65 +1314,35 @@ function FlowEditorInner() {
     return libraryItems
       .filter((source) => {
         const searchText =
-          `${source.title || ""} ${source.type || ""} ${source.content || ""}`.toLowerCase();
+          `${source.title || ""} ${source.nodeData.category || ""} ${source.nodeData.subtype || ""} ${JSON.stringify(source.nodeData.payload || {})} ${JSON.stringify(source.nodeData.preview || {})}`.toLowerCase();
         return !normalizedSearch || searchText.includes(normalizedSearch);
       })
       .map((source) => ({
         id: `source:${source.id}`,
         type: "content",
         data: {
-          ...(source.metadata?.nodeData || {}),
+          ...source.nodeData,
           label: source.title,
-          mode: source.type,
-          content: source.content,
-          contentCategory: source.metadata?.nodeData?.contentCategory,
           sourceId: source.id,
         },
       }));
   }, [libraryItems, panelSearch]);
 
   const nodeSummary = (node: any) => {
-    const mode = getNodeContentMode(node);
-    if (mode) {
-      const labels: Record<string, string> = {
-        text: "文本",
-        image: "图片",
-        video: "视频",
-        table: "表格",
-        youtube: "YouTube",
-        pdf: "PDF",
-      };
-      return labels[mode] || "内容";
-    }
+    const category = getNodeContentCategory(node);
+    if (category) return panelFilterLabels[`category:${category}`] || "内容";
     return node.type === "ai" ? "AI" : node.type || "节点";
   };
 
   const nodeDisplayName = (node: any) => {
-    const mode = getNodeContentMode(node);
-    if (mode)
-      return (
-        node.data?.label ||
-        (
-          {
-            text: "文本节点",
-            image: "图片节点",
-            video: "视频节点",
-            table: "表格节点",
-            youtube: "YouTube 节点",
-            pdf: "PDF 节点",
-          } as Record<string, string>
-        )[mode]
-      );
+    if (node.type === "content") return node.data?.label || "内容类型选择";
     return node.type === "content"
       ? "内容类型选择"
       : node.data?.label || (node.type === "ai" ? "AI 节点" : node.type);
   };
 
   const nodeVisual = (node: any) => {
-    const contentVisual = getContentCategoryVisual(
-      getNodeContentMode(node),
-      node.data?.contentCategory,
-    );
+    const contentVisual = getContentCategoryVisual(undefined, node.data?.category);
     if (contentVisual) return contentVisual;
     if (node.type === "ai")
       return {
@@ -903,19 +1385,26 @@ function FlowEditorInner() {
       addNode({
         type: "ai",
         position,
+        style: AI_NODE_DEFAULT_SIZE,
         data: {
           label: "AI 节点",
           channelId: channel?.id,
           model: channel?.modelIds?.[0],
           prompt: "",
-          temperature: 0.7,
+          temperature: 1,
+          maxTokens: 258000,
+          autoCompressThreshold: 0.7,
+          webSearch: "auto",
+          reasoningLevel: "medium",
+          messages: [],
+          sessions: [],
         },
       });
     } else if (type === "browser") {
       addNode({
         type: "browser",
         position,
-        data: { label: "浏览器节点", url: "", status: "idle" },
+        data: { label: "浏览器节点", url: "https://www.baidu.com/", confirmedUrl: "https://www.baidu.com/", outputMode: "url", syncStatus: "synced", status: "loading" },
       });
     } else if (type === "sticky") {
       addNode({ type: "sticky", position, data: { label: "贴纸", text: "" } });
@@ -923,7 +1412,7 @@ function FlowEditorInner() {
       addNode({
         type: "content",
         position,
-        data: { label: "内容", content: "" },
+        data: emptyContentData("内容"),
       });
     }
     setAddMenu(null);
@@ -933,7 +1422,7 @@ function FlowEditorInner() {
     event.preventDefault();
     const file = event.dataTransfer.files[0];
     if (!file) return;
-    const position = reactFlowInstance.project({
+    const position = reactFlowInstance.screenToFlowPosition({
       x: event.clientX,
       y: event.clientY,
     });
@@ -952,42 +1441,150 @@ function FlowEditorInner() {
       reader.readAsText(file);
       return;
     }
-    const mode = ["png", "jpg", "jpeg", "gif", "webp"].includes(extension || "")
-      ? "image"
-      : ["mp4", "webm", "mov"].includes(extension || "")
-        ? "video"
-        : "text";
-    const leafMode =
-      extension === "csv" || extension === "tsv" ? "table" : mode;
-    if (leafMode === "text" || leafMode === "table") {
-      const reader = new FileReader();
-      reader.onload = () =>
-        addNode({
-          type: leafMode,
-          position,
-          data: {
-            label: leafMode === "table" ? "表格节点" : "文本节点",
-            mode: leafMode,
-            content: String(reader.result || ""),
-            fileName: file.name,
-          },
-        });
-      reader.readAsText(file);
-    } else {
-      const resource = await storeLocalResource(file);
-      addNode({
-        type: leafMode,
-        position,
-        data: {
-          label: leafMode === "image" ? "图片节点" : "视频节点",
-          mode: leafMode,
-          content: resource.url,
-          resourceId: resource.resourceId,
-          fileName: file.name,
-        },
-      });
-    }
+    const created = addNode({
+      type: "content",
+      position,
+      data: emptyContentData(file.name || "内容"),
+    });
+    void importContentIntoNode(created.id, { kind: "file", file, fileName: file.name });
   };
+
+  const getCanvasContentPosition = useCallback(
+    (clientX?: number, clientY?: number) => {
+      const wrapper = reactFlowWrapper.current;
+      if (!wrapper) return { x: 160, y: 160 };
+      const rect = wrapper.getBoundingClientRect();
+      const point = reactFlowInstance.screenToFlowPosition({
+        x: clientX === undefined ? rect.left + rect.width / 2 : clientX,
+        y: clientY === undefined ? rect.top + rect.height / 2 : clientY,
+      });
+      return { x: point.x - 270, y: point.y - 180 };
+    },
+    [reactFlowInstance],
+  );
+
+  const importClipboardInputAt = useCallback(
+    async (input: ContentImportInput, clientX?: number, clientY?: number) => {
+      const created = addNode({
+        type: "content",
+        position: getCanvasContentPosition(clientX, clientY),
+        data: emptyContentData("内容"),
+      });
+      await importContentIntoNode(created.id, input);
+    },
+    [addNode, getCanvasContentPosition],
+  );
+
+  const importClipboardInputIntoSelectedNode = useCallback(
+    async (input: ContentImportInput) => {
+      const selected = useFlowStore.getState().nodes.filter((node) => node.selected);
+      if (selected.length !== 1 || selected[0].type !== "content") return false;
+      const target = selected[0];
+      const category = target.data?.category as ContentNodeData["category"] | undefined;
+      // A type-selection node detects the clipboard content itself. Link-based
+      // content nodes use their selected category and parse immediately.
+      if (!category || category === "video" || category === "social" || category === "document") {
+        if (input.kind === "text" && !input.text.trim()) return false;
+        await importContentIntoNode(target.id, input, category || undefined);
+        return true;
+      }
+      return false;
+    },
+    [],
+  );
+
+  const createClipboardErrorNode = useCallback(
+    (code: string, message: string, clientX?: number, clientY?: number) => {
+      const created = addNode({
+        type: "content",
+        position: getCanvasContentPosition(clientX, clientY),
+        data: emptyContentData("内容"),
+      });
+      useFlowStore.getState().updateNode(created.id, {
+        data: {
+          ...created.data,
+          state: "error",
+          parse: {
+            requestId: globalThis.crypto?.randomUUID?.() || "clipboard",
+            revision: 1,
+            completedAt: Date.now(),
+            error: { code, message, retryable: code === "CLIPBOARD_PERMISSION_DENIED" },
+          },
+        } satisfies ContentNodeData,
+      });
+      return created;
+    },
+    [addNode, getCanvasContentPosition],
+  );
+
+  const readSystemClipboardAndImport = useCallback(
+    async (clientX?: number, clientY?: number) => {
+      let clipboardPermissionIssue = false;
+      try {
+        if (navigator.clipboard?.read) {
+          try {
+            const items = await withClipboardTimeout(navigator.clipboard.read());
+            for (const item of items) {
+              const imageType = item.types.find((type) => type.startsWith("image/"));
+              if (imageType) {
+                const blob = await withClipboardTimeout(item.getType(imageType));
+                await importClipboardInputAt(
+                  { kind: "file", file: blob, fileName: `clipboard.${imageType.split("/")[1] || "png"}`, clipboardImage: true },
+                  clientX,
+                  clientY,
+                );
+                return true;
+              }
+            }
+            for (const item of items) {
+              const textType = item.types.includes("text/plain") ? "text/plain" : item.types.find((type) => type.startsWith("text/"));
+              if (textType) {
+                const blob = await withClipboardTimeout(item.getType(textType));
+                await importClipboardInputAt({ kind: "text", text: await withClipboardTimeout(blob.text()) }, clientX, clientY);
+                return true;
+              }
+            }
+          } catch (error) {
+            clipboardPermissionIssue = true;
+          }
+        }
+        if (navigator.clipboard?.readText) {
+          try {
+            const text = await withClipboardTimeout(navigator.clipboard.readText());
+            if (text.trim()) {
+              await importClipboardInputAt({ kind: "text", text }, clientX, clientY);
+              return true;
+            }
+          } catch (error) {
+            clipboardPermissionIssue = true;
+          }
+        }
+      } catch (error) {
+        clipboardPermissionIssue = true;
+      }
+      if (!navigator.clipboard?.read && !navigator.clipboard?.readText) {
+        clipboardPermissionIssue = true;
+      }
+      if (clipboardPermissionIssue) {
+        console.warn("读取剪贴板失败，请使用 Ctrl/Cmd+V");
+        createClipboardErrorNode(
+          "CLIPBOARD_PERMISSION_DENIED",
+          "浏览器未允许读取剪贴板，请使用 Ctrl/Cmd+V 粘贴。",
+          clientX,
+          clientY,
+        );
+        return false;
+      }
+      createClipboardErrorNode(
+        "INVALID_CONTENT",
+        "剪贴板中没有可识别的文本、URL 或图片。",
+        clientX,
+        clientY,
+      );
+      return false;
+    },
+    [createClipboardErrorNode, importClipboardInputAt],
+  );
 
   const onConnectStart = useCallback(
     (
@@ -1025,8 +1622,92 @@ function FlowEditorInner() {
         targetHandle: connection.targetHandle || "in",
         type: "interactive",
       });
+      const connectedNodes = useFlowStore.getState().nodes;
+      const target = connectedNodes.find((node) => node.id === connection.target);
+      const source = connectedNodes.find((node) => node.id === connection.source);
+      if (target?.type === "ai" && isLocalVideoNode(source)) {
+        showLocalVideoAiWarning();
+      }
+      if (target?.type === "content" && target.data?.category === "text" && canNodeOutputText(source)) {
+        // React Flow is still committing the new edge here. Defer any source
+        // parsing and downstream writes until that transaction has completed.
+        // The controller coalesces this with the empty-text sync effect.
+        window.setTimeout(() => { void refreshTextFromUpstream(target.id); }, 0);
+      }
+      if (target?.type === "content" && (target.data?.category === "image" || target.data?.category === "video")) {
+        const kind = target.data.category;
+        window.setTimeout(() => { refreshMediaFromUpstream(target.id, kind); }, 0);
+      }
     },
-    [addEdgeToStore],
+    [addEdgeToStore, showLocalVideoAiWarning],
+  );
+
+  const handleNodeClick = useCallback(() => {
+    setMarqueeSelectionIds([]);
+  }, []);
+
+  const handlePaneClick = useCallback(() => {
+    setMarqueeSelectionIds([]);
+  }, []);
+
+  const handleMoveEnd = useCallback(
+    (_event: MouseEvent | TouchEvent | null, viewport: Viewport) => {
+      if (!isResizingPanel) saveLightweight(viewport);
+    },
+    [isResizingPanel, saveLightweight],
+  );
+
+  const handleSelectionStart = useCallback((event: ReactMouseEvent) => {
+    setMarqueeSelectionIds([]);
+    additiveSelectionRef.current = event.ctrlKey || event.metaKey
+      ? new Set(
+          useFlowStore
+            .getState()
+            .nodes.filter((node) => node.selected)
+            .map((node) => node.id),
+        )
+      : null;
+  }, []);
+
+  const handleSelectionEnd = useCallback(() => {
+    const previousSelection = additiveSelectionRef.current;
+    additiveSelectionRef.current = null;
+    const currentNodes = useFlowStore.getState().nodes;
+    const selectedNow = new Set(
+      currentNodes.filter((node) => node.selected).map((node) => node.id),
+    );
+    previousSelection?.forEach((id) => selectedNow.add(id));
+    if (previousSelection?.size) {
+      handleNodesChange(
+        currentNodes.map((node) => ({
+          type: "select" as const,
+          id: node.id,
+          selected: selectedNow.has(node.id),
+        })),
+      );
+    }
+    const eligibleIds = useFlowStore
+      .getState()
+      .nodes.filter(
+        (node) =>
+          selectedNow.has(node.id) &&
+          node.type !== "group" &&
+          !node.parentNode,
+      )
+      .map((node) => node.id);
+    setMarqueeSelectionIds(eligibleIds.length > 1 ? eligibleIds : []);
+  }, [handleNodesChange]);
+
+  const isValidFlowConnection = useCallback(
+    (connection: any) =>
+      Boolean(
+        connection.source &&
+          connection.target &&
+          connection.source !== connection.target &&
+          (!connection.sourceHandle || connection.sourceHandle === "out") &&
+          (!connection.targetHandle || connection.targetHandle === "in"),
+      ),
+    [],
   );
 
   const onConnectEnd = useCallback(
@@ -1070,7 +1751,10 @@ function FlowEditorInner() {
       setConnectionMenu({
         x,
         y,
-        position: reactFlowInstance.project({ x, y }),
+        position: reactFlowInstance.screenToFlowPosition({
+          x: point.x,
+          y: point.y,
+        }),
         nodeId: start.nodeId,
         handleType: start.handleType,
       });
@@ -1086,28 +1770,29 @@ function FlowEditorInner() {
       (item) =>
         Boolean(store.getAPIKey(item.id)) && Boolean(item.modelIds?.length),
     );
-    const existingIds = new Set(
-      useFlowStore.getState().nodes.map((node) => node.id),
-    );
-    addNode(
+    const created = addNode(
       type === "ai"
         ? {
             type: "ai",
             position,
+            style: AI_NODE_DEFAULT_SIZE,
             data: {
               label: "AI 节点",
               channelId: channel?.id,
               model: channel?.modelIds?.[0],
               prompt: "",
-              temperature: 0.7,
+              temperature: 1,
+              maxTokens: 258000,
+              autoCompressThreshold: 0.7,
+              webSearch: "auto",
+              reasoningLevel: "medium",
+              messages: [],
+              sessions: [],
             },
           }
-        : { type: "content", position, data: { label: "内容", content: "" } },
+        : { type: "content", position, data: emptyContentData("内容") },
     );
-    const created = useFlowStore
-      .getState()
-      .nodes.find((node) => !existingIds.has(node.id));
-    if (created) {
+      if (created) {
       const edge =
         connectionMenu.handleType === "source"
           ? {
@@ -1121,8 +1806,14 @@ function FlowEditorInner() {
               target: connectionMenu.nodeId,
               sourceHandle: "out",
               targetHandle: "in",
-            };
+        };
       addEdgeToStore({ ...edge, type: "interactive" });
+      const connectedNodes = useFlowStore.getState().nodes;
+      const source = connectedNodes.find((node) => node.id === edge.source);
+      const target = connectedNodes.find((node) => node.id === edge.target);
+      if (target?.type === "ai" && isLocalVideoNode(source)) {
+        showLocalVideoAiWarning();
+      }
     }
     setConnectionMenu(null);
   };
@@ -1132,11 +1823,14 @@ function FlowEditorInner() {
     const handleKeyDown = async (e: KeyboardEvent) => {
       const isMac = navigator.platform.toUpperCase().indexOf("MAC") >= 0;
       const isCtrlOrCmd = isMac ? e.metaKey : e.ctrlKey;
-
-      // Ctrl/Cmd + S: 保存
-      if (isCtrlOrCmd && e.key === "s") {
+      // Saving must work even when the active element is an editable node field.
+      if (isCtrlOrCmd && e.key.toLowerCase() === "s") {
         e.preventDefault();
         await saveWithThumbnail();
+        return;
+      }
+      if (isEditableTarget(e.target)) {
+        if (isCtrlOrCmd && e.key.toLowerCase() === "c") clipboardRef.current = [];
         return;
       }
 
@@ -1156,32 +1850,46 @@ function FlowEditorInner() {
       }
 
       if (isCtrlOrCmd && e.key.toLowerCase() === "c") {
-        e.preventDefault();
-        clipboardRef.current = nodes
+        const selectedNodes = nodes
           .filter((node) => node.selected)
           .map((node) => ({
-            ...node,
+            ...cloneFlowValue(node),
             id: undefined,
             position: { x: node.position.x + 40, y: node.position.y + 40 },
           }));
+        clipboardRef.current = selectedNodes;
+        if (selectedNodes.length) e.preventDefault();
         return;
       }
       if (isCtrlOrCmd && e.key.toLowerCase() === "v") {
-        e.preventDefault();
-        clipboardRef.current.forEach((node) =>
-          addNode({ ...node, id: undefined }),
-        );
+        if (clipboardRef.current.length) {
+          e.preventDefault();
+          suppressContentPasteUntilRef.current = performance.now() + 500;
+          const nodesToPaste = clipboardRef.current.map((node) =>
+            cloneFlowValue(node),
+          );
+          clipboardRef.current = clipboardRef.current.map((node) => ({
+            ...node,
+            position: {
+              x: node.position.x + 40,
+              y: node.position.y + 40,
+            },
+          }));
+          for (const node of nodesToPaste) {
+            await retainLocalResource(getContentResourceId(node.data));
+            addNode({ ...node, id: undefined });
+          }
+        }
         return;
       }
       if (e.key === "Delete" || e.key === "Backspace") {
-        if (
-          (e.target as HTMLElement)?.tagName === "INPUT" ||
-          (e.target as HTMLElement)?.tagName === "TEXTAREA"
-        )
-          return;
+        e.preventDefault();
         nodes
           .filter((node) => node.selected)
           .forEach((node) => deleteNode(node.id));
+        edges
+          .filter((edge) => edge.selected)
+          .forEach((edge) => deleteEdge(edge.id));
         return;
       }
 
@@ -1212,15 +1920,49 @@ function FlowEditorInner() {
 
     document.addEventListener("keydown", handleKeyDown);
     return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [addNode, deleteNode, nodes, reactFlowInstance, saveWithThumbnail]);
+  }, [addNode, deleteEdge, deleteNode, edges, isEditableTarget, nodes, reactFlowInstance, saveWithThumbnail]);
 
   useEffect(() => {
-    if (nodes.length === 0) return;
-    const timeoutId = window.setTimeout(() => {
-      saveLightweight();
-    }, 1000);
-    return () => window.clearTimeout(timeoutId);
-  }, [nodes, edges, saveLightweight]);
+    const handlePaste = (event: ClipboardEvent) => {
+      if (isEditableTarget(event.target)) return;
+      if (performance.now() <= suppressContentPasteUntilRef.current) {
+        event.preventDefault();
+        return;
+      }
+      const clipboard = event.clipboardData;
+      if (!clipboard) return;
+      const imageItem = Array.from(clipboard.items).find((item) => item.type.startsWith("image/"));
+      const text = clipboard.getData("text/plain");
+      const rect = reactFlowWrapper.current?.getBoundingClientRect();
+      if (imageItem) {
+        event.preventDefault();
+        const file = imageItem.getAsFile();
+        if (file) {
+          const input = { kind: "file" as const, file, fileName: file.name || "clipboard.png", clipboardImage: true };
+          void importClipboardInputIntoSelectedNode(input).then((imported) => {
+            if (!imported && !nodes.some((node) => node.selected)) {
+              void importClipboardInputAt(input, rect ? rect.left + rect.width / 2 : undefined, rect ? rect.top + rect.height / 2 : undefined);
+            }
+          });
+        } else {
+          if (!nodes.some((node) => node.selected)) createClipboardErrorNode("INVALID_CONTENT", "剪贴板中的图片无法读取，请重试或选择本地文件。", rect ? rect.left + rect.width / 2 : undefined, rect ? rect.top + rect.height / 2 : undefined);
+        }
+      } else if (text.trim()) {
+        event.preventDefault();
+        const input = { kind: "text" as const, text };
+        void importClipboardInputIntoSelectedNode(input).then((imported) => {
+          if (!imported && !nodes.some((node) => node.selected)) {
+            void importClipboardInputAt(input, rect ? rect.left + rect.width / 2 : undefined, rect ? rect.top + rect.height / 2 : undefined);
+          }
+        });
+      } else {
+        event.preventDefault();
+        if (!nodes.some((node) => node.selected)) createClipboardErrorNode("INVALID_CONTENT", "剪贴板中没有可识别的文本、URL 或图片。", rect ? rect.left + rect.width / 2 : undefined, rect ? rect.top + rect.height / 2 : undefined);
+      }
+    };
+    document.addEventListener("paste", handlePaste);
+    return () => document.removeEventListener("paste", handlePaste);
+  }, [createClipboardErrorNode, importClipboardInputAt, importClipboardInputIntoSelectedNode, isEditableTarget, nodes]);
 
   // 窗口关闭/刷新前自动保存
   useEffect(() => {
@@ -1232,6 +1974,12 @@ function FlowEditorInner() {
     return () => window.removeEventListener("beforeunload", handleBeforeUnload);
   }, [reactFlowInstance, saveCurrentFlow]);
 
+  useEffect(() => () => {
+    if (localVideoAiWarningTimerRef.current !== null) {
+      window.clearTimeout(localVideoAiWarningTimerRef.current);
+    }
+  }, []);
+
   return (
     <div
       className="relative h-dvh overflow-hidden bg-background"
@@ -1240,6 +1988,7 @@ function FlowEditorInner() {
       {/* 顶部工具栏 */}
       <Toolbar
         saveStatus={saveStatus}
+        onSave={saveWithThumbnail}
         leftInset={currentLeftInset}
         rightInset={currentRightInset}
         viewportWidth={editorWidth}
@@ -1258,15 +2007,42 @@ function FlowEditorInner() {
         }}
         onOpenExtensionPanel={() => {
           if (!canOpenExtensionPanel) return;
-          setShowExtensionPanel((value) => {
-            if (value) {
-              setKeepExtensionPanelOpen(false);
-              setExtensionWidth(370);
-            }
-            return !value;
-          });
+          if (showExtensionPanel) {
+            setKeepExtensionPanelOpen(false);
+            setExtensionWidth(370);
+            closeContentEditor();
+            setShowExtensionPanel(false);
+            return;
+          }
+          const selectedEditableNode = nodes.find(
+            (node) =>
+              node.selected &&
+              node.type === "content" &&
+              (node.data?.category === "text" ||
+                node.data?.category === "mindmap"),
+          );
+          if (selectedEditableNode) openContentEditor(selectedEditableNode.id);
+          setShowExtensionPanel(true);
         }}
       />
+
+      {localVideoAiWarning && (
+        <div
+          role="alert"
+          className="absolute right-4 top-20 z-[70] flex max-w-[min(420px,calc(100%-32px))] items-start gap-3 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2.5 text-sm text-amber-950 shadow-lg dark:border-amber-800 dark:bg-amber-950/90 dark:text-amber-100"
+        >
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+          <p className="leading-5">AI 节点暂不支持本地上传的视频。</p>
+          <button
+            type="button"
+            className="-mr-1 -mt-1 rounded p-1 text-amber-900/70 hover:bg-amber-200/70 hover:text-amber-950 dark:text-amber-100/70 dark:hover:bg-amber-900/60 dark:hover:text-amber-50"
+            aria-label="关闭提示"
+            onClick={() => setLocalVideoAiWarning(false)}
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+      )}
 
       {showNodePanel && (
         <aside className="absolute bottom-4 left-4 top-4 z-40 flex w-[260px] flex-col overflow-hidden rounded-2xl border border-border bg-card shadow-xl">
@@ -1491,7 +2267,7 @@ function FlowEditorInner() {
 
       {showExtensionPanel && (
         <aside
-          className="absolute bottom-4 right-4 top-4 z-40 overflow-hidden rounded-2xl border border-border bg-card shadow-xl"
+          className="absolute bottom-4 right-4 top-4 z-40 flex min-h-0 flex-col overflow-hidden rounded-2xl border border-border bg-card shadow-xl"
           style={{ width: extensionWidth, minWidth: 280, maxWidth: "70%" }}
         >
           <div
@@ -1552,11 +2328,12 @@ function FlowEditorInner() {
           >
             <div className="absolute left-0 top-1/2 h-16 w-0.5 -translate-y-1/2 rounded-full bg-transparent group-hover:bg-emerald-400" />
           </div>
-          <div className="flex items-center justify-between px-4 py-3">
+          <div className="flex shrink-0 items-center justify-between px-4 py-3">
             <div className="flex items-center gap-2">
               <Layers3 className="h-4 w-4 text-muted-foreground" />
               <h2 className="text-sm font-semibold">
-                {nodes.find((node) => node.selected)?.data?.label ||
+                {nodes.find((node) => node.id === editorNodeId)?.data?.label ||
+                  nodes.find((node) => node.selected)?.data?.label ||
                   "未选中节点"}
               </h2>
             </div>
@@ -1567,12 +2344,15 @@ function FlowEditorInner() {
                 setKeepExtensionPanelOpen(false);
                 setExtensionWidth(370);
                 setShowExtensionPanel(false);
+                closeContentEditor();
               }}
             >
               <X className="h-4 w-4" />
             </button>
           </div>
-          {nodes.some((node) => node.selected) ? (
+          {editorNodeId ? (
+            <ContentEditorPanel nodeId={editorNodeId} />
+          ) : nodes.some((node) => node.selected) ? (
             <p className="px-4 text-xs leading-relaxed text-muted-foreground">
               在这里查看当前选中节点的内容和可用操作。
             </p>
@@ -1592,70 +2372,135 @@ function FlowEditorInner() {
       {/* React Flow 画布 */}
       <div
         ref={reactFlowWrapper}
-        className="h-full w-full overflow-hidden"
+        className="relative h-full w-full overflow-hidden"
         onDoubleClickCapture={handleCanvasDoubleClick}
+        onContextMenu={(event) => {
+          if (isEditableTarget(event.target) || nodes.some((node) => node.selected)) return;
+          const target = event.target as HTMLElement;
+          if (target.closest(".react-flow__node, .react-flow__edge, .react-flow__panel, .react-flow__controls")) return;
+          event.preventDefault();
+          const rect = reactFlowWrapper.current?.getBoundingClientRect();
+          const rawX = event.clientX - (rect?.left || 0);
+          const rawY = event.clientY - (rect?.top || 0);
+          const maxX = Math.max(FLOATING_MENU_MARGIN, (rect?.width || 0) - 188);
+          const maxY = Math.max(FLOATING_MENU_MARGIN, (rect?.height || 0) - 106);
+          setCanvasContextMenu({
+            x: Math.max(FLOATING_MENU_MARGIN, Math.min(rawX, maxX)),
+            y: Math.max(FLOATING_MENU_MARGIN, Math.min(rawY, maxY)),
+            clientX: event.clientX,
+            clientY: event.clientY,
+          });
+          setAddMenu(null);
+          setConnectionMenu(null);
+        }}
         onDragOver={(event) => event.preventDefault()}
         onDrop={handleFileDrop}
       >
+        {isCurrentFlowReady ? (
         <ReactFlow
           key={currentFlowId || flowId}
           nodes={nodes}
           edges={renderedEdges}
-          onNodesChange={onNodesChange}
+          onNodesChange={handleNodesChange}
           onEdgesChange={onEdgesChange}
+          onNodeClick={handleNodeClick}
+          onPaneClick={handlePaneClick}
+          onNodeDragStart={handleNodeDragStart}
+          onNodeDrag={handleNodeDrag}
+          onNodeDragStop={handleNodeDragStop}
           onConnect={onConnect}
           onConnectStart={onConnectStart}
           onConnectEnd={onConnectEnd}
-          isValidConnection={(connection) =>
-            Boolean(
-              connection.source &&
-              connection.target &&
-              connection.source !== connection.target &&
-              (!connection.sourceHandle || connection.sourceHandle === "out") &&
-              (!connection.targetHandle || connection.targetHandle === "in"),
-            )
-          }
+          onSelectionStart={handleSelectionStart}
+          onSelectionEnd={handleSelectionEnd}
+          isValidConnection={isValidFlowConnection}
           connectionRadius={48}
           connectionLineType={ConnectionLineType.Bezier}
-          connectionLineStyle={{
-            stroke: "var(--muted-foreground)",
-            strokeWidth: 2,
-            strokeDasharray: "8 8",
-          }}
-          nodeTypes={nodeTypes}
-          edgeTypes={edgeTypes}
+          connectionLineStyle={CONNECTION_LINE_STYLE}
+          nodeTypes={stableNodeTypes}
+          edgeTypes={stableEdgeTypes}
+          onError={handleReactFlowError}
           nodesDraggable={!isLocked}
           nodesConnectable={!isLocked}
           elementsSelectable={!isLocked}
+          deleteKeyCode={null}
+          selectNodesOnDrag={false}
           selectionOnDrag
-          selectionKeyCode="Control"
-          multiSelectionKeyCode={["Control", "Meta", "Shift"]}
+          selectionKeyCode="Shift"
+          multiSelectionKeyCode={MULTI_SELECTION_KEYS}
           panActivationKeyCode="Space"
-          panOnDrag={[1, 2]}
+          panOnDrag
+          zoomOnScroll
+          zoomOnPinch
           defaultViewport={currentFlow?.viewport}
           proOptions={{ hideAttribution: true }}
           fitView={!currentFlow?.viewport}
+          fitViewOptions={FLOW_FIT_VIEW_OPTIONS}
           zoomOnDoubleClick={false}
           onMoveStart={closeCanvasMenus}
-          onMoveEnd={(_, viewport) => {
-            if (!isResizingPanel) saveLightweight(viewport);
-          }}
+          onMoveEnd={handleMoveEnd}
           minZoom={0.1}
           maxZoom={4}
-          defaultEdgeOptions={{
-            type: "interactive",
-            animated: false,
-            style: { stroke: "var(--muted-foreground)", strokeWidth: 2 },
-          }}
+          defaultEdgeOptions={DEFAULT_EDGE_OPTIONS}
         >
           <Background color="var(--border)" gap={16} />
-          {showMinimap && (
-            <InteractiveMiniMap
-              right={showExtensionPanel ? extensionWidth + 24 : 24}
-            />
-          )}
+          <NodeToolbar
+            nodeId={marqueeSelectionIds}
+            isVisible={marqueeSelectionIds.length > 1}
+            position={Position.Top}
+            offset={12}
+            className="nodrag nowheel"
+          >
+            <div className="flex items-center overflow-hidden rounded-full border border-border bg-card text-xs shadow-lg">
+              <span className="px-3 py-2 font-medium text-muted-foreground">
+                已选择 {marqueeSelectionIds.length} 个
+              </span>
+              <span className="h-5 w-px bg-border" />
+              <button
+                type="button"
+                className="inline-flex items-center gap-1.5 px-3 py-2 font-medium text-foreground hover:bg-muted"
+                onClick={(event) => { event.stopPropagation(); createGroup(); }}
+              >
+                <FolderPlus className="h-3.5 w-3.5" />
+                编组
+              </button>
+            </div>
+          </NodeToolbar>
         </ReactFlow>
+        ) : (
+          <div className="h-full w-full bg-background" aria-hidden="true" />
+        )}
+        {isCurrentFlowReady && showMinimap && (
+          <InteractiveMiniMap
+            right={showExtensionPanel ? extensionWidth + 24 : 24}
+          />
+        )}
       </div>
+
+      {canvasContextMenu && (
+        <div
+          data-canvas-context-menu
+          className="absolute z-[59] w-44 rounded-xl border border-border bg-card p-1.5 shadow-lg"
+          style={{ left: canvasContextMenu.x, top: canvasContextMenu.y }}
+          onPointerDown={(event) => event.stopPropagation()}
+        >
+          <button
+            type="button"
+            className="flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left text-sm hover:bg-muted"
+            onClick={() => {
+              const point = canvasContextMenu;
+              setCanvasContextMenu(null);
+              void readSystemClipboardAndImport(point.clientX, point.clientY);
+            }}
+          >
+            <ClipboardPaste className="h-4 w-4 text-muted-foreground" />
+            粘贴
+          </button>
+          <p className="px-3 pb-1 pt-1 text-[10px] leading-4 text-muted-foreground">
+            浏览器拒绝读取时，请使用 Ctrl/Cmd+V
+          </p>
+        </div>
+      )}
 
       {connectionMenu && (
         <div
@@ -1703,7 +2548,10 @@ function FlowEditorInner() {
               onClick={() =>
                 addNodeAt(
                   "ai",
-                  reactFlowInstance.project({ x: addMenu.x, y: addMenu.y }),
+                  reactFlowInstance.screenToFlowPosition({
+                    x: addMenu.x + (reactFlowWrapper.current?.getBoundingClientRect().left || 0),
+                    y: addMenu.y + (reactFlowWrapper.current?.getBoundingClientRect().top || 0),
+                  }),
                 )
               }
             >
@@ -1715,7 +2563,10 @@ function FlowEditorInner() {
               onClick={() =>
                 addNodeAt(
                   "content",
-                  reactFlowInstance.project({ x: addMenu.x, y: addMenu.y }),
+                  reactFlowInstance.screenToFlowPosition({
+                    x: addMenu.x + (reactFlowWrapper.current?.getBoundingClientRect().left || 0),
+                    y: addMenu.y + (reactFlowWrapper.current?.getBoundingClientRect().top || 0),
+                  }),
                 )
               }
             >
@@ -1727,7 +2578,10 @@ function FlowEditorInner() {
               onClick={() =>
                 addNodeAt(
                   "browser",
-                  reactFlowInstance.project({ x: addMenu.x, y: addMenu.y }),
+                  reactFlowInstance.screenToFlowPosition({
+                    x: addMenu.x + (reactFlowWrapper.current?.getBoundingClientRect().left || 0),
+                    y: addMenu.y + (reactFlowWrapper.current?.getBoundingClientRect().top || 0),
+                  }),
                 )
               }
             >
@@ -1741,7 +2595,10 @@ function FlowEditorInner() {
             onClick={() =>
               addNodeAt(
                 "sticky",
-                reactFlowInstance.project({ x: addMenu.x, y: addMenu.y }),
+                reactFlowInstance.screenToFlowPosition({
+                  x: addMenu.x + (reactFlowWrapper.current?.getBoundingClientRect().left || 0),
+                  y: addMenu.y + (reactFlowWrapper.current?.getBoundingClientRect().top || 0),
+                }),
               )
             }
           >
@@ -1803,18 +2660,17 @@ function FlowEditorInner() {
                   <button
                     key={item.id}
                     className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-xs hover:bg-muted"
-                    onClick={() => {
+                    onClick={async () => {
+                      await retainLocalResource(getContentResourceId(item.nodeData));
                       addNode({
-                        type: item.type,
-                        position: reactFlowInstance.project({
-                          x: addMenu.x,
-                          y: addMenu.y,
+                        type: "content",
+                        position: reactFlowInstance.screenToFlowPosition({
+                          x: addMenu.x + (reactFlowWrapper.current?.getBoundingClientRect().left || 0),
+                          y: addMenu.y + (reactFlowWrapper.current?.getBoundingClientRect().top || 0),
                         }),
                         data: {
-                          ...(item.metadata?.nodeData || {}),
+                          ...item.nodeData,
                           label: item.title,
-                          mode: item.type,
-                          content: item.content,
                           sourceId: undefined,
                         },
                       });
@@ -1825,12 +2681,8 @@ function FlowEditorInner() {
                     <span className="h-6 w-6">
                       {nodeIcon(
                         {
-                          type: item.type,
-                          data: {
-                            mode: item.type,
-                            contentCategory:
-                              item.metadata?.nodeData?.contentCategory,
-                          },
+                          type: "content",
+                          data: item.nodeData,
                         },
                         "h-3.5 w-3.5",
                       )}
@@ -1874,18 +2726,16 @@ function FlowEditorInner() {
             id="flow-file-import"
             type="file"
             className="hidden"
-            accept=".json,.txt,.doc,.docx,.md,.markdown,.csv,.tsv,.xlsx,.xls,.pdf,.pptx,.ppt,.png,.jpg,.jpeg,.gif,.webp,.svg,.mp4,.webm,.mov,.avi,.mkv"
+            accept={`.json,${CONTENT_FILE_ACCEPT}`}
             onChange={async (event) => {
               const file = event.target.files?.[0];
               if (!file) return;
               const extension = file.name.split(".").pop()?.toLowerCase();
-              const position = reactFlowInstance.project({
-                x: addMenu.x,
-                y: addMenu.y,
+              const bounds = reactFlowWrapper.current?.getBoundingClientRect();
+              const position = reactFlowInstance.screenToFlowPosition({
+                x: addMenu.x + (bounds?.left || 0),
+                y: addMenu.y + (bounds?.top || 0),
               });
-              const imageTypes = ["png", "jpg", "jpeg", "gif", "webp", "svg"];
-              const videoTypes = ["mp4", "webm", "mov", "avi", "mkv"];
-              const tableTypes = ["csv", "tsv", "xlsx", "xls"];
               if (extension === "json") {
                 const reader = new FileReader();
                 reader.onload = () => {
@@ -1898,55 +2748,13 @@ function FlowEditorInner() {
                   }
                 };
                 reader.readAsText(file);
-              } else if (
-                imageTypes.includes(extension || "") ||
-                videoTypes.includes(extension || "") ||
-                extension === "pdf"
-              ) {
-                const resource = await storeLocalResource(file);
-                const type =
-                  extension === "pdf"
-                    ? "pdf"
-                    : imageTypes.includes(extension || "")
-                      ? "image"
-                      : "video";
-                addNode({
-                  type,
-                  position,
-                  data: {
-                    label:
-                      type === "pdf"
-                        ? "PDF 节点"
-                        : type === "image"
-                          ? "图片节点"
-                          : "视频节点",
-                    mode: type,
-                    content: resource.url,
-                    resourceId: resource.resourceId,
-                    fileName: file.name,
-                    resourceLost: false,
-                  },
-                });
               } else {
-                const reader = new FileReader();
-                reader.onload = () =>
-                  addNode({
-                    type: tableTypes.includes(extension || "")
-                      ? "table"
-                      : "text",
-                    position,
-                    data: {
-                      label: tableTypes.includes(extension || "")
-                        ? "表格节点"
-                        : "文本节点",
-                      mode: tableTypes.includes(extension || "")
-                        ? "table"
-                        : "text",
-                      content: String(reader.result || ""),
-                      fileName: file.name,
-                    },
-                  });
-                reader.readAsText(file);
+                const created = addNode({
+                  type: "content",
+                  position,
+                  data: emptyContentData(file.name || "内容"),
+                });
+                void importContentIntoNode(created.id, { kind: "file", file, fileName: file.name });
               }
               event.currentTarget.value = "";
             }}
@@ -2006,7 +2814,7 @@ function FlowEditorInner() {
               </p>
               <p className="flex justify-between">
                 <span>Delete / Backspace</span>
-                <span className="text-muted-foreground">删除选中节点</span>
+                <span className="text-muted-foreground">删除选中节点或连接线</span>
               </p>
               <p className="flex justify-between">
                 <span>双击空白</span>
