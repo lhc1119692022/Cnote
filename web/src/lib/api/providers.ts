@@ -141,13 +141,14 @@ export function inferProviderId(
   const configured = providerId?.trim().toLowerCase() || 'custom'
   const models = (Array.isArray(modelIds) ? modelIds : [modelIds]).map((model) => model.toLowerCase())
   const endpoint = baseURL.toLowerCase()
-  const proxyProvider = endpoint.match(/\/proxy\/(openai|anthropic|deepseek|google)(?:\/|$)/)?.[1]
+  const proxyProvider = endpoint.match(/\/proxy\/(openai|anthropic|deepseek|google|xai)(?:\/|$)/)?.[1]
 
   if (protocol === 'gemini') return 'google'
   if (proxyProvider) return proxyProvider
   if (/api\.deepseek\.com/.test(endpoint) || models.some((model) => /^deepseek(?:-|$)/.test(model))) return 'deepseek'
   if (/api\.anthropic\.com/.test(endpoint) || models.some((model) => /^claude(?:-|$)/.test(model))) return 'anthropic'
   if (/generativelanguage\.googleapis\.com/.test(endpoint) || models.some((model) => /^gemini(?:-|$)/.test(model))) return 'google'
+  if (/api\.x\.ai/.test(endpoint) || models.some((model) => /^(?:grok|xai)(?:[-.]|$)/.test(model))) return 'xai'
   if (/api\.openai\.com/.test(endpoint) || models.some((model) => /^(?:gpt-|o\d(?:-|$))/.test(model))) return 'openai'
   return configured
 }

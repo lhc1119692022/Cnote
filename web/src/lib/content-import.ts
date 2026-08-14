@@ -56,7 +56,7 @@ export function getContentFileAccept(category?: ContentCategory | null) {
 
 const markdownExtensions = new Set(['md', 'markdown'])
 
-interface UrlClassification {
+export interface UrlClassification {
   provider: ContentUrlProvider
   category: ContentCategory
   subtype: ContentSubtype
@@ -140,6 +140,16 @@ function classifyUrl(value: string, hint?: ContentCategory): UrlClassification {
   if (hint === 'mindmap') return { provider: 'generic', category: 'mindmap', subtype: 'online-mindmap', badge: '在线思维导图' }
   if (hint === 'image') return { provider: 'generic', category: 'image', subtype: 'image', badge: '图片链接' }
   return { provider: 'generic', category: 'document', subtype: 'web-page', badge: '网页' }
+}
+
+/** Classifies a single public URL without starting an import or parse request. */
+export function classifyContentUrl(value: string, hint?: ContentCategory): UrlClassification | null {
+  try {
+    if (!isSingleUrl(value)) return null
+    return classifyUrl(normalizedUrl(value), hint)
+  } catch {
+    return null
+  }
 }
 
 function previewOnlyWarning(label: string): ParseWarning {

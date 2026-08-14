@@ -47,3 +47,6 @@ coverage/
 .cache/
 temp/
 tmp/
+
+# Private Cloudflare Worker scripts with embedded access secrets
+.private-workers/

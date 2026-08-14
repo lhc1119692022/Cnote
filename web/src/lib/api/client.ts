@@ -97,6 +97,12 @@ export class AIClient {
     }
   }
 
+  private shouldUseXAIResponses(request: ChatCompletionRequest) {
+    return this.provider.id === 'xai'
+      && request.web_search !== 'off'
+      && /api\.x\.ai|\/proxy\/xai(?:\/|$)/i.test(this.provider.baseURL)
+  }
+
   private geminiContent(content: ChatMessage['content']) {
     if (typeof content === 'string') return [{ text: content }]
     return content.map((part) => {
@@ -262,13 +268,7 @@ export class AIClient {
       return this.geminiText(await response.json())
     }
 
-    if (this.provider.protocol === 'chatCompletions') {
-      const response = await this.chatCompletion(request, signal) as ChatCompletionResponse
-      const content = response.choices?.[0]?.message?.content
-      return typeof content === 'string' ? content : this.messageText(content || '')
-    }
-
-    if (this.provider.protocol === 'responses') {
+    if (this.provider.protocol === 'responses' || this.shouldUseXAIResponses(request)) {
       const response = await fetch(this.getRequestURL('/v1/responses'), {
         method: 'POST',
         headers: this.getHeaders(),
@@ -283,6 +283,12 @@ export class AIClient {
       return result.output_text
         || result.output?.flatMap((item) => item.content || []).find((item) => item.type === 'output_text')?.text
         || ''
+    }
+
+    if (this.provider.protocol === 'chatCompletions') {
+      const response = await this.chatCompletion(request, signal) as ChatCompletionResponse
+      const content = response.choices?.[0]?.message?.content
+      return typeof content === 'string' ? content : this.messageText(content || '')
     }
 
     const response = await fetch(this.getRequestURL('/v1/messages'), {
@@ -306,7 +312,7 @@ export class AIClient {
     let endpoint = '/v1/chat/completions'
     let body: Record<string, unknown> = { ...request, stream: true }
 
-    if (this.provider.protocol === 'responses') {
+    if (this.provider.protocol === 'responses' || this.shouldUseXAIResponses(request)) {
       endpoint = '/v1/responses'
       body = this.responsesBody(request, true)
     } else if (this.provider.protocol === 'messages') {
@@ -317,7 +323,7 @@ export class AIClient {
       body = this.geminiBody(request)
     }
 
-    if (this.provider.protocol === 'chatCompletions') {
+    if (this.provider.protocol === 'chatCompletions' && !this.shouldUseXAIResponses(request)) {
       body = this.chatCompletionsBody(request, true)
     }
 

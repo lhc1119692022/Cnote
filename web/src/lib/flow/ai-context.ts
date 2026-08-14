@@ -5,20 +5,77 @@ import { resolveSourceBlob } from '@/lib/content-import'
 import { getContentServiceClient } from '@/lib/content-service'
 import type { AIContextEntry, AIImageInput } from './ai-prompt'
 
-function textForNode(node: Node) {
-  const data = node.data as ContentNodeData | undefined
-  if (node.type !== 'content' || !data) return String((node.data as any)?.label || '')
+function uniqueText(parts: Array<string | undefined>) {
+  return Array.from(new Set(parts.map((part) => part?.trim() || '').filter(Boolean))).join('\n\n')
+}
+
+function parsedContentText(data: ContentNodeData) {
   const payload = data.payload
   if (payload?.kind === 'text') return payload.value
   if (payload?.kind === 'document') return payload.plainText || payload.rawText || ''
   if (payload?.kind === 'social') {
-    return [payload.title, payload.bodyText, payload.topics?.map((topic) => `#${topic}`).join(' ') || '']
-      .filter(Boolean)
-      .join('\n\n')
+    const blockText = payload.contentBlocks.flatMap((block) => {
+      if (block.type === 'text') return block.text.trim() ? [block.text.trim()] : []
+      if (block.type === 'mention') return [`@${block.name}`]
+      if (block.type === 'link') return [block.title || block.url]
+      return []
+    })
+    return uniqueText([
+      payload.title,
+      payload.bodyText,
+      ...blockText,
+      payload.topics?.length ? payload.topics.map((topic) => `#${topic}`).join(' ') : '',
+      [payload.author?.name, payload.publishedAt].filter(Boolean).join(' · '),
+    ])
   }
-  if (payload?.kind === 'video') return [payload.title, payload.transcript].filter(Boolean).join('\n\n')
-  if (payload?.kind === 'image') return [payload.alt, data.preview?.title, data.preview?.description].filter(Boolean).join('\n')
-  return [data.preview?.title, data.preview?.description].filter(Boolean).join('\n')
+  if (payload?.kind === 'video') return uniqueText([payload.title, payload.transcript, data.preview?.description])
+  if (payload?.kind === 'image') return uniqueText([payload.alt, data.preview?.title, data.preview?.description])
+  if (payload?.kind === 'presentation') return uniqueText([
+    payload.title,
+    payload.slides?.map((slide) => [slide.title, slide.text].filter(Boolean).join('\n')).filter(Boolean).join('\n\n'),
+    payload.outline?.join('\n'),
+  ])
+  if (payload?.kind === 'mindmap') {
+    const lines: string[] = []
+    const visit = (item: typeof payload.root, depth: number) => {
+      lines.push(`${'  '.repeat(depth)}${item.text}`)
+      item.children.forEach((child) => visit(child, depth + 1))
+    }
+    visit(payload.root, 0)
+    return lines.join('\n')
+  }
+  if (payload?.kind === 'data') {
+    return payload.sheets.flatMap((sheet) => [sheet.columns.join('\t'), ...sheet.rows.map((row) => row.join('\t'))]).join('\n')
+  }
+  if (data.source?.kind === 'text') return data.source.text
+  return uniqueText([data.preview?.title, data.preview?.description])
+}
+
+/** Text sent from a connected node to an AI node. URL-backed content keeps both the address and parsed body. */
+export function textForAIContextNode(node: Node) {
+  const data = node.data as ContentNodeData | undefined
+  if (node.type === 'content' && data) {
+    const sourceUrl = data.source?.kind === 'url'
+      ? data.source.normalizedUrl
+      : data.payload?.kind === 'social'
+        ? data.payload.canonicalUrl
+        : data.payload?.kind === 'video'
+          ? data.payload.url
+          : undefined
+    return uniqueText([sourceUrl, parsedContentText(data)])
+  }
+  if (node.type === 'ai') return String((node.data as any)?.output || [...((node.data as any)?.messages || [])].reverse().find((message: { role?: string }) => message.role === 'assistant')?.content || '')
+  if (node.type === 'browser') {
+    const browserData = node.data as any
+    const url = String(browserData.confirmedUrl || browserData.url || '').trim()
+    const text = String(browserData.snapshot?.text || browserData.extractedContent || '').trim()
+    const outputMode = browserData.outputMode || (browserData.extractedContent ? 'text' : 'url')
+    if (outputMode === 'url') return url
+    if (outputMode === 'text') return text
+    return uniqueText([url, text])
+  }
+  if (node.type === 'sticky') return String((node.data as any)?.content || '')
+  return String((node.data as any)?.text || (node.data as any)?.label || '')
 }
 
 function blobToBase64(blob: Blob) {
@@ -77,7 +134,7 @@ export async function buildAIContextEntries(nodes: Node[], sourceIds: string[]) 
       ])
       resolvedImages.forEach((input) => { if (input) images.push(input) })
     }
-    const text = textForNode(source).trim()
+    const text = textForAIContextNode(source).trim()
     if (text || images.length) entries.push({ nodeId: source.id, label: String(source.data?.label || '上游节点'), text, images })
   }
   return entries

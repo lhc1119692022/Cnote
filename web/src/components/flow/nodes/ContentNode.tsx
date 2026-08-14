@@ -2,7 +2,7 @@ import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useStat
 import { NodeProps, Position } from 'reactflow'
 import { AlertCircle, AlignLeft, ChevronLeft, ChevronRight, ExternalLink, FileText, FileUp, Image as ImageIcon, LoaderCircle, Maximize2, Presentation, RectangleHorizontal, RectangleVertical, RefreshCw, Share2, Sparkles, Table2, Video, Workflow } from 'lucide-react'
 import { Button } from '@/components/ui/button'
-import { importContentIntoNode, reparseContentNode, saveTextContentToNode } from '@/lib/content-import-controller'
+import { importContentFromUpstream, importContentIntoNode, reparseContentNode, saveTextContentToNode } from '@/lib/content-import-controller'
 import { CONTENT_FILE_ACCEPT, CONTENT_FILE_ACCEPT_BY_CATEGORY } from '@/lib/content-import'
 import { useLocalResourceUrl } from '@/hooks/use-local-resource-url'
 import { hasLocalResource } from '@/lib/resource-storage'
@@ -61,6 +61,15 @@ function RemoteLinkPreview({ title, description, thumbnailUrl, url, label }: { t
   return <div className="space-y-3">{thumbnailUrl && <img src={thumbnailUrl} alt="" loading="lazy" className="h-36 w-full rounded-lg object-cover" />}<div className="space-y-1"><div className="line-clamp-2 text-lg font-medium leading-7 text-foreground">{title}</div>{description && <p className="line-clamp-3 text-base leading-7 text-muted-foreground">{description}</p>}</div>{url && <a href={url} target="_blank" rel="noreferrer" className="nodrag inline-flex items-center gap-1.5 text-xs text-muted-foreground underline-offset-4 hover:text-foreground hover:underline" onPointerDown={(event) => event.stopPropagation()}><ExternalLink className="h-3.5 w-3.5" />打开{label}</a>}</div>
 }
 
+function ContentNodeDragGutters() {
+  return <div className="content-node-drag-gutters" aria-hidden="true">
+    <span data-side="top" />
+    <span data-side="right" />
+    <span data-side="bottom" />
+    <span data-side="left" />
+  </div>
+}
+
 type SocialMediaEntry = { item: ContentMediaItem; type: 'image' | 'video' }
 
 function SocialMediaCarousel({ items, activeIndex, onActiveIndexChange, resolveMediaUrl, maxAspectRatio }: {
@@ -101,12 +110,19 @@ export const ContentNode = memo((props: NodeProps<ContentNodeData>) => {
   if (data.category) return <ContentLeafNode {...props} />
 
   const chooseCategory = (category: ContentCategory) => {
-    if (category === 'image' || category === 'presentation' || category === 'data') {
+    if (category === 'presentation' || category === 'data') {
       inputRef.current?.setAttribute('accept', CONTENT_FILE_ACCEPT_BY_CATEGORY[category])
       importFile()
       return
     }
     updateNode(id, { type: 'content', data: { ...data, schemaVersion: 2, category, subtype: null, state: 'empty', source: null, label: `${labels[category]}节点` } })
+    if (category === 'video' || category === 'social' || category === 'document' || category === 'image') {
+      const imported = importContentFromUpstream(id, category)
+      if (category === 'image' && !imported) {
+        inputRef.current?.setAttribute('accept', CONTENT_FILE_ACCEPT_BY_CATEGORY.image)
+        importFile()
+      }
+    }
   }
   const importFile = () => { if (inputRef.current) { inputRef.current.value = ''; inputRef.current.click() } }
   const importLocalFile = () => {
@@ -119,6 +135,7 @@ export const ContentNode = memo((props: NodeProps<ContentNodeData>) => {
 
   return <div className={`node-card node-panel-shadow group relative flex h-full min-h-[430px] w-full min-w-[540px] flex-col rounded-[24px] border bg-card ${selected ? 'node-selected' : 'border-border'}`}>
     <NodeHandle type="target" position={Position.Left} id="in" /><NodeHandle type="source" position={Position.Right} id="out" />
+    <ContentNodeDragGutters />
     <NodeHoverToolbar nodeId={id} /><NodeResizeArc nodeId={id} minWidth={540} minHeight={430} />
     <div className="flex min-h-0 flex-1 items-center justify-center px-12 py-7"><div className="w-full">
       <h3 className="mb-4 text-center text-lg font-semibold text-foreground">选择内容类型</h3>
@@ -643,6 +660,7 @@ export const ContentLeafNode = memo(({ id, data, selected }: NodeProps<ContentNo
     }}
     >
     <NodeHandle type="target" position={Position.Left} id="in" /><NodeHandle type="source" position={Position.Right} id="out" />
+    <ContentNodeDragGutters />
     {category === 'social' && <div className="social-node-drag-handle" aria-label="拖动社媒节点" title="拖动节点"><span /></div>}
     {(category === 'image' || category === 'video') && mediaResources.length > 1 && <div className="media-resource-rail nodrag nowheel" onPointerDown={(event) => event.stopPropagation()}>
       {mediaResources.map((item, index) => <button key={`${item.resource.url}-${index}`} type="button" draggable onDragStart={(event) => { event.dataTransfer.effectAllowed = 'move'; event.dataTransfer.setData('application/x-cnote-media-resource', JSON.stringify({ kind: category, index })) }} onClick={() => setActiveMediaResource(category, index)} className={`media-resource-capsule ${index === activeMediaResourceIndex ? 'is-active' : ''}`} title={`拖入预览区或点击显示${item.label || `${category === 'image' ? '图片' : '视频'} ${index + 1}`}`}><span>{index + 1}</span><span className="truncate">{item.label || `${category === 'image' ? '图片' : '视频'} ${index + 1}`}</span></button>)}

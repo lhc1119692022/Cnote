@@ -1,5 +1,5 @@
 import { nanoid } from 'nanoid'
-import { detectAndParseContent, markdownPlainText, markdownToMindmap, resolveSourceBlob, type ContentImportInput } from '@/lib/content-import'
+import { classifyContentUrl, detectAndParseContent, markdownPlainText, markdownToMindmap, resolveSourceBlob, type ContentImportInput } from '@/lib/content-import'
 import { checksumText, deleteLocalResource } from '@/lib/resource-storage'
 import { useFlowStore } from '@/stores/use-flow-store'
 import { getContentServiceClient } from '@/lib/content-service'
@@ -58,7 +58,7 @@ function inferTextFormat(value: string) {
 // outside React Flow's active connection transaction.
 const textRefreshPromises = new Map<string, Promise<boolean>>()
 
-export function extractTextFromNode(node?: Node) {
+export function extractTextFromNode(node?: Node): string {
   if (!node) return ''
   const data = node.data || {}
   if (node.type === 'content') {
@@ -136,6 +136,71 @@ export function canNodeOutputText(node?: Node) {
 
 export function canNodeOutputMedia(node: Node | undefined, kind: ContentMediaKind) {
   return getNodeMediaItems(node, kind).length > 0
+}
+
+const UPSTREAM_URL_PATTERN = /https?:\/\/[^\s<>"'`]+/gi
+const TRAILING_URL_PUNCTUATION = /[,.!?;:，。！？；：、\]）)】》〉}"']+$/u
+
+function urlsFromUpstreamNode(node: Node) {
+  const data = node.data || {}
+  const explicitUrls = node.type === 'browser'
+    ? [data.confirmedUrl, data.url]
+    : node.type === 'content' && data.source?.kind === 'url'
+      ? [data.source.normalizedUrl]
+      : []
+  const textUrls = (extractTextFromNode(node).match(UPSTREAM_URL_PATTERN) || [])
+    .map((value) => value.replace(TRAILING_URL_PUNCTUATION, ''))
+  return Array.from(new Set([...explicitUrls, ...textUrls].filter((value): value is string => typeof value === 'string' && Boolean(value.trim()))))
+}
+
+function upstreamNodes(nodeId: string) {
+  const { nodes, edges } = useFlowStore.getState()
+  return edges
+    .filter((edge) => edge.target === nodeId)
+    .map((edge) => nodes.find((node) => node.id === edge.source))
+    .filter((node): node is Node => Boolean(node))
+}
+
+function matchingUpstreamUrl(nodeId: string, category: Extract<ContentCategory, 'video' | 'social' | 'document' | 'image'>) {
+  for (const source of upstreamNodes(nodeId)) {
+    for (const url of urlsFromUpstreamNode(source)) {
+      const classification = classifyContentUrl(url, category === 'image' ? undefined : category)
+      if (classification?.category === category) return url
+    }
+  }
+  return ''
+}
+
+/**
+ * Attempts to populate a parseable content node from its current upstream
+ * connections. The boolean is synchronous so an image chooser can still be
+ * opened inside the original click gesture when no upstream candidate exists.
+ */
+export function importContentFromUpstream(
+  nodeId: string,
+  category: Extract<ContentCategory, 'video' | 'social' | 'document' | 'image'>,
+) {
+  if (category === 'image' && refreshMediaFromUpstream(nodeId, 'image')) return true
+  if (category === 'video' && refreshMediaFromUpstream(nodeId, 'video')) return true
+
+  const url = matchingUpstreamUrl(nodeId, category)
+  if (url) {
+    void importContentIntoNode(nodeId, { kind: 'text', text: url }, category)
+    return true
+  }
+
+  if (category === 'document') {
+    const text = upstreamNodes(nodeId)
+      .map((source) => extractTextFromNode(source).trim())
+      .filter(Boolean)
+      .join('\n\n')
+    if (text) {
+      void importContentIntoNode(nodeId, { kind: 'text', text }, 'document')
+      return true
+    }
+  }
+
+  return false
 }
 
 /** Materialize connected media as the target node's own resource collection. */

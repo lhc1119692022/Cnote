@@ -29,6 +29,24 @@ export function getAIModelCapabilities(providerId: string, protocol: ProtocolTyp
   const provider = inferProviderId(providerId, baseURL, model, protocol)
   const modelId = model.toLowerCase()
 
+  if (provider === 'xai' && /^(?:grok|xai)(?:[-.]|$)/i.test(modelId)) {
+    const nonReasoning = /non[-_.]?reasoning/i.test(modelId)
+    const nativeResponsesAvailable = protocol === 'responses' || /api\.x\.ai|\/proxy\/xai(?:\/|$)/i.test(baseURL)
+    const reasoningLevels = nonReasoning
+      ? []
+      : /^grok-(?:4\.6|4\.20-multi-agent)(?:-|$)/i.test(modelId)
+        ? [...commonReasoningLevels, 'xhigh' as const]
+        : /^grok-4\.5(?:-|$)/i.test(modelId)
+          ? commonReasoningLevels
+          : []
+    return {
+      webSearch: nativeResponsesAvailable ? 'optional' : 'unknown',
+      reasoningLevels,
+      reasoningStatus: nonReasoning ? 'unsupported' : 'supported',
+      thinkingMode: reasoningLevels.length ? (protocol === 'responses' ? 'responses' : 'openai-chat') : 'none',
+    }
+  }
+
   if (provider === 'deepseek' && /^deepseek-(?:reasoner|r1|v4)(?:-|$)/i.test(modelId)) {
     return {
       webSearch: 'unsupported',

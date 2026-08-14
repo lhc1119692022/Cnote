@@ -61,8 +61,8 @@ import {
 } from "@/lib/content-import";
 import {
   canNodeOutputText,
+  importContentFromUpstream,
   importContentIntoNode,
-  refreshMediaFromUpstream,
   refreshTextFromUpstream,
   textNodeNeedsUpstreamRefresh,
 } from "@/lib/content-import-controller";
@@ -75,7 +75,7 @@ import { NodeMenuIcon } from "./NodeMenuIcon";
 import { Toolbar } from "./Toolbar";
 import { CanvasControls } from "./CanvasControls";
 import { InteractiveEdge } from "./InteractiveEdge";
-import { ContentEditorPanel } from "./ContentEditorPanel";
+import { NodeDetailsPanel } from "./NodeDetailsPanel";
 import {
   ContentNode,
   AINode,
@@ -252,6 +252,15 @@ function isNodeDisabled(node: { type?: string; data?: any }) {
     return true;
   if (node.type === "ai") return !node.data?.channelId || !node.data?.model;
   return false;
+}
+
+function supportsExtensionPanel(node?: Node) {
+  if (!node) return false;
+  if (node.type === "ai") return true;
+  if (node.type !== "content") return false;
+  return ["text", "mindmap", "video", "social", "image", "document"].includes(
+    String(node.data?.category || ""),
+  );
 }
 
 function getPointerPosition(event: MouseEvent | TouchEvent | PointerEvent) {
@@ -1083,11 +1092,7 @@ function FlowEditorInner() {
     const selectedNodes = nodes.filter((node) => node.selected);
     if (selectedNodes.length !== 1) return;
     const selectedNode = selectedNodes[0];
-    const isEditableContent =
-      selectedNode.type === "content" &&
-      (selectedNode.data?.category === "text" ||
-        selectedNode.data?.category === "mindmap");
-    if (isEditableContent) {
+    if (supportsExtensionPanel(selectedNode)) {
       if (editorNodeId !== selectedNode.id) previewContentEditor(selectedNode.id);
     } else if (editorNodeId) {
       closeContentEditor();
@@ -1645,9 +1650,15 @@ function FlowEditorInner() {
         // The controller coalesces this with the empty-text sync effect.
         window.setTimeout(() => { void refreshTextFromUpstream(target.id); }, 0);
       }
-      if (target?.type === "content" && (target.data?.category === "image" || target.data?.category === "video")) {
-        const kind = target.data.category;
-        window.setTimeout(() => { refreshMediaFromUpstream(target.id, kind); }, 0);
+      if (
+        target?.type === "content" &&
+        (target.data?.category === "image" ||
+          target.data?.category === "video" ||
+          target.data?.category === "social" ||
+          target.data?.category === "document")
+      ) {
+        const category = target.data.category;
+        window.setTimeout(() => { importContentFromUpstream(target.id, category); }, 0);
       }
     },
     [addEdgeToStore, showLocalVideoAiWarning],
@@ -2033,13 +2044,16 @@ function FlowEditorInner() {
             return;
           }
           const selectedEditableNode = nodes.find(
-            (node) =>
-              node.selected &&
-              node.type === "content" &&
-              (node.data?.category === "text" ||
-                node.data?.category === "mindmap"),
+            (node) => node.selected && supportsExtensionPanel(node),
           );
-          if (selectedEditableNode) openContentEditor(selectedEditableNode.id);
+          if (selectedEditableNode) {
+            if (
+              selectedEditableNode.type === "content" &&
+              (selectedEditableNode.data?.category === "text" ||
+                selectedEditableNode.data?.category === "mindmap")
+            ) openContentEditor(selectedEditableNode.id);
+            else previewContentEditor(selectedEditableNode.id);
+          }
           setShowExtensionPanel(true);
         }}
       />
@@ -2369,7 +2383,7 @@ function FlowEditorInner() {
             </button>
           </div>
           {editorNodeId ? (
-            <ContentEditorPanel nodeId={editorNodeId} />
+            <NodeDetailsPanel nodeId={editorNodeId} />
           ) : nodes.some((node) => node.selected) ? (
             <p className="px-4 text-xs leading-relaxed text-muted-foreground">
               在这里查看当前选中节点的内容和可用操作。

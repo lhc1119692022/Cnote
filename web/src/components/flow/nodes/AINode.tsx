@@ -3,12 +3,13 @@ import { NodeProps, Position } from 'reactflow'
 import { ArrowUp, Brain, ChevronDown, Copy, FileCog, GitBranch, History, LoaderCircle, MessageSquarePlus, Search, Settings, Sparkles, SquarePen, Trash2, X } from 'lucide-react'
 import { useAIStore } from '@/stores/use-ai-store'
 import { useFlowStore } from '@/stores/use-flow-store'
-import { extractTextFromNode, saveTextContentToNode } from '@/lib/content-import-controller'
+import { saveTextContentToNode } from '@/lib/content-import-controller'
 import { emptyContentData } from '@/lib/content-import'
 import { adaptReasoningLevel, getAIModelCapabilities, getProvider, type ChatCompletionRequest, type ChatContentPart } from '@/lib/api'
 import { AI_NODE_DEFAULT_SIZE, AI_NODE_MAX_AUTO_HEIGHT, AI_NODE_MIN_SIZE } from '@/lib/flow/node-dimensions'
 import { aiVariableToken, compileAiPrompt, compileAiPromptParts, promptHasUsableContent, type AIContextEntry } from '@/lib/flow/ai-prompt'
-import { buildAIContextEntries } from '@/lib/flow/ai-context'
+import { buildAIContextEntries, textForAIContextNode } from '@/lib/flow/ai-context'
+import { AI_PANEL_SEND_EVENT } from '@/lib/flow/ai-panel-events'
 import type { AIMessage, AINodeData, AIReasoningLevel, AISession, ContentCategory, ContentNodeData, AIWebSearchMode } from '@/types/flow'
 import { MarkdownPreview } from '../ContentEditorPanel'
 import { NodeHandle, NodeResizeArc } from './NodeChrome'
@@ -32,7 +33,7 @@ function categoryColor(category?: ContentCategory | null) {
 }
 
 function contextTextForNode(node: { type?: string; data?: Record<string, unknown> }) {
-  const directText = extractTextFromNode(node as any).trim()
+  const directText = textForAIContextNode(node as any).trim()
   if (directText) return directText
   const data = node.data as ContentNodeData | undefined
   if (node.type === 'content') {
@@ -223,6 +224,16 @@ export const AINode = memo(({ id, data, selected }: NodeProps<AINodeData>) => {
   useEffect(() => {
     setSystemPromptDraft(data.systemPrompt || '')
   }, [data.systemPrompt])
+
+  useEffect(() => {
+    const sendFromPanel = (event: Event) => {
+      const detail = (event as CustomEvent<{ nodeId?: string }>).detail
+      if (detail?.nodeId !== id) return
+      nodeRef.current?.querySelector<HTMLButtonElement>('[data-ai-send-button]')?.click()
+    }
+    window.addEventListener(AI_PANEL_SEND_EVENT, sendFromPanel)
+    return () => window.removeEventListener(AI_PANEL_SEND_EVENT, sendFromPanel)
+  }, [id])
 
   useLayoutEffect(() => {
     const composer = composerRef.current
@@ -640,12 +651,12 @@ export const AINode = memo(({ id, data, selected }: NodeProps<AINodeData>) => {
       <div ref={composerAreaRef} className="relative p-3 pt-1">
         <div className="flex items-center gap-2 rounded-2xl border border-border bg-card p-2 shadow-sm focus-within:border-foreground/30 focus-within:ring-1 focus-within:ring-foreground/10">
           <div ref={composerRef} role="textbox" aria-multiline="true" aria-label="输入消息" contentEditable={!isSending} suppressContentEditableWarning data-placeholder="有问题，随便问" onInput={(event) => persistPrompt(promptValueFromEditor(event.currentTarget))} onDragOver={(event) => event.preventDefault()} onDrop={receiveVariableDrop} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void sendMessage() } }} className="ai-prompt-editor nodrag nowheel flex-1 px-3 text-base leading-7 text-foreground outline-none" />
-          <button type="button" className="nodrag ai-send-button flex shrink-0 items-center justify-center rounded-full text-white transition-colors disabled:bg-muted disabled:text-muted-foreground" disabled={!canSend} onClick={() => void sendMessage()} aria-label="发送消息">{isSending ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <ArrowUp className="h-[18px] w-[18px] stroke-[2]" />}</button>
+          <button type="button" data-ai-send-button className="nodrag ai-send-button flex shrink-0 items-center justify-center rounded-full text-white transition-colors disabled:bg-muted disabled:text-muted-foreground" disabled={!canSend} onClick={() => void sendMessage()} aria-label="发送消息">{isSending ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <ArrowUp className="h-[18px] w-[18px] stroke-[2]" />}</button>
         </div>
         {showSettings && <div className="nodrag mt-2 flex items-center justify-between gap-3">
           <div className="flex min-w-0 items-center gap-2">
             <button type="button" disabled={modelCapabilities.webSearch !== 'optional'} title={modelCapabilities.webSearch === 'unknown' ? '当前模型的联网能力尚未识别' : modelCapabilities.webSearch === 'unsupported' ? '当前模型或协议不支持内置联网搜索' : modelCapabilities.webSearch === 'always' ? '当前搜索模型始终联网' : '切换联网搜索模式'} className={`flex h-8 items-center gap-1.5 rounded-full border px-3 text-xs transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${webSearch === 'off' || modelCapabilities.webSearch === 'unsupported' || modelCapabilities.webSearch === 'unknown' ? 'border-border bg-card text-muted-foreground hover:bg-muted/50' : 'border-foreground/25 bg-muted/75 text-foreground hover:bg-muted'}`} onClick={cycleWebSearch}><Search className="h-3.5 w-3.5" />{modelCapabilities.webSearch === 'unknown' ? '联网能力未识别' : modelCapabilities.webSearch === 'unsupported' ? '不支持联网' : modelCapabilities.webSearch === 'always' ? '始终联网' : WEB_SEARCH_LABELS[webSearch]}</button>
-            <button type="button" disabled={!modelCapabilities.reasoningLevels.length} title={modelCapabilities.reasoningLevels.length ? '切换当前模型支持的推理等级' : modelCapabilities.reasoningStatus === 'unsupported' ? '当前模型明确不支持推理等级' : '当前模型的推理能力尚未识别'} className="flex h-8 items-center gap-1.5 rounded-full border border-border bg-muted/45 px-3 text-xs text-foreground transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50" onClick={cycleReasoning}><Brain className="h-3.5 w-3.5" />{effectiveReasoningLevel || (modelCapabilities.reasoningStatus === 'unsupported' ? '不支持推理' : '推理能力未识别')}</button>
+            <button type="button" disabled={!modelCapabilities.reasoningLevels.length} title={modelCapabilities.reasoningLevels.length ? '切换当前模型支持的推理等级' : modelCapabilities.reasoningStatus === 'supported' ? '当前模型使用固定或自动推理模式' : modelCapabilities.reasoningStatus === 'unsupported' ? '当前模型明确不支持推理等级' : '当前模型的推理能力尚未识别'} className="flex h-8 items-center gap-1.5 rounded-full border border-border bg-muted/45 px-3 text-xs text-foreground transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50" onClick={cycleReasoning}><Brain className="h-3.5 w-3.5" />{effectiveReasoningLevel || (modelCapabilities.reasoningStatus === 'supported' ? '默认推理' : modelCapabilities.reasoningStatus === 'unsupported' ? '不支持推理' : '推理能力未识别')}</button>
           </div>
           <details className="group/menu relative min-w-0">
             <summary className="flex h-8 min-w-40 max-w-56 cursor-pointer list-none items-center justify-between gap-3 rounded-lg border border-border px-3 text-xs text-foreground hover:bg-muted/50" aria-label="设置中的模型选择"><span className="flex-1 truncate text-right">{selectedModel?.model || '选择模型'}</span><ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" /></summary>
