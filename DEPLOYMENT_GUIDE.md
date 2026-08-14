@@ -158,7 +158,7 @@ AI 跨域代理和内容解析服务是两个独立的 Worker。为避免主部�
 - [`workers/dashboard/ai-proxy.js`](./workers/dashboard/ai-proxy.js)
 - [`workers/dashboard/content-service.js`](./workers/dashboard/content-service.js)
 
-两个脚本顶部都标出了可操作配置区、随机值生成方法和 Cloudflare 变量名称。产品界面只负责保存 Worker 地址及匹配的请求头或令牌，不再内置部署教程和脚本复制功能。
+两个脚本顶部都把需要填写的内容直接标在对应代码旁边：AI 代理填写发生跨域错误的原接口地址，内容解析服务先填写访问令牌。产品界面只负责保存 Worker 地址及匹配的请求头或令牌。
 
 ---
 
@@ -278,9 +278,9 @@ curl https://your-proxy-url/health
 # {"status":"ok","timestamp":"...","version":"1.0.0"}
 
 # 测试代理 (需要有效的 API Key)
-curl -X POST https://your-proxy-url/proxy/openai/v1/chat/completions \
+curl -X POST https://your-proxy-url/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer YOUR_OPENAI_KEY" \
+  -H "Authorization: Bearer YOUR_API_KEY" \
   -d '{
     "model": "YOUR_MODEL_ID",
     "messages": [{"role": "user", "content": "Hello"}]

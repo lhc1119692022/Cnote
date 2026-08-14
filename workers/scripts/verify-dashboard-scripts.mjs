@@ -9,7 +9,19 @@ const workersRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '
 async function importDashboardScript(name) {
   const source = await readFile(path.join(workersRoot, 'dashboard', `${name}.js`), 'utf8')
   assert.doesNotMatch(source, /__CNOTE_[A-Z_]+__/)
-  assert.match(source, /可操作配置区/)
+  assert.match(source, /以下内容不用修改/)
+  if (name === 'ai-proxy') {
+    const upstreamConfig = source.indexOf('globalThis.CNOTE_PROXY_UPSTREAM_URL')
+    const headerNameConfig = source.indexOf('globalThis.CNOTE_PROXY_HEADER_NAME')
+    const headerValueConfig = source.indexOf('globalThis.CNOTE_PROXY_HEADER_VALUE')
+    const internalConfig = source.indexOf('var dashboardProxyConfig')
+    assert.ok(upstreamConfig >= 0 && upstreamConfig < headerNameConfig)
+    assert.ok(headerNameConfig < headerValueConfig)
+    assert.ok(headerValueConfig < internalConfig)
+  } else {
+    assert.match(source, /部署前先填：访问令牌/)
+    assert.match(source, /globalThis\.CNOTE_CONTENT_TOKEN = "";/)
+  }
   const moduleUrl = 'data:text/javascript;base64,' + Buffer.from(source).toString('base64')
   return import(moduleUrl + `#${Date.now()}-${name}`)
 }

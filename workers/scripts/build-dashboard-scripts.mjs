@@ -13,46 +13,42 @@ const scripts = [
     entry: path.join(workersRoot, 'src', 'proxy.ts'),
     outfile: path.join(outputDirectory, 'ai-proxy.js'),
     banner: `/**
- * Cnote AI 跨域代理：Cloudflare 控制台粘贴版
+ * Cnote AI 跨域代理
  *
- * 可操作配置区（只需修改下面两行）：
- * 1. 请求头名称建议保留为 X-Cnote-Access。
- * 2. 请求头值请改成自己生成的长随机字符串。
- * 3. 两项都留空会关闭额外访问校验；只填写一项会导致 Worker 拒绝请求。
- * 4. 不要把 AI 服务商的 API Key 写进此脚本。API Key 仍由 Cnote 随请求发送。
- *
- * 随机值生成方法：在任意浏览器开发者工具的 Console 中执行下面一行，
- * 然后把输出结果粘贴到 CNOTE_PROXY_HEADER_VALUE：
- * Array.from(crypto.getRandomValues(new Uint8Array(32)), b => b.toString(16).padStart(2, "0")).join("")
- *
- * 更安全的做法是在 Cloudflare Worker 的“设置 → 变量和机密”中配置：
- * CN_PROXY_HEADER_NAME（文本）与 CN_PROXY_HEADER_VALUE（机密）。
- * 环境变量的优先级高于下面的粘贴版配置。
+ * 只在 Cnote 提示“第三方 API 跨域错误”时使用。
+ * 复制整份脚本到 Cloudflare，只修改下面 3 项。
  */
-globalThis.CNOTE_PROXY_HEADER_NAME = "";
-globalThis.CNOTE_PROXY_HEADER_VALUE = "";`,
+
+/* ==================== ① 必填：第三方 API 原接口地址 ==================== */
+// 把 Cnote 中原本填写、但出现跨域错误的接口地址完整粘贴到引号里。
+// 只填原接口地址，不要填 Worker 地址，也不要额外添加 /v1/models 等路径。
+globalThis.CNOTE_PROXY_UPSTREAM_URL = "";
+
+/* ==================== ② 建议：给 Worker 加访问校验 ==================== */
+// 请求头名称不懂就保持不变；部署后，Cnote 里也填写同一个名称。
+globalThis.CNOTE_PROXY_HEADER_NAME = "X-Cnote-Access";
+
+// 填一段只有你知道的长字符串；部署后，Cnote 的“请求头值”也填同一串。
+// 留空也能使用，但知道 Worker 地址的人都可以调用它。
+globalThis.CNOTE_PROXY_HEADER_VALUE = "";
+
+/* ==================== 以下内容不用修改 ==================== */`,
   },
   {
     entry: path.join(workersRoot, 'src', 'scraper.ts'),
     outfile: path.join(outputDirectory, 'content-service.js'),
     banner: `/**
- * Cnote 内容解析服务：Cloudflare 控制台粘贴版
- *
- * 可操作配置区（只需按需修改下面一行）：
- * 1. 填入长随机字符串即可启用访问令牌。
- * 2. 留空会允许任何人调用这个 Worker，不建议长期公开使用。
- * 3. Cnote“设置 → 内容解析服务”中的访问令牌必须与这里完全一致。
- *
- * 随机值生成方法：在任意浏览器开发者工具的 Console 中执行下面一行，
- * 然后把输出结果粘贴到 CNOTE_CONTENT_TOKEN：
- * Array.from(crypto.getRandomValues(new Uint8Array(32)), b => b.toString(16).padStart(2, "0")).join("")
- *
- * 更安全的做法是在 Cloudflare Worker 的“设置 → 变量和机密”中配置：
- * CN_CONTENT_TOKEN（机密）。环境变量的优先级高于下面的粘贴版配置。
- * 如需限制允许访问的 Cnote 站点，还可配置 SCRAPER_ALLOWED_ORIGINS（文本），
- * 多个来源用英文逗号分隔，例如：https://example.com,http://localhost:5173
+ * Cnote 内容解析服务
+ * 复制整份脚本到 Cloudflare，部署前先填写下面的访问令牌。
  */
-globalThis.CNOTE_CONTENT_TOKEN = "";`,
+
+/* ==================== 部署前先填：访问令牌 ==================== */
+// 在引号里填一段只有你知道的长字符串，建议至少 32 位。
+globalThis.CNOTE_CONTENT_TOKEN = "";
+
+// ↑ 部署后，把同一串内容粘贴到 Cnote → 设置 → 内容解析服务 → 访问令牌。
+// 留空也能使用，但知道 Worker 地址的人都可以调用它。
+/* ==================== 以下内容不用修改 ==================== */`,
   },
 ]
 

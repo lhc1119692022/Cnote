@@ -1,21 +1,15 @@
 /**
- * Cnote 内容解析服务：Cloudflare 控制台粘贴版
- *
- * 可操作配置区（只需按需修改下面一行）：
- * 1. 填入长随机字符串即可启用访问令牌。
- * 2. 留空会允许任何人调用这个 Worker，不建议长期公开使用。
- * 3. Cnote“设置 → 内容解析服务”中的访问令牌必须与这里完全一致。
- *
- * 随机值生成方法：在任意浏览器开发者工具的 Console 中执行下面一行，
- * 然后把输出结果粘贴到 CNOTE_CONTENT_TOKEN：
- * Array.from(crypto.getRandomValues(new Uint8Array(32)), b => b.toString(16).padStart(2, "0")).join("")
- *
- * 更安全的做法是在 Cloudflare Worker 的“设置 → 变量和机密”中配置：
- * CN_CONTENT_TOKEN（机密）。环境变量的优先级高于下面的粘贴版配置。
- * 如需限制允许访问的 Cnote 站点，还可配置 SCRAPER_ALLOWED_ORIGINS（文本），
- * 多个来源用英文逗号分隔，例如：https://example.com,http://localhost:5173
+ * Cnote 内容解析服务
+ * 复制整份脚本到 Cloudflare，部署前先填写下面的访问令牌。
  */
+
+/* ==================== 部署前先填：访问令牌 ==================== */
+// 在引号里填一段只有你知道的长字符串，建议至少 32 位。
 globalThis.CNOTE_CONTENT_TOKEN = "";
+
+// ↑ 部署后，把同一串内容粘贴到 Cnote → 设置 → 内容解析服务 → 访问令牌。
+// 留空也能使用，但知道 Worker 地址的人都可以调用它。
+/* ==================== 以下内容不用修改 ==================== */
 
 // src/scraper.ts
 var dashboardContentConfig = globalThis;

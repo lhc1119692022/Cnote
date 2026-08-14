@@ -4,38 +4,32 @@
  */
 
 interface Env {
+  CN_PROXY_UPSTREAM_URL?: string
   CN_PROXY_HEADER_NAME?: string
   CN_PROXY_HEADER_VALUE?: string
 }
 
 interface DashboardProxyConfig {
+  CNOTE_PROXY_UPSTREAM_URL?: string
   CNOTE_PROXY_HEADER_NAME?: string
   CNOTE_PROXY_HEADER_VALUE?: string
 }
 
 const dashboardProxyConfig = globalThis as typeof globalThis & DashboardProxyConfig
 
-function proxyAccessConfig(env: Env) {
+const DEFAULT_PROXY_HEADER_NAME = 'X-Cnote-Access'
+
+function proxyConfig(env: Env) {
   return {
-    headerName: env.CN_PROXY_HEADER_NAME?.trim() || dashboardProxyConfig.CNOTE_PROXY_HEADER_NAME?.trim() || '',
+    upstreamURL: env.CN_PROXY_UPSTREAM_URL?.trim() || dashboardProxyConfig.CNOTE_PROXY_UPSTREAM_URL?.trim() || '',
+    headerName: env.CN_PROXY_HEADER_NAME?.trim() || dashboardProxyConfig.CNOTE_PROXY_HEADER_NAME?.trim() || DEFAULT_PROXY_HEADER_NAME,
     headerValue: env.CN_PROXY_HEADER_VALUE || dashboardProxyConfig.CNOTE_PROXY_HEADER_VALUE || '',
   }
 }
 
-// 支持的 AI 提供商
-const SUPPORTED_PROVIDERS = {
-  openai: 'https://api.openai.com',
-  anthropic: 'https://api.anthropic.com',
-  deepseek: 'https://api.deepseek.com',
-  google: 'https://generativelanguage.googleapis.com',
-  xai: 'https://api.x.ai',
-  groq: 'https://api.groq.com',
-  openrouter: 'https://openrouter.ai/api',
-}
-
 function getCorsHeaders(env: Env) {
   const allowedHeaders = ['Content-Type', 'Authorization', 'x-api-key', 'x-goog-api-key', 'anthropic-version']
-  const customHeaderName = proxyAccessConfig(env).headerName
+  const customHeaderName = proxyConfig(env).headerName
   if (customHeaderName && !allowedHeaders.some((name) => name.toLowerCase() === customHeaderName.toLowerCase())) {
     new Headers({ [customHeaderName]: 'validation' })
     allowedHeaders.push(customHeaderName)
@@ -61,6 +55,40 @@ const ALLOWED_ENDPOINTS = new Set([
 function isAllowedEndpoint(endpoint: string) {
   if (ALLOWED_ENDPOINTS.has(endpoint)) return true
   return /^v1beta\/models\/[A-Za-z0-9._-]+:(?:generateContent|streamGenerateContent)$/.test(endpoint)
+}
+
+function requestEndpoint(pathname: string) {
+  const parts = pathname.split('/').filter(Boolean)
+  // 兼容旧版渠道中已经保存的 /proxy/任意名称 地址。
+  if (parts[0] === 'proxy' && parts.length >= 3) return parts.slice(2).join('/')
+  return parts.join('/')
+}
+
+function buildTargetURL(upstreamURL: string, endpoint: string, search: string) {
+  if (!upstreamURL) throw new Error('请先在脚本顶部填写第三方 API 原接口地址')
+
+  let base: URL
+  try {
+    base = new URL(upstreamURL)
+  } catch {
+    throw new Error('脚本顶部的第三方 API 原接口地址格式不正确')
+  }
+  if (!['http:', 'https:'].includes(base.protocol) || base.username || base.password || base.search || base.hash) {
+    throw new Error('第三方 API 原接口地址必须是完整的 http 或 https 地址，且不要带查询参数或 #')
+  }
+
+  const basePath = base.pathname.replace(/\/+$/, '')
+  let endpointPath = `/${endpoint}`
+  const endpointVersion = endpointPath.match(/^\/(v\d+(?:beta\d*)?)\//i)?.[1]
+  if (endpointVersion && basePath.toLowerCase().endsWith(`/${endpointVersion.toLowerCase()}`)) {
+    endpointPath = endpointPath.slice(endpointVersion.length + 1)
+  } else if (/\/v\d+(?:beta\d*)?\/openai$/i.test(basePath) && endpointPath.startsWith('/v1/')) {
+    endpointPath = endpointPath.slice(3)
+  }
+
+  const target = new URL(`${base.origin}${basePath}${endpointPath}`)
+  target.search = search
+  return target
 }
 
 const MAX_PROXY_REQUEST_BYTES = 20 * 1024 * 1024
@@ -103,9 +131,8 @@ function errorResponse(status: number, message: string, corsHeaders: Record<stri
 }
 
 function assertProxyAccess(request: Request, env: Env) {
-  const { headerName, headerValue } = proxyAccessConfig(env)
-  if (!headerName && !headerValue) return
-  if (!headerName || !headerValue) throw new Error('CN_PROXY_HEADER_NAME 和 CN_PROXY_HEADER_VALUE 必须同时配置')
+  const { headerName, headerValue } = proxyConfig(env)
+  if (!headerValue) return
   if (request.headers.get(headerName) !== headerValue) throw new Error('代理访问头无效')
 }
 
@@ -142,37 +169,16 @@ export default {
         )
       }
 
-      // 代理 AI API 请求
-      // 路径格式: /proxy/{provider}/{endpoint}
-      const pathParts = path.split('/').filter(Boolean)
-      if (pathParts[0] === 'proxy' && pathParts.length >= 2) {
+      const endpoint = requestEndpoint(path)
+      if (endpoint) {
         if (!['GET', 'POST'].includes(request.method)) return errorResponse(405, '代理仅支持 GET 和 POST', corsHeaders)
-        const provider = pathParts[1] as keyof typeof SUPPORTED_PROVIDERS
-        const endpoint = pathParts.slice(2).join('/')
-
-        if (!SUPPORTED_PROVIDERS[provider]) {
-          return new Response(
-            JSON.stringify({
-              error: 'Unsupported provider',
-              supported: Object.keys(SUPPORTED_PROVIDERS),
-            }),
-            {
-              status: 400,
-              headers: {
-                'Content-Type': 'application/json',
-                ...corsHeaders,
-              },
-            }
-          )
-        }
         if (!isAllowedEndpoint(endpoint)) return errorResponse(404, '此 AI 端点未开放代理', corsHeaders)
-        const target = new URL(`${SUPPORTED_PROVIDERS[provider]}/${endpoint}`)
-        target.search = url.search
+        const target = buildTargetURL(proxyConfig(env).upstreamURL, endpoint, url.search)
 
         // 构建目标 URL
         const headers = new Headers(request.headers)
         const body = request.method === 'POST' ? await readRequestBodyLimited(request) : undefined
-        const proxyHeaderName = proxyAccessConfig(env).headerName
+        const proxyHeaderName = proxyConfig(env).headerName
         if (proxyHeaderName) headers.delete(proxyHeaderName)
         headers.delete('Host')
         headers.delete('Origin')
@@ -219,8 +225,7 @@ export default {
       return new Response(
         JSON.stringify({
           error: 'Not found',
-          message: 'Use /proxy/{provider}/{endpoint} to proxy AI API requests',
-          providers: Object.keys(SUPPORTED_PROVIDERS),
+          message: '请在 Cnote 中填写这个 Worker 的根地址，不要追加其他路径',
         }),
         {
           status: 404,
@@ -233,7 +238,11 @@ export default {
     } catch (error) {
       const unauthorized = error instanceof Error && error.message === '代理访问头无效'
       const tooLarge = error instanceof Error && error.message === 'PROXY_REQUEST_TOO_LARGE'
-      if (!unauthorized && !tooLarge) console.error('Proxy error:', error)
+      const configurationError = error instanceof Error && (
+        error.message.includes('第三方 API 原接口地址')
+        || error.message.includes('完整的 http 或 https 地址')
+      )
+      if (!unauthorized && !tooLarge && !configurationError) console.error('Proxy error:', error)
 
       return new Response(
         JSON.stringify({

@@ -225,7 +225,7 @@ export function APIKeysManager() {
       setConnectionMessage(ids.length ? `已拉取 ${ids.length} 个模型，请选择要启用的模型` : '连接成功，但接口没有返回模型')
     } catch (error) {
       const message = error instanceof TypeError
-        ? '连接失败，接口可能未允许浏览器跨域请求。请查看下方的 AI 代理部署文档。'
+        ? '第三方 API 跨域错误！请查看下方的 AI 代理部署文档。'
         : error instanceof Error ? error.message : '拉取模型失败'
       setConnectionMessage(message)
     } finally {
@@ -491,19 +491,19 @@ export function APIKeysManager() {
 
           <details className="group mt-4 rounded-lg border border-border bg-muted/30 p-3.5">
             <summary className="flex cursor-pointer list-none items-center justify-between gap-3 text-[13px] font-medium">
-              <span className="flex items-center gap-2"><ShieldCheck className="h-4 w-4 text-muted-foreground" />浏览器提示跨域？</span>
+              <span className="flex items-center gap-2"><ShieldCheck className="h-4 w-4 text-muted-foreground" />第三方 API 跨域错误！</span>
               <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground transition-transform group-open:rotate-180" />
             </summary>
 
             <div className="mt-3 flex flex-wrap items-start justify-between gap-3">
-              <p className="max-w-[390px] text-[11px] leading-relaxed text-muted-foreground">直连失败时，可以部署自己的 AI 代理。完整部署步骤、可复制脚本、服务商路径和排错说明已放在 GitHub 文档中。</p>
+              <p className="max-w-[390px] text-[11px] leading-relaxed text-muted-foreground">只有第三方接口无法直连时才需要部署。文档会带你复制脚本、填写原接口地址，再把 Worker 地址粘贴回来。</p>
               <a href={AI_PROXY_WORKER_GUIDE_URL} target="_blank" rel="noreferrer" className={buttonVariants({ variant: 'secondary', size: 'sm', className: 'gap-1.5' })}><ExternalLink className="h-3.5 w-3.5" />查看部署文档</a>
             </div>
 
             <div className="mt-4 border-t border-border pt-4">
               <div>
                 <h3 className="text-[12px] font-medium text-foreground">代理访问校验 <span className="font-normal text-muted-foreground">（可选）</span></h3>
-                <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">只有在 Worker 脚本中启用了访问请求头时才填写。名称和值由你按照脚本注释自行设置，并且必须与 Worker 完全一致；已有渠道的请求头值留空会保持不变。</p>
+                <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">把 Worker 脚本顶部的请求头名称和值原样填到这里。已有渠道的请求头值留空会保持不变。</p>
               </div>
               <div className="mt-3 grid gap-3" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))' }}>
                 <label className="block text-[12px] text-muted-foreground"><span className="mb-1.5 block">请求头名称</span><input value={proxyHeaderName} onChange={(event) => setProxyHeaderName(event.target.value)} placeholder="如：X-Cnote-Access" className="h-9 w-full rounded-lg border border-border bg-background px-3 text-foreground outline-none focus:border-primary focus:ring-2 focus:ring-ring/20" /></label>

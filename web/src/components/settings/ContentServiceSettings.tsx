@@ -75,7 +75,7 @@ export function ContentServiceSettings() {
             <input value={baseURL} onChange={(event) => setBaseURL(event.target.value)} placeholder="https://cnote-content.your-name.workers.dev" className="h-10 w-full rounded-lg border border-border bg-background px-3 text-foreground outline-none focus:border-primary focus:ring-2 focus:ring-ring/20" />
           </label>
           <label className="block text-[13px] text-muted-foreground">
-            <span className="mb-2 block font-medium">访问令牌 <span className="font-normal">（可选）</span></span>
+            <span className="mb-2 block font-medium">访问令牌 <span className="font-normal">（建议填写）</span></span>
             <input type="password" value={accessToken} onChange={(event) => setAccessToken(event.target.value)} placeholder="与 Worker 的 CN_CONTENT_TOKEN 保持一致" className="h-10 w-full rounded-lg border border-border bg-background px-3 text-foreground outline-none focus:border-primary focus:ring-2 focus:ring-ring/20" />
           </label>
         </div>
@@ -89,7 +89,7 @@ export function ContentServiceSettings() {
         <div className="mt-5 flex flex-wrap items-start justify-between gap-3 rounded-lg border border-border bg-muted/30 p-3.5">
           <div className="max-w-[560px]">
             <h3 className="flex items-center gap-2 text-[13px] font-medium"><Cloud className="h-4 w-4 text-muted-foreground" />还没有内容解析服务？</h3>
-            <p className="mt-1.5 text-[11px] leading-relaxed text-muted-foreground">完整的 Cloudflare 部署步骤、可直接复制的 Worker 脚本、令牌配置和排错说明已放在 GitHub 文档中。</p>
+            <p className="mt-1.5 text-[11px] leading-relaxed text-muted-foreground">按文档复制脚本、填写醒目标出的访问令牌，再把 Worker 地址和同一令牌粘贴回来即可。</p>
           </div>
           <a href={CONTENT_SERVICE_WORKER_GUIDE_URL} target="_blank" rel="noreferrer" className={buttonVariants({ variant: 'secondary', size: 'sm', className: 'gap-1.5' })}><ExternalLink className="h-3.5 w-3.5" />查看部署文档</a>
         </div>
