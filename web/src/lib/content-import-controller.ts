@@ -568,7 +568,11 @@ export async function importContentIntoNode(nodeId: string, input: ContentImport
     }
     const oldResourceId = localResourceId((current.data as ContentNodeData).source)
     const newResourceId = localResourceId(result.source)
-    if (oldResourceId && oldResourceId !== newResourceId) await deleteLocalResource(oldResourceId)
+    if (oldResourceId === newResourceId && newResourceId) {
+      await deleteLocalResource(newResourceId)
+    } else if (oldResourceId) {
+      await deleteLocalResource(oldResourceId)
+    }
     const flowStore = useFlowStore.getState()
     flowStore.updateNode(nodeId, {
       type: 'content',

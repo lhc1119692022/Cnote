@@ -5,7 +5,7 @@ import { useAIStore } from '@/stores/use-ai-store'
 import { useFlowStore } from '@/stores/use-flow-store'
 import { extractTextFromNode, saveTextContentToNode } from '@/lib/content-import-controller'
 import { emptyContentData } from '@/lib/content-import'
-import type { ChatCompletionRequest, ChatContentPart } from '@/lib/api'
+import { adaptReasoningLevel, getAIModelCapabilities, getProvider, type ChatCompletionRequest, type ChatContentPart } from '@/lib/api'
 import { AI_NODE_DEFAULT_SIZE, AI_NODE_MAX_AUTO_HEIGHT, AI_NODE_MIN_SIZE } from '@/lib/flow/node-dimensions'
 import { aiVariableToken, compileAiPrompt, compileAiPromptParts, promptHasUsableContent, type AIContextEntry } from '@/lib/flow/ai-prompt'
 import { buildAIContextEntries } from '@/lib/flow/ai-context'
@@ -165,11 +165,17 @@ export const AINode = memo(({ id, data, selected }: NodeProps<AINodeData>) => {
     [availableChannels],
   )
   const selectedModel = modelOptions.find((option) => option.channelId === data.channelId && option.model === data.model) || modelOptions[0]
+  const selectedChannel = selectedModel ? apiKeys.find((channel) => channel.id === selectedModel.channelId) : undefined
+  const selectedProvider = selectedChannel ? getProvider(selectedChannel.providerId) : undefined
+  const modelCapabilities = selectedModel && selectedChannel
+    ? getAIModelCapabilities(selectedChannel.providerId, selectedChannel.protocol || selectedProvider?.protocol || 'chatCompletions', selectedModel.model, selectedChannel.baseURL)
+    : getAIModelCapabilities('custom', 'chatCompletions', '')
   const sessions = useMemo(() => data.sessions || [], [data.sessions])
   const activeSession = sessions.find((session) => session.id === data.activeSessionId)
   const messages = useMemo(() => activeSession?.messages || data.messages || [], [activeSession?.messages, data.messages])
   const webSearch = data.webSearch || 'auto'
   const reasoningLevel = data.reasoningLevel || 'medium'
+  const effectiveReasoningLevel = adaptReasoningLevel(modelCapabilities, reasoningLevel)
   const disabled = Boolean(data.disabled || !selectedModel)
   const upstreamEntries = useMemo<UpstreamEntry[]>(() => {
     const sourceIds = [...new Set(edges.filter((edge) => edge.target === id).map((edge) => edge.source))]
@@ -185,7 +191,7 @@ export const AINode = memo(({ id, data, selected }: NodeProps<AINodeData>) => {
     })
   }, [edges, id, nodes])
   const upstreamSourceIds = useMemo(() => [...new Set(edges.filter((edge) => edge.target === id).map((edge) => edge.source))], [edges, id])
-  const canSend = promptHasUsableContent(prompt) && Boolean(selectedModel) && !isSending
+  const canSend = promptHasUsableContent(prompt) && Boolean(selectedModel) && !isSending && !data.disabled
   const showEmptyState = !messages.length && !isSending && !requestError
 
   const persist = useCallback((updates: Partial<AINodeData>) => {
@@ -499,6 +505,8 @@ export const AINode = memo(({ id, data, selected }: NodeProps<AINodeData>) => {
         ],
         temperature: 1,
         max_tokens: 4096,
+        web_search: modelCapabilities.webSearch === 'unsupported' ? 'off' : webSearch,
+        reasoning_effort: effectiveReasoningLevel,
       }
       let response = ''
       for await (const delta of client.completeStream(request)) {
@@ -535,13 +543,16 @@ export const AINode = memo(({ id, data, selected }: NodeProps<AINodeData>) => {
   }
 
   const cycleWebSearch = () => {
+    if (modelCapabilities.webSearch === 'unsupported' || modelCapabilities.webSearch === 'always') return
     const index = WEB_SEARCH_MODES.indexOf(webSearch)
     persist({ webSearch: WEB_SEARCH_MODES[(index + 1) % WEB_SEARCH_MODES.length] })
   }
 
   const cycleReasoning = () => {
-    const index = REASONING_LEVELS.indexOf(reasoningLevel)
-    persist({ reasoningLevel: REASONING_LEVELS[(index + 1) % REASONING_LEVELS.length] })
+    const supported = REASONING_LEVELS.filter((level) => modelCapabilities.reasoningLevels.includes(level))
+    if (!supported.length) return
+    const index = supported.indexOf(effectiveReasoningLevel || supported[0])
+    persist({ reasoningLevel: supported[(index + 1) % supported.length] })
   }
 
   const closeMenu = (target: EventTarget | null) => {
@@ -633,8 +644,8 @@ export const AINode = memo(({ id, data, selected }: NodeProps<AINodeData>) => {
         </div>
         {showSettings && <div className="nodrag mt-2 flex items-center justify-between gap-3">
           <div className="flex min-w-0 items-center gap-2">
-            <button type="button" className={`flex h-8 items-center gap-1.5 rounded-full border px-3 text-xs transition-colors ${webSearch === 'off' ? 'border-border bg-card text-muted-foreground hover:bg-muted/50' : 'border-foreground/25 bg-muted/75 text-foreground hover:bg-muted'}`} onClick={cycleWebSearch}><Search className="h-3.5 w-3.5" />{WEB_SEARCH_LABELS[webSearch]}</button>
-            <button type="button" className="flex h-8 items-center gap-1.5 rounded-full border border-border bg-muted/45 px-3 text-xs text-foreground transition-colors hover:bg-muted" onClick={cycleReasoning}><Brain className="h-3.5 w-3.5" />{reasoningLevel}</button>
+            <button type="button" disabled={modelCapabilities.webSearch !== 'optional'} title={modelCapabilities.webSearch === 'unknown' ? '当前模型的联网能力尚未识别' : modelCapabilities.webSearch === 'unsupported' ? '当前模型或协议不支持内置联网搜索' : modelCapabilities.webSearch === 'always' ? '当前搜索模型始终联网' : '切换联网搜索模式'} className={`flex h-8 items-center gap-1.5 rounded-full border px-3 text-xs transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${webSearch === 'off' || modelCapabilities.webSearch === 'unsupported' || modelCapabilities.webSearch === 'unknown' ? 'border-border bg-card text-muted-foreground hover:bg-muted/50' : 'border-foreground/25 bg-muted/75 text-foreground hover:bg-muted'}`} onClick={cycleWebSearch}><Search className="h-3.5 w-3.5" />{modelCapabilities.webSearch === 'unknown' ? '联网能力未识别' : modelCapabilities.webSearch === 'unsupported' ? '不支持联网' : modelCapabilities.webSearch === 'always' ? '始终联网' : WEB_SEARCH_LABELS[webSearch]}</button>
+            <button type="button" disabled={!modelCapabilities.reasoningLevels.length} title={modelCapabilities.reasoningLevels.length ? '切换当前模型支持的推理等级' : modelCapabilities.reasoningStatus === 'unsupported' ? '当前模型明确不支持推理等级' : '当前模型的推理能力尚未识别'} className="flex h-8 items-center gap-1.5 rounded-full border border-border bg-muted/45 px-3 text-xs text-foreground transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50" onClick={cycleReasoning}><Brain className="h-3.5 w-3.5" />{effectiveReasoningLevel || (modelCapabilities.reasoningStatus === 'unsupported' ? '不支持推理' : '推理能力未识别')}</button>
           </div>
           <details className="group/menu relative min-w-0">
             <summary className="flex h-8 min-w-40 max-w-56 cursor-pointer list-none items-center justify-between gap-3 rounded-lg border border-border px-3 text-xs text-foreground hover:bg-muted/50" aria-label="设置中的模型选择"><span className="flex-1 truncate text-right">{selectedModel?.model || '选择模型'}</span><ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" /></summary>

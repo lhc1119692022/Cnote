@@ -1,10 +1,9 @@
-import { useState, type ReactNode } from 'react'
+import type { ReactNode } from 'react'
 import { NavLink } from 'react-router-dom'
 import {
   FileStack,
   FolderKanban,
   Github,
-  Languages,
   LayoutDashboard,
   Moon,
   Settings,
@@ -26,7 +25,6 @@ interface AppShellProps {
 
 export function AppShell({ children }: AppShellProps) {
   const { theme, toggleTheme } = useTheme()
-  const [languageLabel, setLanguageLabel] = useState<'简体中文' | 'English'>('简体中文')
 
   return (
     <div className="flex h-screen min-w-0 bg-background p-2.5 gap-2.5">
@@ -67,14 +65,6 @@ export function AppShell({ children }: AppShellProps) {
           </nav>
 
           <div className="space-y-1 border-t border-border p-2">
-            <button
-              type="button"
-              onClick={() => setLanguageLabel((current) => current === '简体中文' ? 'English' : '简体中文')}
-              className="flex h-9 w-full items-center gap-2.5 rounded-lg px-3 text-[13px] text-muted-foreground transition-colors hover:bg-muted/70 hover:text-foreground"
-            >
-              <Languages className="h-4 w-4" strokeWidth={2} />
-              <span>{languageLabel}</span>
-            </button>
             <button
               type="button"
               onClick={toggleTheme}

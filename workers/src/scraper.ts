@@ -8,6 +8,16 @@ interface Env {
   CN_CONTENT_TOKEN?: string
 }
 
+interface DashboardContentConfig {
+  CNOTE_CONTENT_TOKEN?: string
+}
+
+const dashboardContentConfig = globalThis as typeof globalThis & DashboardContentConfig
+
+function contentAccessToken(env: Env) {
+  return env.CN_CONTENT_TOKEN || dashboardContentConfig.CNOTE_CONTENT_TOKEN || ''
+}
+
 interface ScrapeErrorShape {
   code: string
   message: string
@@ -73,6 +83,7 @@ interface YouTubeTranscriptResult extends YouTubeMetadata {
 const MAX_HTML_BYTES = 4 * 1024 * 1024
 const MAX_TEXT_BYTES = 2 * 1024 * 1024
 const MAX_MEDIA_BYTES = 12 * 1024 * 1024
+const MAX_REQUEST_BODY_BYTES = 16 * 1024
 const MAX_EXTRACTED_TEXT_CHARS = 100_000
 const FETCH_TIMEOUT_MS = 15_000
 const MAX_REDIRECTS = 8
@@ -240,9 +251,10 @@ function assertRequestAccess(request: Request, env: Env) {
   if (origin && allowedOrigins.length > 0 && !allowedOrigins.includes(origin)) {
     throw new ScrapeError('ORIGIN_NOT_ALLOWED', '当前站点未被内容解析服务授权', 403, false)
   }
-  if (env.CN_CONTENT_TOKEN) {
+  const accessToken = contentAccessToken(env)
+  if (accessToken) {
     const authorization = request.headers.get('Authorization')
-    if (authorization !== `Bearer ${env.CN_CONTENT_TOKEN}`) {
+    if (authorization !== `Bearer ${accessToken}`) {
       throw new ScrapeError('UNAUTHORIZED', '内容解析服务访问令牌无效', 401, false)
     }
   }
@@ -259,10 +271,16 @@ function isPrivateHostname(hostname: string) {
   const host = hostname.toLowerCase().replace(/^\[|\]$/g, '').replace(/\.$/, '')
   if (!host || host === 'localhost' || host.endsWith('.localhost') || host.endsWith('.local') || host.endsWith('.internal') || host === 'metadata.google.internal') return true
   if (isPrivateIpv4(host)) return true
-  // Workers cannot resolve a hostname safely on the client side, but literal
-  // loopback, link-local, unique-local and IPv4-mapped IPv6 targets are known
-  // to be private and should never be fetched by this public endpoint.
-  if (host === '::' || host === '::1' || host.startsWith('fc') || host.startsWith('fd') || host.startsWith('fe80:') || host.startsWith('::ffff:')) return true
+  if (host.includes(':')) {
+    const firstHextet = Number.parseInt(host.split(':')[0] || '0', 16)
+    const isLinkLocal = Number.isFinite(firstHextet) && firstHextet >= 0xfe80 && firstHextet <= 0xfebf
+    const isUniqueLocal = Number.isFinite(firstHextet) && firstHextet >= 0xfc00 && firstHextet <= 0xfdff
+    const isMulticast = Number.isFinite(firstHextet) && firstHextet >= 0xff00
+    const normalized = host.replace(/:{2,}/, (match) => match === '::' ? ':0:'.repeat(7) : match)
+    const isLoopback = host === '::1' || normalized === '0:0:0:0:0:0:0:1'
+    // Reject IPv4-mapped IPv6 wholesale so alternate spellings cannot bypass IPv4 checks.
+    if (host.startsWith('::ffff:') || isLoopback || host === '::' || isLinkLocal || isUniqueLocal || isMulticast) return true
+  }
   return false
 }
 
@@ -299,6 +317,61 @@ async function readBodyLimited(response: Response, maxBytes: number) {
   }
 }
 
+async function readRequestBodyLimited(request: Request, maxBytes: number) {
+  const declared = Number(request.headers.get('content-length') || 0)
+  if (declared > maxBytes) throw new ScrapeError('REQUEST_TOO_LARGE', '请求体超过大小限制', 413, false)
+  if (!request.body) return ''
+  const reader = request.body.getReader()
+  const decoder = new TextDecoder()
+  let total = 0
+  let result = ''
+  try {
+    while (true) {
+      const next = await reader.read()
+      if (next.done) break
+      total += next.value.byteLength
+      if (total > maxBytes) {
+        await reader.cancel()
+        throw new ScrapeError('REQUEST_TOO_LARGE', '请求体超过大小限制', 413, false)
+      }
+      result += decoder.decode(next.value, { stream: true })
+    }
+    return result + decoder.decode()
+  } finally {
+    reader.releaseLock()
+  }
+}
+
+async function readBytesLimited(response: Response, maxBytes: number, label: string) {
+  const declared = Number(response.headers.get('content-length') || 0)
+  if (declared > maxBytes) throw new ScrapeError('RESPONSE_TOO_LARGE', `${label}超过大小限制`, 413, false)
+  if (!response.body) throw new ScrapeError('EMPTY_RESPONSE', `${label}响应为空`, 502, true)
+  const reader = response.body.getReader()
+  const chunks: Uint8Array[] = []
+  let total = 0
+  try {
+    while (true) {
+      const next = await reader.read()
+      if (next.done) break
+      total += next.value.byteLength
+      if (total > maxBytes) {
+        await reader.cancel()
+        throw new ScrapeError('RESPONSE_TOO_LARGE', `${label}超过大小限制`, 413, false)
+      }
+      chunks.push(next.value)
+    }
+  } finally {
+    reader.releaseLock()
+  }
+  const bytes = new Uint8Array(total)
+  let offset = 0
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset)
+    offset += chunk.byteLength
+  }
+  return bytes
+}
+
 async function fetchLimited(rawUrl: string, maxBytes: number, init?: RequestInit, cookieJar?: RedirectCookieJar) {
   let target = validateTarget(rawUrl)
   const redirects: string[] = []
@@ -312,28 +385,29 @@ async function fetchLimited(rawUrl: string, maxBytes: number, init?: RequestInit
       if (cookie) headers.set('Cookie', cookie)
       response = await fetch(target.toString(), { ...init, headers, redirect: 'manual', signal: controller.signal })
       cookieJar?.capture(response.headers, target)
+      if (response.status >= 300 && response.status < 400) {
+        const location = response.headers.get('location')
+        if (!location) throw new ScrapeError('UPSTREAM_ERROR', '上游重定向缺少目标地址', 502, true)
+        if (redirect === MAX_REDIRECTS) throw new ScrapeError('TOO_MANY_REDIRECTS', '上游重定向次数过多', 502, true)
+        target = validateTarget(new URL(location, target).toString())
+        redirects.push(target.toString())
+        continue
+      }
+      if (!response.ok) {
+        if (response.status === 401 || response.status === 403) throw new ScrapeError('ACCESS_RESTRICTED', '上游内容需要登录或拒绝访问', response.status, false)
+        if (response.status === 404 || response.status === 410) throw new ScrapeError('CONTENT_NOT_FOUND', '内容不存在或已被删除', response.status, false)
+        if (response.status === 429) throw new ScrapeError('RATE_LIMITED', '上游请求频率受限，请稍后重试', 429, true)
+        if (response.status === 412) throw new ScrapeError('UPSTREAM_CHALLENGE', '上游站点要求安全验证，无法读取公开内容', 502, true)
+        throw new ScrapeError('UPSTREAM_ERROR', `上游返回 HTTP ${response.status}`, 502, true)
+      }
+      return { url: target.toString(), redirects, response, body: await readBodyLimited(response, maxBytes) }
     } catch (error) {
+      if (error instanceof ScrapeError) throw error
       if (error instanceof DOMException && error.name === 'AbortError') throw new ScrapeError('FETCH_TIMEOUT', '上游请求超时', 504, true)
       throw new ScrapeError('UPSTREAM_ERROR', '无法访问上游内容', 502, true)
     } finally {
       clearTimeout(timeout)
     }
-    if (response.status >= 300 && response.status < 400) {
-      const location = response.headers.get('location')
-      if (!location) throw new ScrapeError('UPSTREAM_ERROR', '上游重定向缺少目标地址', 502, true)
-      if (redirect === MAX_REDIRECTS) throw new ScrapeError('TOO_MANY_REDIRECTS', '上游重定向次数过多', 502, true)
-      target = validateTarget(new URL(location, target).toString())
-      redirects.push(target.toString())
-      continue
-    }
-    if (!response.ok) {
-      if (response.status === 401 || response.status === 403) throw new ScrapeError('ACCESS_RESTRICTED', '上游内容需要登录或拒绝访问', response.status, false)
-      if (response.status === 404 || response.status === 410) throw new ScrapeError('CONTENT_NOT_FOUND', '内容不存在或已被删除', response.status, false)
-      if (response.status === 429) throw new ScrapeError('RATE_LIMITED', '上游请求频率受限，请稍后重试', 429, true)
-      if (response.status === 412) throw new ScrapeError('UPSTREAM_CHALLENGE', '上游站点要求安全验证，无法读取公开内容', 502, true)
-      throw new ScrapeError('UPSTREAM_ERROR', `上游返回 HTTP ${response.status}`, 502, true)
-    }
-    return { url: target.toString(), redirects, response, body: await readBodyLimited(response, maxBytes) }
   }
   throw new ScrapeError('TOO_MANY_REDIRECTS', '上游重定向次数过多', 502, true)
 }
@@ -1278,9 +1352,8 @@ async function fetchMediaLimited(rawUrl: string, range?: string | null) {
   for (let redirect = 0; redirect <= MAX_REDIRECTS; redirect += 1) {
     const controller = new AbortController()
     const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS)
-    let response: Response
     try {
-      response = await fetch(target.toString(), {
+      const response = await fetch(target.toString(), {
         redirect: 'manual',
         signal: controller.signal,
         headers: {
@@ -1290,64 +1363,41 @@ async function fetchMediaLimited(rawUrl: string, range?: string | null) {
           ...(range ? { Range: range } : {}),
         },
       })
-    } catch (error) {
-      if (error instanceof DOMException && error.name === 'AbortError') throw new ScrapeError('FETCH_TIMEOUT', '图片请求超时', 504, true)
-      throw new ScrapeError('UPSTREAM_ERROR', '无法访问小红书图片', 502, true)
-    } finally {
-      clearTimeout(timeout)
-    }
-
-    if (response.status >= 300 && response.status < 400) {
-      const location = response.headers.get('location')
-      if (!location) throw new ScrapeError('UPSTREAM_ERROR', '图片重定向缺少目标地址', 502, true)
-      if (redirect === MAX_REDIRECTS) throw new ScrapeError('TOO_MANY_REDIRECTS', '图片重定向次数过多', 502, true)
-      const next = new URL(location, target)
-      if (!isXiaohongshuMediaHost(next.hostname)) throw new ScrapeError('MEDIA_URL_REJECTED', '图片重定向目标不是小红书图片地址', 400, false)
-      target = next
-      continue
-    }
-    if (!response.ok) {
-      if (response.status === 404 || response.status === 410) throw new ScrapeError('CONTENT_NOT_FOUND', '图片不存在或已失效', response.status, false)
-      if (response.status === 429) throw new ScrapeError('RATE_LIMITED', '图片请求频率受限，请稍后重试', 429, true)
-      throw new ScrapeError('UPSTREAM_ERROR', `图片上游返回 HTTP ${response.status}`, 502, true)
-    }
-    const declared = Number(response.headers.get('content-length') || 0)
-    const contentType = response.headers.get('content-type') || 'application/octet-stream'
-    const isVideo = /^video\//i.test(contentType) || /\.mp4(?:[?#]|$)/i.test(target.toString())
-    if (isVideo) {
+      if (response.status >= 300 && response.status < 400) {
+        const location = response.headers.get('location')
+        if (!location) throw new ScrapeError('UPSTREAM_ERROR', '媒体重定向缺少目标地址', 502, true)
+        if (redirect === MAX_REDIRECTS) throw new ScrapeError('TOO_MANY_REDIRECTS', '媒体重定向次数过多', 502, true)
+        const next = new URL(location, target)
+        if (!isXiaohongshuMediaHost(next.hostname)) throw new ScrapeError('MEDIA_URL_REJECTED', '媒体重定向目标不是小红书地址', 400, false)
+        await response.body?.cancel()
+        target = next
+        continue
+      }
+      if (!response.ok) {
+        if (response.status === 404 || response.status === 410) throw new ScrapeError('CONTENT_NOT_FOUND', '媒体不存在或已失效', response.status, false)
+        if (response.status === 429) throw new ScrapeError('RATE_LIMITED', '媒体请求频率受限，请稍后重试', 429, true)
+        throw new ScrapeError('UPSTREAM_ERROR', `媒体上游返回 HTTP ${response.status}`, 502, true)
+      }
+      const contentType = response.headers.get('content-type') || 'application/octet-stream'
+      const isVideo = /^video\//i.test(contentType) || /\.mp4(?:[?#]|$)/i.test(target.toString())
+      const bytes = await readBytesLimited(response, MAX_MEDIA_BYTES, isVideo ? '视频' : '图片')
       return {
-        response,
+        bytes,
+        status: response.status,
         contentType,
         contentLength: response.headers.get('content-length'),
         contentRange: response.headers.get('content-range'),
         acceptRanges: response.headers.get('accept-ranges'),
       }
-    }
-    if (declared > MAX_MEDIA_BYTES) throw new ScrapeError('RESPONSE_TOO_LARGE', '图片超过大小限制', 413, false)
-    if (!response.body) throw new ScrapeError('EMPTY_RESPONSE', '图片响应为空', 502, true)
-    const reader = response.body.getReader()
-    const chunks: Uint8Array[] = []
-    let total = 0
-    try {
-      while (true) {
-        const next = await reader.read()
-        if (next.done) break
-        total += next.value.byteLength
-        if (total > MAX_MEDIA_BYTES) {
-          await reader.cancel()
-          throw new ScrapeError('RESPONSE_TOO_LARGE', '图片超过大小限制', 413, false)
-        }
-        chunks.push(next.value)
-      }
+    } catch (error) {
+      if (error instanceof ScrapeError) throw error
+      if (error instanceof DOMException && error.name === 'AbortError') throw new ScrapeError('FETCH_TIMEOUT', '媒体请求超时', 504, true)
+      throw new ScrapeError('UPSTREAM_ERROR', '无法访问小红书媒体', 502, true)
     } finally {
-      reader.releaseLock()
+      clearTimeout(timeout)
     }
-    const bytes = new Uint8Array(total)
-    let offset = 0
-    for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength }
-    return { bytes, contentType }
   }
-  throw new ScrapeError('TOO_MANY_REDIRECTS', '图片重定向次数过多', 502, true)
+  throw new ScrapeError('TOO_MANY_REDIRECTS', '媒体重定向次数过多', 502, true)
 }
 
 async function fetchWebContent(url: string): Promise<WebContent> {
@@ -1700,22 +1750,12 @@ export default {
       if (url.pathname === '/v1/media/xiaohongshu' && request.method === 'GET') {
         const sourceUrl = url.searchParams.get('url') || ''
         const media = await fetchMediaLimited(sourceUrl, request.headers.get('Range'))
-        if ('response' in media) {
-          return new Response(media.response.body, {
-            status: media.response.status,
-            headers: {
-              'Content-Type': media.contentType,
-              ...(media.contentLength ? { 'Content-Length': media.contentLength } : {}),
-              ...(media.contentRange ? { 'Content-Range': media.contentRange } : {}),
-              'Accept-Ranges': media.acceptRanges || 'bytes',
-              'Cache-Control': 'public, max-age=3600',
-              ...corsHeaders(request, env),
-            },
-          })
-        }
         return new Response(media.bytes, {
+          status: media.status,
           headers: {
             'Content-Type': media.contentType,
+            ...(media.contentRange ? { 'Content-Range': media.contentRange } : {}),
+            ...(media.acceptRanges ? { 'Accept-Ranges': media.acceptRanges } : {}),
             'Cache-Control': 'public, max-age=3600',
             ...corsHeaders(request, env),
           },
@@ -1731,8 +1771,11 @@ export default {
       }
       if ((url.pathname === '/v1/web/extract' || url.pathname === '/scrape') && request.method === 'POST') {
         let body: { url?: string }
-        try { body = await request.json() as { url?: string } } catch { throw new ScrapeError('INVALID_CONTENT', '请求体不是有效 JSON', 400, false) }
+        let rawBody = ''
+        try { rawBody = await readRequestBodyLimited(request, MAX_REQUEST_BODY_BYTES) } catch (error) { throw error }
+        try { body = JSON.parse(rawBody) as { url?: string } } catch { throw new ScrapeError('INVALID_CONTENT', '请求体不是有效 JSON', 400, false) }
         if (!body.url) throw new ScrapeError('INVALID_URL', '缺少 URL', 400, false)
+        if (body.url.length > 8_192) throw new ScrapeError('INVALID_URL', 'URL 长度超过限制', 400, false)
         return new Response(JSON.stringify(await fetchWebContent(body.url)), { headers: { 'Content-Type': 'application/json; charset=utf-8', ...corsHeaders(request, env) } })
       }
       return new Response(JSON.stringify({ code: 'NOT_FOUND', message: 'Not found', retryable: false }), { status: 404, headers: { 'Content-Type': 'application/json', ...corsHeaders(request, env) } })

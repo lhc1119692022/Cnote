@@ -73,8 +73,11 @@ export class ScraperClient {
     this.accessToken = config.accessToken?.trim() || undefined
   }
 
-  private async request<T>(path: string, init?: RequestInit, timeoutMs = 45_000): Promise<T> {
+  private async request<T>(path: string, init?: RequestInit, timeoutMs = 45_000, externalSignal?: AbortSignal): Promise<T> {
     const controller = new AbortController()
+    const abortFromExternal = () => controller.abort(externalSignal?.reason)
+    if (externalSignal?.aborted) abortFromExternal()
+    else externalSignal?.addEventListener('abort', abortFromExternal, { once: true })
     const timeout = window.setTimeout(() => controller.abort(), timeoutMs)
     try {
       const headers = new Headers(init?.headers)
@@ -101,24 +104,28 @@ export class ScraperClient {
       throw new ScraperRequestError(error instanceof Error ? error.message : '无法连接抓取服务', { code: 'SCRAPER_NETWORK_ERROR', retryable: true })
     } finally {
       window.clearTimeout(timeout)
+      externalSignal?.removeEventListener('abort', abortFromExternal)
     }
   }
 
   /**
    * 提取网页内容
    */
-  async scrapeWeb(url: string, options?: { timeoutMs?: number }): Promise<WebContent> {
+  async scrapeWeb(url: string, options?: { timeoutMs?: number; signal?: AbortSignal }): Promise<WebContent> {
     const init = { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url }) }
     try {
-      return await this.request<WebContent>('/v1/web/extract', init, options?.timeoutMs)
+      return await this.request<WebContent>('/v1/web/extract', init, options?.timeoutMs, options?.signal)
     } catch (error) {
       if (!(error instanceof ScraperRequestError) || error.status !== 404) throw error
-      return this.request<WebContent>('/scrape', init, options?.timeoutMs)
+      return this.request<WebContent>('/scrape', init, options?.timeoutMs, options?.signal)
     }
   }
 
-  async fetchXiaohongshuMedia(url: string, options?: { timeoutMs?: number }): Promise<Blob> {
+  async fetchXiaohongshuMedia(url: string, options?: { timeoutMs?: number; signal?: AbortSignal }): Promise<Blob> {
     const controller = new AbortController()
+    const abortFromExternal = () => controller.abort(options?.signal?.reason)
+    if (options?.signal?.aborted) abortFromExternal()
+    else options?.signal?.addEventListener('abort', abortFromExternal, { once: true })
     const timeout = window.setTimeout(() => controller.abort(), options?.timeoutMs ?? 30_000)
     try {
       const headers = new Headers()
@@ -139,6 +146,7 @@ export class ScraperClient {
       throw new ScraperRequestError(error instanceof Error ? error.message : '无法读取小红书图片', { code: 'SCRAPER_NETWORK_ERROR', retryable: true })
     } finally {
       window.clearTimeout(timeout)
+      options?.signal?.removeEventListener('abort', abortFromExternal)
     }
   }
 
@@ -149,12 +157,12 @@ export class ScraperClient {
   /**
    * 提取 YouTube 字幕
    */
-  async fetchYouTubeSubtitles(videoId: string): Promise<YouTubeSubtitles> {
+  async fetchYouTubeSubtitles(videoId: string, options?: { signal?: AbortSignal }): Promise<YouTubeSubtitles> {
     try {
-      return await this.request<YouTubeSubtitles>(`/v1/youtube/${encodeURIComponent(videoId)}/transcript`)
+      return await this.request<YouTubeSubtitles>(`/v1/youtube/${encodeURIComponent(videoId)}/transcript`, undefined, 45_000, options?.signal)
     } catch (error) {
       if (!(error instanceof ScraperRequestError) || error.status !== 404) throw error
-      return this.request<YouTubeSubtitles>(`/youtube/${encodeURIComponent(videoId)}`)
+      return this.request<YouTubeSubtitles>(`/youtube/${encodeURIComponent(videoId)}`, undefined, 45_000, options?.signal)
     }
   }
 

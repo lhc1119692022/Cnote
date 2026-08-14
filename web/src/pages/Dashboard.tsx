@@ -1,10 +1,11 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Plus, FileText, Search, FolderOpen, Folder, Trash2 } from 'lucide-react'
+import { ChevronRight, Download, FileText, Folder, FolderOpen, MoreVertical, Plus, Search, Trash2, Upload } from 'lucide-react'
 import { useFlowStore } from '@/stores/use-flow-store'
 import { useTemplateStore } from '@/stores/use-template-store'
 import { AppShell } from '@/components/layout/AppShell'
 import { Button } from '@/components/ui/button'
+import { FlowBackupError, restoreFlowBackup, saveFlowBackup } from '@/lib/flow-backup'
 
 export function Dashboard() {
   const navigate = useNavigate()
@@ -26,11 +27,27 @@ export function Dashboard() {
   const [showNewFolderDialog, setShowNewFolderDialog] = useState(false)
   const [newFolderName, setNewFolderName] = useState('')
   const [activeFolderId, setActiveFolderId] = useState<string | null>(null)
+  const [openFlowMenuId, setOpenFlowMenuId] = useState<string | null>(null)
+  const [openGroupMenuId, setOpenGroupMenuId] = useState<string | null>(null)
+  const [groupMenuDirection, setGroupMenuDirection] = useState<'left' | 'right'>('right')
+  const [pendingFolderFlowId, setPendingFolderFlowId] = useState<string | null>(null)
+  const backupInputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
     initialize()
     initializeTemplates()
   }, [initialize, initializeTemplates])
+
+  useEffect(() => {
+    if (!openFlowMenuId) return
+    const closeOnOutsideClick = (event: PointerEvent) => {
+      if ((event.target as HTMLElement | null)?.closest('[data-flow-card-menu]')) return
+      setOpenFlowMenuId(null)
+      setOpenGroupMenuId(null)
+    }
+    document.addEventListener('pointerdown', closeOnOutsideClick, true)
+    return () => document.removeEventListener('pointerdown', closeOnOutsideClick, true)
+  }, [openFlowMenuId])
 
   const handleCreateFlow = () => {
     if (!newFlowName.trim()) return
@@ -55,9 +72,22 @@ export function Dashboard() {
   const handleCreateFolder = () => {
     if (!newFolderName.trim()) return
     const folder = createFolder(newFolderName)
-    setActiveFolderId(folder.id)
+    if (pendingFolderFlowId) {
+      moveFlowToFolder(pendingFolderFlowId, folder.id)
+    } else {
+      setActiveFolderId(folder.id)
+    }
     setShowNewFolderDialog(false)
     setNewFolderName('')
+    setPendingFolderFlowId(null)
+  }
+
+  const openNewFolderDialog = (flowId?: string) => {
+    setPendingFolderFlowId(flowId || null)
+    setNewFolderName('')
+    setOpenFlowMenuId(null)
+    setOpenGroupMenuId(null)
+    setShowNewFolderDialog(true)
   }
 
   const handleDeleteFolder = (e: React.MouseEvent, id: string) => {
@@ -92,6 +122,30 @@ export function Dashboard() {
     }
   }
 
+  const handleBackupFlow = async (event: React.MouseEvent, flow: (typeof flows)[number]) => {
+    event.preventDefault()
+    event.stopPropagation()
+    setOpenFlowMenuId(null)
+    setOpenGroupMenuId(null)
+    try {
+      await saveFlowBackup(flow)
+    } catch (error) {
+      alert(error instanceof FlowBackupError ? error.message : 'Flow 备份失败，请稍后重试。')
+    }
+  }
+
+  const handleImportBackup = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0]
+    event.target.value = ''
+    if (!file) return
+    try {
+      const flowId = await restoreFlowBackup(file)
+      if (flowId) navigate(`/flows/${flowId}`)
+    } catch (error) {
+      alert(error instanceof FlowBackupError ? error.message : '备份文件无效或无法读取。')
+    }
+  }
+
   const formatDate = (timestamp: number) => {
     const date = new Date(timestamp)
     const month = date.getMonth() + 1
@@ -121,8 +175,10 @@ export function Dashboard() {
             <Button variant="secondary" size="sm">
               使用指南
             </Button>
-            <Button variant="secondary" size="sm">
-              导入
+            <input ref={backupInputRef} type="file" accept=".zip,.cnote.zip,application/zip" className="hidden" onChange={handleImportBackup} />
+            <Button variant="secondary" size="sm" className="gap-1.5" onClick={() => backupInputRef.current?.click()}>
+              <Upload className="h-3.5 w-3.5" />
+              恢复备份
             </Button>
             <Button
               size="sm"
@@ -146,7 +202,7 @@ export function Dashboard() {
                   <h2 className="text-[13px] font-medium text-muted-foreground">文件夹</h2>
                 </div>
                 <button
-                  onClick={() => setShowNewFolderDialog(true)}
+                  onClick={() => openNewFolderDialog()}
                   className="w-6 h-6 flex items-center justify-center text-muted-foreground hover:text-foreground transition-colors"
                 >
                   <Plus className="w-3.5 h-3.5" strokeWidth={2} />
@@ -227,44 +283,39 @@ export function Dashboard() {
                       e.preventDefault()
                       handleOpenFlow(flow.id)
                     }}
-                    className="group relative block overflow-hidden rounded-xl border border-border bg-card transition-all hover:border-primary hover:shadow-sm"
+                    className={`group relative block rounded-xl border border-border bg-card transition-all hover:border-primary hover:shadow-sm ${openFlowMenuId === flow.id ? 'z-20' : ''}`}
                   >
                     {/* 缩略图 */}
-                    <div className="relative flex aspect-[5/4] w-full items-center justify-center overflow-hidden border-b border-border bg-background">
-                      {flow.thumbnail ? (
-                        <img src={flow.thumbnail} alt={flow.name} className="h-full w-full bg-background object-contain" />
-                      ) : (
-                        <FileText className="w-12 h-12 text-muted-foreground/40" strokeWidth={1} />
-                      )}
+                    <div className="relative aspect-[5/4] w-full border-b border-border">
+                      <div className="absolute inset-0 flex items-center justify-center overflow-hidden rounded-t-[11px] bg-background">
+                        {flow.thumbnail ? (
+                          <img src={flow.thumbnail} alt={flow.name} className="h-full w-full bg-background object-contain" />
+                        ) : (
+                          <FileText className="w-12 h-12 text-muted-foreground/40" strokeWidth={1} />
+                        )}
+                      </div>
 
-                      <div className="absolute right-2 top-2 z-10 flex items-center gap-1.5 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
-                        <select
-                          value={flow.folderId || ''}
-                          onClick={(event) => {
-                            event.preventDefault()
-                            event.stopPropagation()
-                          }}
-                          onChange={(event) => {
-                            event.preventDefault()
-                            event.stopPropagation()
-                            moveFlowToFolder(flow.id, event.target.value || null)
-                          }}
-                          className="max-w-24 rounded-md border border-border bg-card/95 px-1.5 py-1 text-[11px] text-foreground shadow-sm backdrop-blur"
-                          aria-label={`移动 ${flow.name} 到文件夹`}
-                        >
-                          <option value="">未分组</option>
-                          {folders.map((folder) => (
-                            <option key={folder.id} value={folder.id}>{folder.name}</option>
-                          ))}
-                        </select>
-                        <button
-                          type="button"
-                          onClick={(e) => handleDeleteFlow(e, flow.id)}
-                          className="flex h-7 w-7 items-center justify-center rounded-md border border-border bg-card/95 text-muted-foreground shadow-sm backdrop-blur transition-colors hover:text-destructive"
-                          aria-label={`删除 ${flow.name}`}
-                        >
-                          <Trash2 className="h-3.5 w-3.5" strokeWidth={2} />
+                      <div data-flow-card-menu className="absolute right-2 top-2 z-30 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
+                        <button type="button" className="flex h-8 w-8 items-center justify-center rounded-full border border-border bg-card/95 text-muted-foreground shadow-sm backdrop-blur transition-colors hover:bg-muted hover:text-foreground" aria-label={`打开 ${flow.name} 操作菜单`} aria-expanded={openFlowMenuId === flow.id} onClick={(event) => { event.preventDefault(); event.stopPropagation(); setOpenFlowMenuId((current) => current === flow.id ? null : flow.id); setOpenGroupMenuId(null) }}>
+                          <MoreVertical className="h-4 w-4" />
                         </button>
+                        {openFlowMenuId === flow.id && <div className="absolute right-0 top-10 z-30 w-40 rounded-xl border border-border bg-card p-1.5 text-left shadow-xl" onMouseLeave={() => setOpenGroupMenuId(null)}>
+                          <div className="relative" onMouseEnter={(event) => { const bounds = event.currentTarget.getBoundingClientRect(); setGroupMenuDirection(bounds.right + 160 <= window.innerWidth ? 'right' : 'left'); setOpenGroupMenuId(flow.id) }} onMouseLeave={() => setOpenGroupMenuId(null)}>
+                            <button type="button" aria-haspopup="menu" aria-expanded={openGroupMenuId === flow.id} className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-xs text-foreground hover:bg-muted" onClick={(event) => { event.preventDefault(); event.stopPropagation() }}>
+                              <Folder className="h-3.5 w-3.5 text-muted-foreground" />
+                              <span className="min-w-0 flex-1 truncate">{flow.folderId ? folders.find((folder) => folder.id === flow.folderId)?.name || '分组' : '未分组'}</span>
+                              <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />
+                            </button>
+                            {openGroupMenuId === flow.id && <div role="menu" className={`absolute top-0 w-40 rounded-xl border border-border bg-card p-1.5 shadow-xl ${groupMenuDirection === 'right' ? 'left-full' : 'right-full'}`}>
+                              <button type="button" className={`flex w-full rounded-lg px-2.5 py-2 text-left text-xs ${!flow.folderId ? 'bg-muted font-medium' : 'hover:bg-muted'}`} onClick={(event) => { event.preventDefault(); event.stopPropagation(); moveFlowToFolder(flow.id, null); setOpenFlowMenuId(null); setOpenGroupMenuId(null) }}>未分组</button>
+                              {folders.map((folder) => <button key={folder.id} type="button" className={`flex w-full truncate rounded-lg px-2.5 py-2 text-left text-xs ${flow.folderId === folder.id ? 'bg-muted font-medium' : 'hover:bg-muted'}`} onClick={(event) => { event.preventDefault(); event.stopPropagation(); moveFlowToFolder(flow.id, folder.id); setOpenFlowMenuId(null); setOpenGroupMenuId(null) }}>{folder.name}</button>)}
+                              <div className="my-1 border-t border-border" />
+                              <button type="button" className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-xs text-foreground hover:bg-muted" onClick={(event) => { event.preventDefault(); event.stopPropagation(); openNewFolderDialog(flow.id) }}><Plus className="h-3.5 w-3.5 text-muted-foreground" />新建分组</button>
+                            </div>}
+                          </div>
+                          <button type="button" className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-xs text-foreground hover:bg-muted" onMouseEnter={() => setOpenGroupMenuId(null)} onClick={(event) => void handleBackupFlow(event, flow)}><Download className="h-3.5 w-3.5 text-muted-foreground" />备份</button>
+                          <button type="button" className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-xs text-destructive hover:bg-destructive/10" onMouseEnter={() => setOpenGroupMenuId(null)} onClick={(event) => { setOpenFlowMenuId(null); setOpenGroupMenuId(null); handleDeleteFlow(event, flow.id) }}><Trash2 className="h-3.5 w-3.5" />删除</button>
+                        </div>}
                       </div>
                     </div>
 
@@ -453,6 +504,7 @@ export function Dashboard() {
                 onClick={() => {
                   setShowNewFolderDialog(false)
                   setNewFolderName('')
+                  setPendingFolderFlowId(null)
                 }}
                 className="flex-1"
               >

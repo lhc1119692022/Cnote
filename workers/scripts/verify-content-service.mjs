@@ -24,8 +24,8 @@ const allowedHeaders = {
   Authorization: 'Bearer contract-test-token',
 }
 
-async function request(path, init = {}) {
-  return worker.fetch(new Request('https://worker.example.test' + path, init), environment, {})
+async function request(path, init = {}, targetEnvironment = environment) {
+  return worker.fetch(new Request('https://worker.example.test' + path, init), targetEnvironment, {})
 }
 
 async function withMockedFetch(handler, run) {
@@ -43,6 +43,10 @@ assert.equal(health.status, 200)
 assert.equal(health.headers.get('access-control-allow-origin'), 'https://app.example.test')
 assert.equal((await health.json()).service, 'cnote-content-service')
 
+const publicHealth = await request('/v1/health', { headers: { Origin: 'https://any-app.example.test' } }, {})
+assert.equal(publicHealth.status, 200)
+assert.equal(publicHealth.headers.get('access-control-allow-origin'), '*')
+
 const preflight = await request('/v1/web/extract', {
   method: 'OPTIONS',
   headers: {
@@ -58,6 +62,15 @@ const unauthenticated = await request('/v1/health', { headers: { Origin: 'https:
 assert.equal(unauthenticated.status, 401)
 assert.equal((await unauthenticated.json()).code, 'UNAUTHORIZED')
 
+globalThis.CNOTE_CONTENT_TOKEN = 'dashboard-content-token'
+const dashboardConfiguredHealth = await request('/v1/health', {
+  headers: { Authorization: 'Bearer dashboard-content-token' },
+}, {})
+assert.equal(dashboardConfiguredHealth.status, 200)
+const dashboardConfiguredUnauthorized = await request('/v1/health', {}, {})
+assert.equal(dashboardConfiguredUnauthorized.status, 401)
+delete globalThis.CNOTE_CONTENT_TOKEN
+
 const wrongOrigin = await request('/v1/health', {
   headers: { Origin: 'https://untrusted.example.test', Authorization: 'Bearer contract-test-token' },
 })
@@ -71,6 +84,22 @@ const ssrf = await request('/v1/web/extract', {
 })
 assert.equal(ssrf.status, 403)
 assert.equal((await ssrf.json()).code, 'SSRF_BLOCKED')
+
+const ipv6Ssrf = await request('/v1/web/extract', {
+  method: 'POST',
+  headers: { ...allowedHeaders, 'Content-Type': 'application/json' },
+  body: JSON.stringify({ url: 'http://[fe90::1]/internal' }),
+})
+assert.equal(ipv6Ssrf.status, 403)
+assert.equal((await ipv6Ssrf.json()).code, 'SSRF_BLOCKED')
+
+const oversizedBody = await request('/v1/web/extract', {
+  method: 'POST',
+  headers: { ...allowedHeaders, 'Content-Type': 'application/json' },
+  body: JSON.stringify({ url: `https://example.com/${'a'.repeat(17_000)}` }),
+})
+assert.equal(oversizedBody.status, 413)
+assert.equal((await oversizedBody.json()).code, 'REQUEST_TOO_LARGE')
 
 const articleHtml = '<!doctype html><html><head>'
   + '<title>Fallback title</title>'
@@ -629,6 +658,24 @@ await withMockedFetch(async (url, init) => {
   assert.equal(response.headers.get('content-type'), 'video/mp4')
   assert.equal(response.headers.get('content-range'), 'bytes 0-3/10000')
   assert.equal(response.headers.get('accept-ranges'), 'bytes')
+})
+
+await withMockedFetch(async () => {
+  let chunkCount = 0
+  return new Response(new ReadableStream({
+    pull(controller) {
+      if (chunkCount >= 13) {
+        controller.close()
+        return
+      }
+      chunkCount += 1
+      controller.enqueue(new Uint8Array(1024 * 1024))
+    },
+  }), { headers: { 'Content-Type': 'video/mp4' } })
+}, async () => {
+  const response = await request('/v1/media/xiaohongshu?url=' + encodeURIComponent('https://sns-video-qc.xhscdn.com/video/chunked.mp4'), { headers: allowedHeaders })
+  assert.equal(response.status, 413)
+  assert.equal((await response.json()).code, 'RESPONSE_TOO_LARGE')
 })
 
 const rejectedMedia = await request('/v1/media/xiaohongshu?url=' + encodeURIComponent('https://example.test/image.webp'), { headers: allowedHeaders })

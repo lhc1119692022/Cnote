@@ -300,6 +300,7 @@ type PersistedFlowState = Pick<
 >
 
 let pendingFlowSaveTimer: ReturnType<typeof setTimeout> | null = null
+let activeFlowExecutionController: AbortController | null = null
 
 function scheduleCurrentFlowSave(get: () => FlowState, delay = 450) {
   if (pendingFlowSaveTimer) clearTimeout(pendingFlowSaveTimer)
@@ -893,11 +894,13 @@ export const useFlowStore = create<FlowState>()(
       executeFlow: async (aiClient, scraperClient) => {
         const { nodes, edges } = get()
         if (get().isExecuting) return
-        const executableNodes = nodes.filter((node) => node.type !== 'group')
+        const executableNodes = nodes.filter((node) => node.type !== 'group' && !node.data?.disabled)
         const executableIds = new Set(executableNodes.map((node) => node.id))
         const executableEdges = edges.filter((edge) => executableIds.has(edge.source) && executableIds.has(edge.target))
 
         const resolvedScraperClient = scraperClient || tryGetContentServiceClient()
+        const controller = new AbortController()
+        activeFlowExecutionController = controller
 
         set({ isExecuting: true, executionContexts: new Map() })
 
@@ -910,7 +913,8 @@ export const useFlowStore = create<FlowState>()(
             (channelId) => channelId
               ? useAIStore.getState().createClientForChannel(channelId) || undefined
               : undefined,
-            (nodeId, data) => get().updateNode(nodeId, { data })
+            (nodeId, data) => get().updateNode(nodeId, { data }),
+            controller.signal,
           )
 
           const result = await executor.execute()
@@ -920,21 +924,25 @@ export const useFlowStore = create<FlowState>()(
             isExecuting: false,
           })
 
-          if (!result.success) {
+          if (!result.success && result.error !== '执行已停止') {
             console.error('Flow execution failed:', result.error)
             alert(`执行失败: ${result.error}`)
-          } else {
+          } else if (result.success) {
             alert('Flow 执行完成！')
           }
         } catch (error) {
           console.error('Flow execution error:', error)
           set({ isExecuting: false })
-          alert(`执行错误: ${error instanceof Error ? error.message : '未知错误'}`)
+          if (!controller.signal.aborted) alert(`执行错误: ${error instanceof Error ? error.message : '未知错误'}`)
+        } finally {
+          if (activeFlowExecutionController === controller) activeFlowExecutionController = null
         }
       },
 
       // 停止执行
       stopExecution: () => {
+        activeFlowExecutionController?.abort()
+        activeFlowExecutionController = null
         set({ isExecuting: false })
       },
 

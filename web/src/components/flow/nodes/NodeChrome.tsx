@@ -1,15 +1,16 @@
 import { useEffect, useRef, useState, type ChangeEvent, type ReactNode } from 'react'
 import { Handle, Position, useReactFlow } from 'reactflow'
-import { FileText, Globe, Layers3, Copy, Bookmark, RefreshCw, Scissors, Sparkles, StickyNote, Plus, X } from 'lucide-react'
+import { Download, FileText, Globe, Layers3, Copy, Bookmark, RefreshCw, Scissors, Sparkles, StickyNote, Plus, X } from 'lucide-react'
 import { useFlowStore } from '@/stores/use-flow-store'
 import { useSourceStore } from '@/stores/use-source-store'
 import type { ContentCategory, ContentNodeData } from '@/types/flow'
-import { cloneLocalResource, deleteLocalResource } from '@/lib/resource-storage'
+import { cloneLocalResource, deleteLocalResource, loadLocalResourceBlob } from '@/lib/resource-storage'
 import { getContentCategoryVisual } from '@/lib/content-visuals'
 import { canNodeOutputText, importContentIntoNode, refreshTextFromUpstream, reparseContentNode } from '@/lib/content-import-controller'
 import { getContentFileAccept } from '@/lib/content-import'
 import { cloneFlowValue } from '@/lib/flow/clone'
 import { getNodeMediaItems } from '@/lib/content-media'
+import { extensionForMimeType, saveBlobToFile } from '@/lib/file-save'
 
 interface NodeHandleProps {
   type: 'target' | 'source'
@@ -68,6 +69,7 @@ export function NodeHoverToolbar({ nodeId, children }: { nodeId: string; childre
   const createSource = useSourceStore((state) => state.createSource)
   const deleteSource = useSourceStore((state) => state.deleteSource)
   const [isSaving, setIsSaving] = useState(false)
+  const [isDownloading, setIsDownloading] = useState(false)
   const [isEditingName, setIsEditingName] = useState(false)
   const [nameDraft, setNameDraft] = useState('')
   const refreshInputRef = useRef<HTMLInputElement>(null)
@@ -94,6 +96,7 @@ export function NodeHoverToolbar({ nodeId, children }: { nodeId: string; childre
     : undefined
   const splitResources = splitKind ? getNodeMediaItems(node, splitKind) : []
   const canSplitResources = splitResources.length > 1
+  const canDownload = node.type === 'content' && (node.data?.category === 'text' || node.data?.category === 'image')
 
   const commitName = () => {
     const nextLabel = nameDraft.trim()
@@ -164,6 +167,48 @@ export function NodeHoverToolbar({ nodeId, children }: { nodeId: string; childre
     await importContentIntoNode(nodeId, { kind: 'file', file }, node.data?.category as ContentCategory | undefined)
   }
 
+  const downloadContent = async () => {
+    if (!canDownload || isDownloading) return
+    setIsDownloading(true)
+    try {
+      const data = node.data as ContentNodeData
+      if (data.category === 'text') {
+        const payload = data.payload?.kind === 'text' ? data.payload : undefined
+        const value = payload?.value || (data.source?.kind === 'text' ? data.source.text : '')
+        const extension = payload?.format === 'plain' ? 'txt' : 'md'
+        const mimeType = extension === 'txt' ? 'text/plain' : 'text/markdown'
+        await saveBlobToFile(new Blob([value], { type: mimeType }), `${label}.${extension}`, {
+          description: 'Cnote 文本内容',
+          extension: `.${extension}`,
+        })
+        return
+      }
+
+      const resourceId = data.source?.kind === 'file' || data.source?.kind === 'clipboard-image'
+        ? data.source.resourceId
+        : undefined
+      const media = getNodeMediaItems(node, 'image')[0]
+      const blob = resourceId
+        ? await loadLocalResourceBlob(resourceId)
+        : media?.resource.url
+          ? await fetch(media.resource.url).then((response) => {
+              if (!response.ok) throw new Error(`图片下载失败（${response.status}）`)
+              return response.blob()
+            })
+          : undefined
+      if (!blob) throw new Error('图片资源不可用')
+      const extension = extensionForMimeType(blob.type) || 'bin'
+      await saveBlobToFile(blob, `${label}.${extension}`, {
+        description: 'Cnote 图片',
+        extension: `.${extension}`,
+      })
+    } catch (error) {
+      alert(error instanceof Error ? error.message : '下载失败，请稍后重试。')
+    } finally {
+      setIsDownloading(false)
+    }
+  }
+
   const splitMediaResources = () => {
     if (!splitKind || splitResources.length < 2) return
     const makeData = (item: typeof splitResources[number], index: number): ContentNodeData => {
@@ -208,6 +253,7 @@ export function NodeHoverToolbar({ nodeId, children }: { nodeId: string; childre
         {hasRefreshableUpstream && <button type="button" className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground" aria-label="重新获取上游文本" title="重新获取上游文本并覆盖当前内容" onClick={(event) => { event.stopPropagation(); void refreshTextFromUpstream(nodeId) }}><RefreshCw className="h-4 w-4" /></button>}
         {canSplitResources && <button type="button" className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground" aria-label={`拆分为 ${splitResources.length} 个节点`} title={`拆分为 ${splitResources.length} 个独立${splitKind === 'image' ? '图片' : '视频'}节点`} onClick={(event) => { event.stopPropagation(); splitMediaResources() }}><Scissors className="h-4 w-4" /></button>}
         {canReparseContent && node.data?.category !== 'text' && !hasRefreshableUpstream && !resourceLost && <button type="button" className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground" aria-label="重新识别内容" title="使用原始资源重新识别" onClick={(event) => { event.stopPropagation(); void reparseContentNode(nodeId) }}><RefreshCw className="h-4 w-4" /></button>}
+        {canDownload && <button type="button" disabled={isDownloading} className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-50" aria-label="下载内容" title="下载到本地" onClick={(event) => { event.stopPropagation(); void downloadContent() }}><Download className="h-4 w-4" /></button>}
         {resourceLost
           ? <button type="button" className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-red-600 transition-colors hover:bg-red-50" aria-label="刷新丢失资源" title="刷新丢失资源" onClick={(event) => { event.stopPropagation(); void refreshResource() }}><RefreshCw className="h-4 w-4" /></button>
           : <><button type="button" className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground" aria-label="复制节点" title="复制节点" onClick={(event) => { event.stopPropagation(); duplicateNode(nodeId) }}><Copy className="h-4 w-4" /></button>

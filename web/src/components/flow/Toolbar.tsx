@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { useReactFlow } from "reactflow";
 import {
   ArrowLeft,
+  Check,
   ChevronDown,
   ChevronRight,
   PanelLeft,
@@ -82,9 +83,8 @@ export function Toolbar({
     overflowY: "visible" | "auto";
   }>({ overflowY: "visible" });
   const [showExportDialog, setShowExportDialog] = useState(false);
-  const [exportFormat, setExportFormat] = useState<"flow" | "json" | "png">(
-    "flow",
-  );
+  const [showExportFormatMenu, setShowExportFormatMenu] = useState(false);
+  const [exportFormat, setExportFormat] = useState<"json" | "png">("json");
   const createTemplate = useTemplateStore((state) => state.createTemplate);
   const apiKeys = useAIStore((state) => state.apiKeys);
   const getAPIKey = useAIStore((state) => state.getAPIKey);
@@ -108,6 +108,7 @@ export function Toolbar({
   const centerGroupRef = useRef<HTMLDivElement>(null);
   const rightGroupRef = useRef<HTMLDivElement>(null);
   const librarySubmenuRef = useRef<HTMLDivElement>(null);
+  const exportFormatMenuRef = useRef<HTMLDivElement>(null);
   const libraryCloseTimerRef = useRef<number | null>(null);
   const libraryItems = useMemo(
     () => sources.slice().sort((a, b) => b.updatedAt - a.updatedAt),
@@ -137,6 +138,26 @@ export function Toolbar({
     },
     [],
   );
+
+  useEffect(() => {
+    if (!showExportFormatMenu) return;
+    const closeExportFormatMenu = (event: PointerEvent | KeyboardEvent) => {
+      if (event instanceof KeyboardEvent && event.key !== "Escape") return;
+      if (
+        event instanceof PointerEvent &&
+        exportFormatMenuRef.current?.contains(event.target as Node)
+      ) {
+        return;
+      }
+      setShowExportFormatMenu(false);
+    };
+    document.addEventListener("pointerdown", closeExportFormatMenu, true);
+    document.addEventListener("keydown", closeExportFormatMenu, true);
+    return () => {
+      document.removeEventListener("pointerdown", closeExportFormatMenu, true);
+      document.removeEventListener("keydown", closeExportFormatMenu, true);
+    };
+  }, [showExportFormatMenu]);
 
   useLayoutEffect(() => {
     if (!showLibrarySubmenu || !librarySubmenuRef.current) return;
@@ -387,10 +408,7 @@ export function Toolbar({
   };
 
   const confirmExport = async () => {
-    const content =
-      exportFormat === "flow" || exportFormat === "json"
-        ? exportFlowAsJSON()
-        : undefined;
+    const content = exportFormat === "json" ? exportFlowAsJSON() : undefined;
     const extension = exportFormat === "png" ? "png" : "json";
     const mime = exportFormat === "png" ? "image/png" : "application/json";
     const thumbnail =
@@ -807,26 +825,68 @@ export function Toolbar({
           </div>
         </DialogContent>
       </Dialog>
-      <Dialog open={showExportDialog} onOpenChange={setShowExportDialog}>
+      <Dialog
+        open={showExportDialog}
+        onOpenChange={(open) => {
+          setShowExportDialog(open);
+          if (!open) setShowExportFormatMenu(false);
+        }}
+      >
         <DialogContent>
           <DialogHeader>
             <DialogTitle className="text-base">导出画板</DialogTitle>
           </DialogHeader>
           <div className="space-y-3">
-            <label className="block text-xs text-muted-foreground">
-              导出方式
-              <select
-                value={exportFormat}
-                onChange={(event) =>
-                  setExportFormat(event.target.value as typeof exportFormat)
-                }
-                className="mt-1 h-10 w-full rounded-lg border border-border bg-background px-3 text-foreground"
+            <div
+              ref={exportFormatMenuRef}
+              className="relative block text-xs text-muted-foreground"
+            >
+              <span className="mb-1 block">导出方式</span>
+              <button
+                type="button"
+                aria-haspopup="menu"
+                aria-expanded={showExportFormatMenu}
+                onClick={() => setShowExportFormatMenu((value) => !value)}
+                className="flex h-10 w-full items-center justify-between gap-3 rounded-lg border border-border bg-background px-3 text-left text-foreground outline-none hover:bg-muted/50 focus-visible:ring-2 focus-visible:ring-ring/20"
               >
-                <option value="flow">导出完整 Flow 包</option>
-                <option value="json">导出为 JSON</option>
-                <option value="png">将画布导出为 PNG</option>
-              </select>
-            </label>
+                <span>
+                  {exportFormat === "json"
+                    ? "导出工作流 JSON"
+                    : "将画布导出为 PNG"}
+                </span>
+                <ChevronDown
+                  className={`h-4 w-4 shrink-0 text-muted-foreground transition-transform ${showExportFormatMenu ? "rotate-180" : ""}`}
+                />
+              </button>
+              {showExportFormatMenu && (
+                <div
+                  role="menu"
+                  className="absolute left-0 right-0 top-full z-50 mt-1.5 space-y-1 rounded-lg border border-border bg-card p-1.5 shadow-xl"
+                >
+                  {([
+                    ["json", "导出工作流 JSON"],
+                    ["png", "将画布导出为 PNG"],
+                  ] as const).map(([value, label]) => (
+                    <button
+                      key={value}
+                      type="button"
+                      role="menuitemradio"
+                      aria-checked={exportFormat === value}
+                      onClick={() => {
+                        setExportFormat(value);
+                        setShowExportFormatMenu(false);
+                      }}
+                      className={`flex w-full items-center justify-between gap-3 rounded-lg px-3 py-2.5 text-left text-xs text-foreground hover:bg-muted ${exportFormat === value ? "bg-muted font-medium" : ""}`}
+                    >
+                      <span>{label}</span>
+                      {exportFormat === value && (
+                        <Check className="h-3.5 w-3.5 shrink-0" />
+                      )}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
             <p className="text-xs text-muted-foreground">
               确认后可选择保存位置。
             </p>

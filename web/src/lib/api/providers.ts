@@ -87,7 +87,7 @@ export const PROVIDERS: ProviderConfig[] = [
     id: 'google',
     name: 'Google',
     baseURL: 'https://generativelanguage.googleapis.com',
-    protocol: 'chatCompletions',
+    protocol: 'gemini',
     models: [
       {
         id: 'gemini-pro',
@@ -99,34 +99,6 @@ export const PROVIDERS: ProviderConfig[] = [
         id: 'gemini-pro-vision',
         name: 'Gemini Pro Vision',
         maxTokens: 16384,
-        supportsStreaming: true,
-      },
-    ],
-  },
-
-  // 本地 Ollama
-  {
-    id: 'ollama',
-    name: 'Ollama (本地)',
-    baseURL: 'http://localhost:11434',
-    protocol: 'chatCompletions',
-    models: [
-      {
-        id: 'llama2',
-        name: 'Llama 2',
-        maxTokens: 4096,
-        supportsStreaming: true,
-      },
-      {
-        id: 'mistral',
-        name: 'Mistral',
-        maxTokens: 8192,
-        supportsStreaming: true,
-      },
-      {
-        id: 'codellama',
-        name: 'Code Llama',
-        maxTokens: 4096,
         supportsStreaming: true,
       },
     ],
@@ -157,6 +129,30 @@ export function getProvider(id: string): ProviderConfig | undefined {
 }
 
 /**
+ * 根据协议、接口地址和模型 ID 推断真实提供商。
+ * 渠道可以继续使用自定义名称，但能力判断与请求适配不再依赖用户填写内部 ID。
+ */
+export function inferProviderId(
+  providerId: string | undefined,
+  baseURL = '',
+  modelIds: string | string[] = [],
+  protocol?: ProviderConfig['protocol'],
+): string {
+  const configured = providerId?.trim().toLowerCase() || 'custom'
+  const models = (Array.isArray(modelIds) ? modelIds : [modelIds]).map((model) => model.toLowerCase())
+  const endpoint = baseURL.toLowerCase()
+  const proxyProvider = endpoint.match(/\/proxy\/(openai|anthropic|deepseek|google)(?:\/|$)/)?.[1]
+
+  if (protocol === 'gemini') return 'google'
+  if (proxyProvider) return proxyProvider
+  if (/api\.deepseek\.com/.test(endpoint) || models.some((model) => /^deepseek(?:-|$)/.test(model))) return 'deepseek'
+  if (/api\.anthropic\.com/.test(endpoint) || models.some((model) => /^claude(?:-|$)/.test(model))) return 'anthropic'
+  if (/generativelanguage\.googleapis\.com/.test(endpoint) || models.some((model) => /^gemini(?:-|$)/.test(model))) return 'google'
+  if (/api\.openai\.com/.test(endpoint) || models.some((model) => /^(?:gpt-|o\d(?:-|$))/.test(model))) return 'openai'
+  return configured
+}
+
+/**
  * 获取提供商的所有模型
  */
 export function getProviderModels(providerId: string) {
@@ -178,11 +174,9 @@ export function validateAPIKey(providerId: string, apiKey: string): boolean {
       return apiKey.startsWith('sk-ant-')
     case 'google':
       return apiKey.length === 39 // Google API keys are typically 39 chars
-    case 'ollama':
-      return true // Ollama doesn't require API key
     case 'custom':
       return true // Custom endpoints can have any format
     default:
-      return false
+      return true // 手工填写的 provider 使用服务商自己的密钥格式
   }
 }

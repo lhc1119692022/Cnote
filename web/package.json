@@ -4,8 +4,11 @@
   "type": "module",
   "private": true,
   "scripts": {
+    "prebuild": "node scripts/build-cloudflare-worker-templates.mjs",
+    "predev": "node scripts/build-cloudflare-worker-templates.mjs",
     "dev": "vite",
     "build": "tsc && vite build",
+    "test:worker-templates": "node scripts/build-cloudflare-worker-templates.mjs && node scripts/verify-cloudflare-worker-templates.mjs",
     "preview": "vite preview",
     "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
     "format": "prettier --write \"src/**/*.{ts,tsx,css}\""
@@ -26,8 +29,8 @@
     "react-i18next": "^15.2.0",
     "react-router-dom": "^7.1.1",
     "reactflow": "^11.11.4",
+    "read-excel-file": "^9.3.10",
     "tailwind-merge": "^2.6.0",
-    "xlsx": "^0.18.5",
     "zustand": "^5.0.2"
   },
   "devDependencies": {

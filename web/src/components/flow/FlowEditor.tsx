@@ -67,6 +67,7 @@ import {
   textNodeNeedsUpstreamRefresh,
 } from "@/lib/content-import-controller";
 import { cloneFlowValue } from "@/lib/flow/clone";
+import { hasCycle } from "@/lib/flow/graph";
 import { AI_NODE_DEFAULT_SIZE, GROUP_NODE_PADDING } from "@/lib/flow/node-dimensions";
 import type { ContentNodeData } from "@/types/flow";
 import { useLocalResourceUrl } from "@/hooks/use-local-resource-url";
@@ -1127,8 +1128,9 @@ function FlowEditorInner() {
   useEffect(() => {
     if (!filterMenuOpen) return;
     const closeOnOutsideClick = (event: MouseEvent) => {
-      if (!(event.target as HTMLElement).closest("[data-node-filter-menu]"))
-        setFilterMenuOpen(false);
+      const target = event.target as HTMLElement | null;
+      if (target?.closest("[data-node-filter-menu]")) return;
+      setFilterMenuOpen(false);
     };
     document.addEventListener("mousedown", closeOnOutsideClick);
     return () => document.removeEventListener("mousedown", closeOnOutsideClick);
@@ -1614,6 +1616,15 @@ function FlowEditorInner() {
         return;
       if (connection.sourceHandle && connection.sourceHandle !== "out") return;
       if (connection.targetHandle && connection.targetHandle !== "in") return;
+      const currentGraph = useFlowStore.getState();
+      if (hasCycle(currentGraph.nodes, [
+        ...currentGraph.edges,
+        {
+          id: `candidate-${connection.source}-${connection.target}`,
+          source: connection.source,
+          target: connection.target,
+        },
+      ])) return;
       connectionCreatedRef.current = true;
       addEdgeToStore({
         source: connection.source,
@@ -1648,6 +1659,7 @@ function FlowEditorInner() {
 
   const handlePaneClick = useCallback(() => {
     setMarqueeSelectionIds([]);
+    setFilterMenuOpen(false);
   }, []);
 
   const handleMoveEnd = useCallback(
@@ -1699,14 +1711,20 @@ function FlowEditorInner() {
   }, [handleNodesChange]);
 
   const isValidFlowConnection = useCallback(
-    (connection: any) =>
-      Boolean(
-        connection.source &&
-          connection.target &&
-          connection.source !== connection.target &&
-          (!connection.sourceHandle || connection.sourceHandle === "out") &&
-          (!connection.targetHandle || connection.targetHandle === "in"),
-      ),
+    (connection: any) => {
+      if (!connection.source || !connection.target || connection.source === connection.target) return false;
+      if (connection.sourceHandle && connection.sourceHandle !== "out") return false;
+      if (connection.targetHandle && connection.targetHandle !== "in") return false;
+      const currentGraph = useFlowStore.getState();
+      return !hasCycle(currentGraph.nodes, [
+        ...currentGraph.edges,
+        {
+          id: `candidate-${connection.source}-${connection.target}`,
+          source: connection.source,
+          target: connection.target,
+        },
+      ]);
+    },
     [],
   );
 
@@ -2045,7 +2063,7 @@ function FlowEditorInner() {
       )}
 
       {showNodePanel && (
-        <aside className="absolute bottom-4 left-4 top-4 z-40 flex w-[260px] flex-col overflow-hidden rounded-2xl border border-border bg-card shadow-xl">
+        <aside data-node-panel className="absolute bottom-4 left-4 top-4 z-40 flex w-[260px] flex-col overflow-hidden rounded-2xl border border-border bg-card shadow-xl">
           <div className="mx-3 mt-2 flex items-center gap-1 p-2 px-0">
             <button
               className={`flex-1 rounded-full px-2 py-2 text-sm font-semibold text-foreground ${panelTab === "nodes" ? "bg-muted" : "hover:bg-muted"}`}

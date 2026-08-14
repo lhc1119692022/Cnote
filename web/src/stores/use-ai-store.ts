@@ -1,13 +1,15 @@
 import { create } from 'zustand'
 import { createJSONStorage, persist } from 'zustand/middleware'
 import { localForageStorage } from '@/lib/localforage-storage'
-import { AIClient, getProvider, type ProviderConfig, type ProtocolType } from '@/lib/api'
+import { AIClient, getProvider, inferProviderId, type ProviderConfig, type ProtocolType } from '@/lib/api'
 import { encryptAPIKey, decryptAPIKey } from '@/lib/secure-storage'
 
 export interface APIChannel {
   id: string
   providerId: string
   encryptedKey: string
+  proxyHeaderName?: string
+  encryptedProxyHeaderValue?: string
   name: string
   baseURL?: string
   modelIds?: string[]
@@ -18,6 +20,8 @@ export interface APIChannelInput {
   id?: string
   providerId: string
   apiKey: string
+  proxyHeaderName?: string
+  proxyHeaderValue?: string
   name: string
   baseURL?: string
   modelIds?: string[]
@@ -39,12 +43,13 @@ interface AIState {
   defaultsVersion: number
 
   // 操作方法
-  addAPIKey: (providerId: string, apiKey: string, name?: string, options?: { baseURL?: string; modelIds?: string[]; protocol?: ProtocolType }) => string
+  addAPIKey: (providerId: string, apiKey: string, name?: string, options?: { baseURL?: string; modelIds?: string[]; protocol?: ProtocolType; proxyHeaderName?: string; proxyHeaderValue?: string }) => string
   removeAPIKey: (id: string) => void
-  updateAPIKey: (id: string, updates: { providerId?: string; apiKey?: string; name?: string; baseURL?: string; modelIds?: string[]; protocol?: ProtocolType }) => void
+  updateAPIKey: (id: string, updates: { providerId?: string; apiKey?: string; name?: string; baseURL?: string; modelIds?: string[]; protocol?: ProtocolType; proxyHeaderName?: string; proxyHeaderValue?: string }) => void
   replaceAPIKeys: (channels: APIChannelInput[]) => void
   initializeDefaultChannels: () => void
   getAPIKey: (id: string) => string | null
+  getProxyHeaderValue: (id: string) => string | null
 
   setCurrentProvider: (providerId: string) => void
   setCurrentModel: (modelId: string) => void
@@ -85,6 +90,8 @@ export const useAIStore = create<AIState>()(
               baseURL: options?.baseURL,
               modelIds: options?.modelIds,
               protocol: options?.protocol,
+              proxyHeaderName: options?.proxyHeaderName,
+              encryptedProxyHeaderValue: options?.proxyHeaderValue ? encryptAPIKey(options.proxyHeaderValue) : undefined,
             },
           ],
         }))
@@ -109,6 +116,9 @@ export const useAIStore = create<AIState>()(
                   ...k,
                   ...updates,
                   encryptedKey: updates.apiKey ? encryptAPIKey(updates.apiKey) : k.encryptedKey,
+                  encryptedProxyHeaderValue: updates.proxyHeaderValue !== undefined
+                    ? (updates.proxyHeaderValue ? encryptAPIKey(updates.proxyHeaderValue) : undefined)
+                    : k.encryptedProxyHeaderValue,
                 }
               : k
           ),
@@ -124,16 +134,19 @@ export const useAIStore = create<AIState>()(
           baseURL: channel.baseURL,
           modelIds: channel.modelIds,
           protocol: channel.protocol,
+          proxyHeaderName: channel.proxyHeaderName,
+          encryptedProxyHeaderValue: channel.proxyHeaderValue ? encryptAPIKey(channel.proxyHeaderValue) : undefined,
         }))
         set({ apiKeys, currentAPIKeyId: apiKeys[0]?.id || null, client: null })
       },
 
       initializeDefaultChannels: () => {
         set((state) => {
-          if (state.defaultsVersion >= 3) return state
+          if (state.defaultsVersion >= 4) return state
           const defaultSpecs = [
             { id: 'official-openai', providerId: 'openai', name: 'OpenAI 官方' },
             { id: 'official-deepseek', providerId: 'deepseek', name: 'DeepSeek 官方' },
+            { id: 'official-google', providerId: 'google', name: 'Gemini 官方' },
           ]
           const createDefaultChannel = ({ id, providerId, name }: typeof defaultSpecs[number]) => {
             const provider = getProvider(providerId)
@@ -149,7 +162,7 @@ export const useAIStore = create<AIState>()(
           }
           if (state.apiKeys.length > 0) {
             const apiKeys = state.apiKeys.map((channel) => {
-              if (channel.id !== 'official-openai' && channel.id !== 'official-deepseek') return channel
+              if (state.defaultsVersion >= 3 || (channel.id !== 'official-openai' && channel.id !== 'official-deepseek')) return channel
               const provider = getProvider(channel.providerId)
               return { ...channel, modelIds: [], protocol: provider?.protocol || channel.protocol }
             })
@@ -159,7 +172,7 @@ export const useAIStore = create<AIState>()(
             return {
               apiKeys,
               defaultsInitialized: true,
-              defaultsVersion: 3,
+              defaultsVersion: 4,
             }
           }
 
@@ -169,7 +182,7 @@ export const useAIStore = create<AIState>()(
             apiKeys: defaults,
             currentAPIKeyId: null,
             defaultsInitialized: true,
-            defaultsVersion: 3,
+            defaultsVersion: 4,
           }
         })
       },
@@ -180,6 +193,11 @@ export const useAIStore = create<AIState>()(
         if (!keyStore) return null
 
         return decryptAPIKey(keyStore.encryptedKey)
+      },
+
+      getProxyHeaderValue: (id) => {
+        const channel = get().apiKeys.find((item) => item.id === id)
+        return channel?.encryptedProxyHeaderValue ? decryptAPIKey(channel.encryptedProxyHeaderValue) : null
       },
 
       // 设置当前提供商
@@ -210,6 +228,7 @@ export const useAIStore = create<AIState>()(
         }
 
         const channel = get().apiKeys.find((item) => item.id === currentAPIKeyId)
+        const proxyHeaderValue = get().getProxyHeaderValue(currentAPIKeyId)
         const selectedModels = channel?.modelIds?.length
           ? channel.modelIds.map((modelId) => provider.models.find((model) => model.id === modelId) || {
               id: modelId,
@@ -218,11 +237,19 @@ export const useAIStore = create<AIState>()(
               supportsStreaming: true,
             })
           : []
+        const protocol = channel?.protocol || provider.protocol
+        const baseURL = channel?.baseURL || provider.baseURL
+        const inferredProviderId = inferProviderId(channel?.providerId || provider.id, baseURL, channel?.modelIds || [], protocol)
+        const inferredProvider = getProvider(inferredProviderId) || provider
         const client = new AIClient({
-          ...provider,
-          protocol: channel?.protocol || provider.protocol,
-          baseURL: channel?.baseURL || provider.baseURL,
+          ...inferredProvider,
+          id: inferredProviderId,
+          protocol,
+          baseURL,
           models: selectedModels,
+          extraHeaders: channel?.proxyHeaderName && proxyHeaderValue
+            ? { [channel.proxyHeaderName]: proxyHeaderValue }
+            : undefined,
         }, apiKey)
         set({ client })
       },
@@ -232,7 +259,10 @@ export const useAIStore = create<AIState>()(
         if (!channel || !channel.modelIds?.length) return null
         const apiKey = get().getAPIKey(channelId)
         if (!apiKey) return null
-        const provider = getProvider(channel.providerId)
+        const proxyHeaderValue = get().getProxyHeaderValue(channelId)
+        if (!channel.baseURL || !channel.protocol) return null
+        const inferredProviderId = inferProviderId(channel.providerId, channel.baseURL, channel.modelIds, channel.protocol)
+        const provider = getProvider(inferredProviderId) || getProvider('custom')
         if (!provider) return null
         const selectedModels = channel.modelIds.map((modelId) =>
           provider.models.find((model) => model.id === modelId) || {
@@ -244,9 +274,14 @@ export const useAIStore = create<AIState>()(
         )
         return new AIClient({
           ...provider,
+          id: inferredProviderId,
+          name: channel.name,
           protocol: channel.protocol || provider.protocol,
           baseURL: channel.baseURL || provider.baseURL,
           models: selectedModels,
+          extraHeaders: channel.proxyHeaderName && proxyHeaderValue
+            ? { [channel.proxyHeaderName]: proxyHeaderValue }
+            : undefined,
         }, apiKey)
       },
 

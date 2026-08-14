@@ -4,7 +4,22 @@
  */
 
 interface Env {
-  // 可以在这里定义环境变量
+  CN_PROXY_HEADER_NAME?: string
+  CN_PROXY_HEADER_VALUE?: string
+}
+
+interface DashboardProxyConfig {
+  CNOTE_PROXY_HEADER_NAME?: string
+  CNOTE_PROXY_HEADER_VALUE?: string
+}
+
+const dashboardProxyConfig = globalThis as typeof globalThis & DashboardProxyConfig
+
+function proxyAccessConfig(env: Env) {
+  return {
+    headerName: env.CN_PROXY_HEADER_NAME?.trim() || dashboardProxyConfig.CNOTE_PROXY_HEADER_NAME?.trim() || '',
+    headerValue: env.CN_PROXY_HEADER_VALUE || dashboardProxyConfig.CNOTE_PROXY_HEADER_VALUE || '',
+  }
 }
 
 // 支持的 AI 提供商
@@ -18,25 +33,95 @@ const SUPPORTED_PROVIDERS = {
   openrouter: 'https://openrouter.ai/api',
 }
 
-// CORS 头
-const CORS_HEADERS = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
-  'Access-Control-Allow-Headers': 'Content-Type, Authorization, x-api-key, anthropic-version',
-  'Access-Control-Max-Age': '86400',
+function getCorsHeaders(env: Env) {
+  const allowedHeaders = ['Content-Type', 'Authorization', 'x-api-key', 'x-goog-api-key', 'anthropic-version']
+  const customHeaderName = proxyAccessConfig(env).headerName
+  if (customHeaderName && !allowedHeaders.some((name) => name.toLowerCase() === customHeaderName.toLowerCase())) {
+    new Headers({ [customHeaderName]: 'validation' })
+    allowedHeaders.push(customHeaderName)
+  }
+  return {
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+    'Access-Control-Allow-Headers': allowedHeaders.join(', '),
+    'Access-Control-Max-Age': '86400',
+  }
+}
+
+const ALLOWED_ENDPOINTS = new Set([
+  'v1/models',
+  'v1/chat/completions',
+  'v1/responses',
+  'v1/messages',
+  'v1beta/openai/models',
+  'v1beta/openai/chat/completions',
+  'v1beta/models',
+])
+
+function isAllowedEndpoint(endpoint: string) {
+  if (ALLOWED_ENDPOINTS.has(endpoint)) return true
+  return /^v1beta\/models\/[A-Za-z0-9._-]+:(?:generateContent|streamGenerateContent)$/.test(endpoint)
+}
+
+const MAX_PROXY_REQUEST_BYTES = 20 * 1024 * 1024
+
+async function readRequestBodyLimited(request: Request) {
+  const declaredLength = Number(request.headers.get('Content-Length') || 0)
+  if (declaredLength > MAX_PROXY_REQUEST_BYTES) throw new Error('PROXY_REQUEST_TOO_LARGE')
+  if (!request.body) return undefined
+  const reader = request.body.getReader()
+  const chunks: Uint8Array[] = []
+  let total = 0
+  try {
+    while (true) {
+      const next = await reader.read()
+      if (next.done) break
+      total += next.value.byteLength
+      if (total > MAX_PROXY_REQUEST_BYTES) {
+        await reader.cancel()
+        throw new Error('PROXY_REQUEST_TOO_LARGE')
+      }
+      chunks.push(next.value)
+    }
+  } finally {
+    reader.releaseLock()
+  }
+  const body = new Uint8Array(total)
+  let offset = 0
+  for (const chunk of chunks) {
+    body.set(chunk, offset)
+    offset += chunk.byteLength
+  }
+  return body
+}
+
+function errorResponse(status: number, message: string, corsHeaders: Record<string, string>) {
+  return new Response(JSON.stringify({ error: message }), {
+    status,
+    headers: { 'Content-Type': 'application/json', ...corsHeaders },
+  })
+}
+
+function assertProxyAccess(request: Request, env: Env) {
+  const { headerName, headerValue } = proxyAccessConfig(env)
+  if (!headerName && !headerValue) return
+  if (!headerName || !headerValue) throw new Error('CN_PROXY_HEADER_NAME 和 CN_PROXY_HEADER_VALUE 必须同时配置')
+  if (request.headers.get(headerName) !== headerValue) throw new Error('代理访问头无效')
 }
 
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+    const corsHeaders = getCorsHeaders(env)
     // 处理 OPTIONS 预检请求
     if (request.method === 'OPTIONS') {
       return new Response(null, {
         status: 204,
-        headers: CORS_HEADERS,
+        headers: corsHeaders,
       })
     }
 
     try {
+      assertProxyAccess(request, env)
       const url = new URL(request.url)
       const path = url.pathname
 
@@ -51,7 +136,7 @@ export default {
           {
             headers: {
               'Content-Type': 'application/json',
-              ...CORS_HEADERS,
+              ...corsHeaders,
             },
           }
         )
@@ -61,6 +146,7 @@ export default {
       // 路径格式: /proxy/{provider}/{endpoint}
       const pathParts = path.split('/').filter(Boolean)
       if (pathParts[0] === 'proxy' && pathParts.length >= 2) {
+        if (!['GET', 'POST'].includes(request.method)) return errorResponse(405, '代理仅支持 GET 和 POST', corsHeaders)
         const provider = pathParts[1] as keyof typeof SUPPORTED_PROVIDERS
         const endpoint = pathParts.slice(2).join('/')
 
@@ -74,32 +160,41 @@ export default {
               status: 400,
               headers: {
                 'Content-Type': 'application/json',
-                ...CORS_HEADERS,
+                ...corsHeaders,
               },
             }
           )
         }
+        if (!isAllowedEndpoint(endpoint)) return errorResponse(404, '此 AI 端点未开放代理', corsHeaders)
+        const target = new URL(`${SUPPORTED_PROVIDERS[provider]}/${endpoint}`)
+        target.search = url.search
 
         // 构建目标 URL
-        const targetUrl = `${SUPPORTED_PROVIDERS[provider]}/${endpoint}`
-
-        // 转发请求
         const headers = new Headers(request.headers)
-        headers.set('Host', new URL(SUPPORTED_PROVIDERS[provider]).host)
+        const body = request.method === 'POST' ? await readRequestBodyLimited(request) : undefined
+        const proxyHeaderName = proxyAccessConfig(env).headerName
+        if (proxyHeaderName) headers.delete(proxyHeaderName)
+        headers.delete('Host')
         headers.delete('Origin')
         headers.delete('Referer')
+        headers.delete('Cookie')
+        headers.delete('Content-Length')
 
-        const proxyRequest = new Request(targetUrl, {
+        const proxyRequest = new Request(target.toString(), {
           method: request.method,
           headers,
-          body: request.body,
+          body,
         })
 
-        const response = await fetch(proxyRequest)
+        const response = await fetch(proxyRequest, { redirect: 'manual' })
+        if (response.status >= 300 && response.status < 400) {
+          const location = response.headers.get('Location')
+          if (!location || new URL(location, target).origin !== target.origin) return errorResponse(502, '上游跨域重定向已拒绝', corsHeaders)
+        }
 
         // 复制响应头并添加 CORS
         const responseHeaders = new Headers(response.headers)
-        Object.entries(CORS_HEADERS).forEach(([key, value]) => {
+        Object.entries(corsHeaders).forEach(([key, value]) => {
           responseHeaders.set(key, value)
         })
 
@@ -131,23 +226,25 @@ export default {
           status: 404,
           headers: {
             'Content-Type': 'application/json',
-            ...CORS_HEADERS,
+            ...corsHeaders,
           },
         }
       )
     } catch (error) {
-      console.error('Proxy error:', error)
+      const unauthorized = error instanceof Error && error.message === '代理访问头无效'
+      const tooLarge = error instanceof Error && error.message === 'PROXY_REQUEST_TOO_LARGE'
+      if (!unauthorized && !tooLarge) console.error('Proxy error:', error)
 
       return new Response(
         JSON.stringify({
-          error: 'Internal server error',
+          error: unauthorized ? 'Unauthorized' : tooLarge ? 'Request too large' : 'Internal server error',
           message: error instanceof Error ? error.message : 'Unknown error',
         }),
         {
-          status: 500,
+          status: unauthorized ? 401 : tooLarge ? 413 : 500,
           headers: {
             'Content-Type': 'application/json',
-            ...CORS_HEADERS,
+            ...corsHeaders,
           },
         }
       )

@@ -7,7 +7,7 @@
     "deploy": "wrangler deploy --config wrangler.toml",
     "dev:proxy": "wrangler dev --config wrangler-proxy.toml",
     "deploy:proxy": "wrangler deploy --config wrangler-proxy.toml",
-    "test:contract": "node scripts/verify-content-service.mjs"
+    "test:contract": "node scripts/verify-content-service.mjs && node scripts/verify-ai-proxy.mjs"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20241218.0",

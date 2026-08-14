@@ -13,7 +13,15 @@
 
 Cnote Web 应用是一个纯静态应用，可以部署到任何静态托管服务。
 
-### 方式 1: GitHub Pages (推荐)
+### GitHub Pages（当前版本尚未完成适配）
+
+当前仓库使用浏览器历史路由，且构建配置尚未处理 GitHub Pages 项目子路径和
+页面刷新回退。直接把 `web/dist` 发布到 `https://用户名.github.io/Cnote/`
+可能出现资源 404 或刷新后空白。完成专门的 Pages 适配和验证前，不要把下面的
+工作流作为生产部署方案；当前可优先使用 Vercel 或 Cloudflare Pages。
+
+<details>
+<summary>待适配后使用的 GitHub Actions 参考</summary>
 
 #### 自动部署 (GitHub Actions)
 
@@ -102,9 +110,11 @@ npm install -g gh-pages
 gh-pages -d dist
 ```
 
+</details>
+
 ---
 
-### 方式 2: Vercel
+### 方式 1: Vercel
 
 1. **连接仓库**
 
@@ -133,7 +143,7 @@ gh-pages -d dist
 
 ---
 
-### 方式 3: Cloudflare Pages
+### 方式 2: Cloudflare Pages
 
 1. **安装 Wrangler**
 
@@ -170,7 +180,7 @@ Environment Variables 中添加 `VITE_SCRAPER_URL`。
 
 ---
 
-### 方式 4: Netlify
+### 方式 3: Netlify
 
 1. **连接仓库**
 
@@ -216,7 +226,7 @@ npx wrangler login
 
 ---
 
-### 部署内容解析服务
+### 内容解析 Worker：无 Key 快速部署
 
 1. **进入 Workers 目录**
 
@@ -225,29 +235,84 @@ cd workers
 npm install
 ```
 
-2. **本地测试**
+2. **登录并部署**
 
 ```bash
-npm run dev
-```
-
-访问 http://localhost:8787/v1/health 验证。
-
-3. **部署到生产**
-
-```bash
+npx wrangler login
 npm run deploy
 ```
 
-4. **获取 Worker URL**
+部署成功后会显示类似以下 URL：
 
-部署成功后会显示 URL，例如:
-```
+```text
 https://cnote-content-service.your-subdomain.workers.dev
 ```
 
-在 Cnote 中打开“设置 → 内容解析服务”，测试并保存此 URL。可选的
-`CN_CONTENT_TOKEN` 和 `SCRAPER_ALLOWED_ORIGINS` 详见 `workers/README.md`。
+在 Cnote 中打开“设置 → 内容解析服务”，填写该 URL，Key 留空，然后测试并保存。
+无 Key 是默认模式，适合个人使用和快速部署；公开 URL 可能被他人调用，配额风险由部署者承担。
+
+### 内容解析 Worker：Bearer Key 快速部署
+
+先完成上一节的安装和登录，然后执行：
+
+```bash
+npx wrangler secret put CN_CONTENT_TOKEN
+npm run deploy
+```
+
+Wrangler 提示输入值时，填写自行生成的随机 Key。部署后，在 Cnote 的“设置 →
+内容解析服务”中填写 Worker URL 和同一个 Key。客户端会发送：
+
+```http
+Authorization: Bearer YOUR_RANDOM_KEY
+```
+
+如需恢复无 Key 模式，删除 Secret 后重新部署：
+
+```bash
+npx wrangler secret delete CN_CONTENT_TOKEN
+npm run deploy
+```
+
+### AI CORS 代理：可选自定义请求头
+
+AI 代理与内容解析 Worker 是两个独立服务。仅当 AI 服务商不允许浏览器直接请求，
+且你愿意自行承担代理流量和密钥传输风险时部署：
+
+```bash
+cd workers
+npm install
+npx wrangler login
+npm run deploy:proxy
+```
+
+代理地址格式为：
+
+```text
+https://cnote-ai-proxy.your-subdomain.workers.dev/proxy/{provider}/{endpoint}
+```
+
+代理仅接受 `GET`、`POST` 和浏览器预检请求，单次请求体上限为 20 MiB。
+允许的上游路径为模型列表、Chat Completions、Responses、Anthropic Messages，
+以及 Gemini OpenAI 兼容的模型列表和 Chat Completions；其他路径会被拒绝。
+
+默认不要求额外的代理访问头。需要简单防滥用时，同时配置请求头名称和值：
+
+```bash
+npx wrangler secret put CN_PROXY_HEADER_NAME --config wrangler-proxy.toml
+npx wrangler secret put CN_PROXY_HEADER_VALUE --config wrangler-proxy.toml
+npm run deploy:proxy
+```
+
+例如分别输入 `X-Cnote-Proxy-Key` 和一个随机 Key，调用时附加：
+
+```http
+X-Cnote-Proxy-Key: YOUR_RANDOM_KEY
+```
+
+两个变量必须同时配置。只有调用端能够附加自定义请求头时才启用此保护；Cnote
+发布站点不会内置维护者或部署者的代理 URL、Key。AI 服务商的 API Key 仍通过
+`Authorization`、`x-api-key` 等官方请求头传给上游。
 
 AI API 代理不是应用的默认组件。若某个 AI 渠道没有提供浏览器 CORS 支持，请在
 “设置 → 渠道”填写你自己部署并信任的中转地址；不要把 API Key 发送到公共代理。
@@ -374,7 +439,7 @@ curl -X POST https://your-proxy-url/proxy/openai/v1/chat/completions \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer YOUR_OPENAI_KEY" \
   -d '{
-    "model": "gpt-3.5-turbo",
+    "model": "YOUR_MODEL_ID",
     "messages": [{"role": "user", "content": "Hello"}]
   }'
 ```
@@ -383,10 +448,10 @@ curl -X POST https://your-proxy-url/proxy/openai/v1/chat/completions \
 
 ```bash
 # 健康检查
-curl https://your-scraper-url/health
+curl https://your-scraper-url/v1/health
 
 # 测试网页抓取
-curl -X POST https://your-scraper-url/scrape \
+curl -X POST https://your-scraper-url/v1/web/extract \
   -H "Content-Type: application/json" \
   -d '{"url": "https://example.com"}'
 ```
@@ -564,7 +629,8 @@ npm run build
 
 1. **环境变量**
    - 不要在代码中硬编码 API URL
-   - 使用平台的 Secrets 管理敏感信息
+   - 使用平台的 Secrets 管理 Worker 访问 Key
+   - 不要把 AI 提供商 API Key 写入前端构建变量或仓库
 
 2. **CORS 配置**
    - Workers 已配置允许所有来源
@@ -585,8 +651,9 @@ npm run build
 ### 数据备份
 
 用户数据存储在浏览器本地:
-- 提供导出功能让用户备份 Flows
-- 定期提醒用户导出重要数据
+- 在控制台使用 Flow 卡片菜单中的“备份”创建 `.cnote.zip` 完整备份
+- 完整备份包含该 Flow 引用的本地资源；单个资源超过 500 MiB 时会拒绝备份
+- 画板中的 JSON 导出只包含工作流结构，不包含本地文件
 
 ### 代码备份
 

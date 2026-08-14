@@ -1,5 +1,7 @@
 // API 配置类型
-export type ProtocolType = 'responses' | 'messages' | 'chatCompletions'
+export type ProtocolType = 'responses' | 'messages' | 'chatCompletions' | 'gemini'
+export type APIWebSearchMode = 'auto' | 'on' | 'off'
+export type APIReasoningLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max'
 
 export interface ProviderConfig {
   id: string
@@ -7,6 +9,7 @@ export interface ProviderConfig {
   baseURL: string
   protocol: ProtocolType
   models: ModelConfig[]
+  extraHeaders?: Record<string, string>
 }
 
 export interface ModelConfig {
@@ -41,6 +44,8 @@ export interface ChatCompletionRequest {
   top_p?: number
   frequency_penalty?: number
   presence_penalty?: number
+  web_search?: APIWebSearchMode
+  reasoning_effort?: APIReasoningLevel
 }
 
 export interface ResponsesAPIRequest {
@@ -120,4 +125,5 @@ export const API_PROTOCOLS: Record<ProtocolType, string> = {
   responses: '/v1/responses',
   messages: '/v1/messages',
   chatCompletions: '/v1/chat/completions',
+  gemini: '/v1beta/models/{model}:generateContent',
 }

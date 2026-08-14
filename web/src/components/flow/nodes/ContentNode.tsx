@@ -74,13 +74,7 @@ function SocialMediaCarousel({ items, activeIndex, onActiveIndexChange, resolveM
   const index = Math.min(Math.max(activeIndex, 0), items.length - 1)
   const active = items[index]
   const activeUrl = active.type === 'video'
-    ? (() => {
-        try {
-          return /(?:^|\.)xhscdn\.(?:com|net)$/i.test(new URL(active.item.resource.url).hostname)
-            ? getContentServiceClient('social').xiaohongshuMediaUrl(active.item.resource.url)
-            : resolveMediaUrl(active.item.resource.url)
-        } catch { return resolveMediaUrl(active.item.resource.url) }
-      })()
+    ? resolveMediaUrl(active.item.resource.url)
     : resolveMediaUrl(active.item.resource.url)
   const previous = () => onActiveIndexChange((index - 1 + items.length) % items.length)
   const next = () => onActiveIndexChange((index + 1) % items.length)
@@ -230,13 +224,15 @@ export const ContentLeafNode = memo(({ id, data, selected }: NodeProps<ContentNo
       return
     }
     let active = true
+    const controller = new AbortController()
     const objectUrls: string[] = []
     void (async () => {
       try {
         const client = getContentServiceClient('social')
         const entries = await Promise.all(proxied.map(async (url) => {
           try {
-            const blob = await client.fetchXiaohongshuMedia(url)
+            const blob = await client.fetchXiaohongshuMedia(url, { signal: controller.signal })
+            if (!active) return null
             const objectUrl = URL.createObjectURL(blob)
             objectUrls.push(objectUrl)
             return [url, objectUrl] as const
@@ -251,6 +247,7 @@ export const ContentLeafNode = memo(({ id, data, selected }: NodeProps<ContentNo
     })()
     return () => {
       active = false
+      controller.abort()
       objectUrls.forEach((objectUrl) => URL.revokeObjectURL(objectUrl))
     }
   }, [proxyMediaUrls])

@@ -25,6 +25,11 @@ After deploying your own copy, its usage is:
 https://YOUR_AI_PROXY.workers.dev/proxy/{provider}/{endpoint}
 ```
 
+The proxy accepts only `GET`, `POST`, and CORS preflight requests. Request
+bodies are limited to 20 MiB. Its endpoint allowlist covers model listing,
+Chat Completions, Responses, Anthropic Messages, and the Gemini OpenAI-compatible
+model/chat paths; other upstream paths are rejected.
+
 Example:
 ```bash
 curl -X POST https://YOUR_AI_PROXY.workers.dev/proxy/openai/v1/chat/completions \
@@ -33,19 +38,42 @@ curl -X POST https://YOUR_AI_PROXY.workers.dev/proxy/openai/v1/chat/completions 
   -d '{"model":"gpt-4","messages":[{"role":"user","content":"Hello"}]}'
 ```
 
+Deploy it independently with `npm run deploy:proxy`. To require a custom
+request header, configure both variables; leaving both unset keeps the proxy
+unprotected:
+
+```bash
+npx wrangler secret put CN_PROXY_HEADER_NAME --config wrangler-proxy.toml
+npx wrangler secret put CN_PROXY_HEADER_VALUE --config wrangler-proxy.toml
+npm run deploy:proxy
+```
+
+For example, store `X-Cnote-Proxy-Key` as the name and a random secret as the
+value, then include `X-Cnote-Proxy-Key: YOUR_SECRET` in every request. The
+header name and value must be configured together. Only enable this mode when
+your calling client can add the custom header.
+
 ### 2. Content Service (`src/scraper.ts`)
 Provides web content extraction and YouTube subtitle fetching. It does not
 proxy AI API requests and does not bypass login-gated, private, or blocked
 content.
 
-Deploy it to your own Cloudflare account:
+Deploy it to your own Cloudflare account without a Key (the default):
 
 ```bash
 npx wrangler login
 npm run deploy
-# Optional abuse protection:
-npx wrangler secret put CN_CONTENT_TOKEN
 ```
+
+Or require a Bearer Key:
+
+```bash
+npx wrangler secret put CN_CONTENT_TOKEN
+npm run deploy
+```
+
+Enter a random secret at the prompt, then save the same value in Cnote → 设置 →
+内容解析服务. Requests must carry `Authorization: Bearer YOUR_SECRET`.
 
 Then paste the resulting `workers.dev` URL into Cnote → 设置 → 内容解析服务.
 

@@ -38,7 +38,7 @@ export const CONTENT_FILE_ACCEPT_BY_CATEGORY: Record<ContentCategory, string> = 
   video: 'video/*,audio/*,.mp4,.webm,.mov,.m4v,.mp3,.m4a,.aac,.wav,.flac,.oga',
   social: '',
   document: '.txt,.md,.markdown,.pdf,.docx,text/plain,text/markdown,application/pdf',
-  data: '.csv,.tsv,.xlsx,.xls,text/csv,text/tab-separated-values',
+  data: '.csv,.tsv,.xlsx,text/csv,text/tab-separated-values',
   presentation: '.ppt,.pptx,application/vnd.ms-powerpoint,application/vnd.openxmlformats-officedocument.presentationml.presentation',
   mindmap: '.md,.markdown,.xmind,.mindnode,.pos,text/markdown',
   image: 'image/*',
@@ -349,12 +349,11 @@ async function parseDocx(blob: Blob): Promise<DocumentPayload> {
 }
 
 async function parseWorkbook(blob: Blob): Promise<DataPayload> {
-  const XLSX = await import('xlsx')
-  const workbook = XLSX.read(await blob.arrayBuffer(), { type: 'array', cellDates: true })
-  const sheets = workbook.SheetNames.map((name) => {
-    const rows = XLSX.utils.sheet_to_json<unknown[]>(workbook.Sheets[name], { header: 1, raw: false, defval: '' })
-    const columns = (rows[0] || []).map((value, index) => String(value || `列 ${index + 1}`))
-    const dataRows = rows.slice(1)
+  const { default: readXlsxFile } = await import('read-excel-file/browser')
+  const workbook = await readXlsxFile(blob)
+  const sheets = workbook.map(({ sheet: name, data: rows }) => {
+    const columns = (rows[0] || []).map((value, index) => String(value ?? `列 ${index + 1}`))
+    const dataRows = rows.slice(1).map((row) => row.map((value) => value instanceof Date ? value.toISOString() : value ?? ''))
     return { name, columns, rows: dataRows.slice(0, 200), totalRows: dataRows.length, truncated: dataRows.length > 200 }
   })
   return { kind: 'data', sheets }
@@ -378,7 +377,10 @@ function detectFile(file: Blob, fileName: string, hint?: ContentCategory) {
   if (mime.startsWith('audio/') || /^(mp3|m4a|aac|wav|flac|oga|ogg)$/.test(ext)) return { category: 'video' as const, subtype: 'podcast' as const }
   if (mime === 'application/pdf' || ext === 'pdf') return { category: 'document' as const, subtype: 'pdf' as const }
   if (ext === 'docx' || mime.includes('wordprocessingml')) return { category: 'document' as const, subtype: 'docx' as const }
-  if (ext === 'xlsx' || ext === 'xls' || mime.includes('spreadsheet')) return { category: 'data' as const, subtype: 'xlsx' as const }
+  if (ext === 'xls' || mime === 'application/vnd.ms-excel') {
+    throw Object.assign(new Error('旧式 XLS 文件不再直接解析，请先另存为 XLSX 后重新导入。'), { code: 'UNSUPPORTED_TYPE' })
+  }
+  if (ext === 'xlsx' || mime.includes('spreadsheetml')) return { category: 'data' as const, subtype: 'xlsx' as const }
   if (ext === 'csv' || mime === 'text/csv') return { category: 'data' as const, subtype: 'csv' as const }
   if (ext === 'tsv' || mime === 'text/tab-separated-values') return { category: 'data' as const, subtype: 'csv' as const }
   if (ext === 'ppt' || mime === 'application/vnd.ms-powerpoint') return { category: 'presentation' as const, subtype: 'ppt' as const }

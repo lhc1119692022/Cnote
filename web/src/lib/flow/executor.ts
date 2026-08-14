@@ -62,7 +62,7 @@ export interface ExecutionContext {
   inputs: Record<string, any>
   output?: any
   error?: string
-  status: 'pending' | 'running' | 'completed' | 'failed'
+  status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled'
   startTime?: number
   endTime?: number
 }
@@ -87,8 +87,9 @@ export class FlowExecutor {
   private aiClientResolver?: (channelId?: string) => AIClient | undefined
   private scraperClient?: ScraperClient
   private onNodeDataUpdate?: (nodeId: string, data: Record<string, unknown>) => void
+  private signal?: AbortSignal
 
-  constructor(nodes: FlowNode[], edges: FlowEdge[], aiClient?: AIClient, scraperClient?: ScraperClient, aiClientResolver?: (channelId?: string) => AIClient | undefined, onNodeDataUpdate?: (nodeId: string, data: Record<string, unknown>) => void) {
+  constructor(nodes: FlowNode[], edges: FlowEdge[], aiClient?: AIClient, scraperClient?: ScraperClient, aiClientResolver?: (channelId?: string) => AIClient | undefined, onNodeDataUpdate?: (nodeId: string, data: Record<string, unknown>) => void, signal?: AbortSignal) {
     this.nodes = nodes
     this.edges = edges
     this.contexts = new Map()
@@ -96,6 +97,11 @@ export class FlowExecutor {
     this.scraperClient = scraperClient
     this.aiClientResolver = aiClientResolver
     this.onNodeDataUpdate = onNodeDataUpdate
+    this.signal = signal
+  }
+
+  private throwIfAborted() {
+    if (this.signal?.aborted) throw new DOMException('执行已停止', 'AbortError')
   }
 
   /**
@@ -117,6 +123,7 @@ export class FlowExecutor {
 
       // 按顺序执行节点
       for (const nodeId of order) {
+        this.throwIfAborted()
         const node = this.nodes.find((n) => n.id === nodeId)
         if (!node) continue
 
@@ -128,10 +135,17 @@ export class FlowExecutor {
         contexts: this.contexts,
       }
     } catch (error) {
+      if (error instanceof DOMException && error.name === 'AbortError') {
+        this.contexts.forEach((context) => {
+          if (context.status === 'pending' || context.status === 'running') context.status = 'cancelled'
+        })
+      }
       return {
         success: false,
         contexts: this.contexts,
-        error: error instanceof Error ? error.message : 'Unknown error',
+        error: error instanceof DOMException && error.name === 'AbortError'
+          ? '执行已停止'
+          : error instanceof Error ? error.message : 'Unknown error',
       }
     }
   }
@@ -140,6 +154,7 @@ export class FlowExecutor {
    * 执行单个节点
    */
   private async executeNode(node: FlowNode): Promise<void> {
+    this.throwIfAborted()
     const context = this.contexts.get(node.id)!
     context.status = 'running'
     context.startTime = Date.now()
@@ -226,7 +241,7 @@ export class FlowExecutor {
       if (payload.provider === 'youtube' && this.scraperClient && payload.url && !payload.transcript) {
         const videoId = ScraperClient.extractVideoId(payload.url)
         if (videoId) {
-          const result = await this.scraperClient.fetchYouTubeSubtitles(videoId)
+          const result = await this.scraperClient.fetchYouTubeSubtitles(videoId, { signal: this.signal })
           return { ...payload, transcript: result.subtitles, input: mergedInput || undefined }
         }
       }
@@ -240,7 +255,7 @@ export class FlowExecutor {
     if (data.source?.kind === 'url' && data.source.provider === 'youtube' && this.scraperClient) {
       const videoId = ScraperClient.extractVideoId(data.source.normalizedUrl)
       if (videoId) {
-        const result = await this.scraperClient.fetchYouTubeSubtitles(videoId)
+        const result = await this.scraperClient.fetchYouTubeSubtitles(videoId, { signal: this.signal })
         return { kind: 'video', provider: 'youtube', url: data.source.normalizedUrl, transcript: result.subtitles, input: mergedInput || undefined }
       }
     }
@@ -261,6 +276,9 @@ export class FlowExecutor {
       : this.aiClient
     if (!aiClient) {
       throw new Error('AI client not initialized')
+    }
+    if (!data.model?.trim()) {
+      throw new Error('AI 节点尚未选择模型')
     }
 
     const resolvedEntries = await buildAIContextEntries(this.nodes, Object.keys(inputs))
@@ -294,11 +312,13 @@ export class FlowExecutor {
     ], data.maxTokens || 258000, data.autoCompressThreshold || 0.7)
 
     return aiClient.complete({
-      model: data.model || 'gpt-3.5-turbo',
+      model: data.model,
       messages,
       temperature: 1,
       max_tokens: 4096,
-    })
+      web_search: data.webSearch || 'auto',
+      reasoning_effort: data.reasoningLevel || 'medium',
+    }, this.signal)
   }
 
   /**
@@ -335,7 +355,7 @@ export class FlowExecutor {
     }
 
     try {
-      const result = await this.scraperClient.scrapeWeb(url)
+      const result = await this.scraperClient.scrapeWeb(url, { signal: this.signal })
       const snapshot = { url, title: result.title, text: result.content, fetchedAt: Date.now() }
       this.onNodeDataUpdate?.(node.id, { snapshot })
       return outputMode === 'text'
@@ -383,6 +403,9 @@ export class FlowExecutor {
           break
         case 'running':
           stats.running++
+          break
+        case 'cancelled':
+          stats.pending++
           break
       }
 

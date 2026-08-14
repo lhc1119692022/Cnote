@@ -2,13 +2,16 @@ import { useCallback, useEffect, useRef, useState, type ChangeEvent } from 'reac
 import {
   Check,
   ChevronDown,
+  Copy,
   Database,
   Download,
+  ExternalLink,
   HardDrive,
   KeyRound,
   Pencil,
   Plus,
   RefreshCw,
+  ShieldCheck,
   Trash2,
   Upload,
   X,
@@ -17,7 +20,8 @@ import { AppShell } from '@/components/layout/AppShell'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { ContentServiceSettings } from '@/components/settings/ContentServiceSettings'
-import { AIClient, PROVIDERS, getProvider, validateAPIKey, type ProtocolType } from '@/lib/api'
+import { AIClient, PROVIDERS, getProvider, inferProviderId, validateAPIKey, type ProtocolType } from '@/lib/api'
+import { copyText, createAccessSecret, createCloudflareWorkerScript } from '@/lib/cloudflare-worker-templates'
 import { localForageStorage } from '@/lib/localforage-storage'
 import { useAIStore, type APIChannel, type APIChannelInput } from '@/stores/use-ai-store'
 import { useFlowStore } from '@/stores/use-flow-store'
@@ -48,6 +52,7 @@ const PROTOCOL_OPTIONS: { value: ProtocolType; label: string }[] = [
   { value: 'responses', label: 'Responses' },
   { value: 'messages', label: 'Messages' },
   { value: 'chatCompletions', label: 'Chat Completions' },
+  { value: 'gemini', label: 'Gemini 原生' },
 ]
 
 const formatBytes = (bytes: number) => {
@@ -72,6 +77,7 @@ export function APIKeysManager() {
     replaceAPIKeys,
     initializeDefaultChannels,
     getAPIKey,
+    getProxyHeaderValue,
   } = useAIStore()
   const flowCount = useFlowStore((state) => state.flows.length)
   const sourceCount = useSourceStore((state) => state.sources.length)
@@ -84,7 +90,11 @@ export function APIKeysManager() {
   const [providerId, setProviderId] = useState('custom')
   const [baseURL, setBaseURL] = useState('')
   const [protocol, setProtocol] = useState<ProtocolType>('responses')
+  const [showProtocolMenu, setShowProtocolMenu] = useState(false)
   const [apiKey, setAPIKey] = useState('')
+  const [proxyHeaderName, setProxyHeaderName] = useState('')
+  const [proxyHeaderValue, setProxyHeaderValue] = useState('')
+  const [proxyScriptMessage, setProxyScriptMessage] = useState('')
   const [modelIds, setModelIds] = useState<string[]>([])
   const [availableModelIds, setAvailableModelIds] = useState<string[]>([])
   const [customModelId, setCustomModelId] = useState('')
@@ -94,8 +104,13 @@ export function APIKeysManager() {
   const [storageBreakdown, setStorageBreakdown] = useState<StorageBreakdown>({ flows: 0, templates: 0, sources: 0, channels: 0 })
   const importInputRef = useRef<HTMLInputElement>(null)
   const modelRequestRef = useRef<Promise<string[]> | null>(null)
+  const protocolMenuRef = useRef<HTMLDivElement>(null)
 
-  const selectedProvider = getProvider(providerId) || PROVIDERS[0]
+  const selectedProvider = getProvider(providerId) || getProvider('custom') || PROVIDERS[0]
+  const inferredProxyProviderId = inferProviderId(providerId, baseURL, modelIds, protocol)
+  const proxyProviderPath = ['openai', 'anthropic', 'deepseek', 'google'].includes(inferredProxyProviderId)
+    ? inferredProxyProviderId
+    : 'openai'
 
   const refreshStorageEstimate = useCallback(async () => {
     const [estimate, flows, templates, sources, channels] = await Promise.all([
@@ -114,17 +129,36 @@ export function APIKeysManager() {
   }, [initializeDefaultChannels])
 
   useEffect(() => {
+    if (!showProtocolMenu) return
+    const closeProtocolMenu = (event: PointerEvent | KeyboardEvent) => {
+      if (event instanceof KeyboardEvent && event.key !== 'Escape') return
+      if (event instanceof PointerEvent && protocolMenuRef.current?.contains(event.target as Node)) return
+      setShowProtocolMenu(false)
+    }
+    document.addEventListener('pointerdown', closeProtocolMenu, true)
+    document.addEventListener('keydown', closeProtocolMenu, true)
+    return () => {
+      document.removeEventListener('pointerdown', closeProtocolMenu, true)
+      document.removeEventListener('keydown', closeProtocolMenu, true)
+    }
+  }, [showProtocolMenu])
+
+  useEffect(() => {
     if (activeTab === 'storage') void refreshStorageEstimate()
   }, [activeTab, refreshStorageEstimate])
 
   const resetChannelDialog = () => {
     setShowChannelDialog(false)
+    setShowProtocolMenu(false)
     setEditingChannelId(null)
     setChannelName('')
     setProviderId('custom')
     setBaseURL('')
     setProtocol('responses')
     setAPIKey('')
+    setProxyHeaderName('')
+    setProxyHeaderValue('')
+    setProxyScriptMessage('')
     setModelIds([])
     setAvailableModelIds([])
     setCustomModelId('')
@@ -137,13 +171,16 @@ export function APIKeysManager() {
   }
 
   const openEditChannelDialog = (channel: APIChannel) => {
-    const provider = getProvider(channel.providerId) || PROVIDERS[0]
+    const provider = getProvider(channel.providerId) || getProvider('custom') || PROVIDERS[0]
     setEditingChannelId(channel.id)
     setChannelName(channel.name)
-    setProviderId(provider.id)
+    setProviderId(channel.providerId)
     setBaseURL(channel.baseURL || provider.baseURL)
     setProtocol(channel.protocol || provider.protocol)
     setAPIKey('')
+    setProxyHeaderName(channel.proxyHeaderName || '')
+    setProxyHeaderValue('')
+    setProxyScriptMessage('')
     setModelIds(channel.modelIds || [])
     setAvailableModelIds(channel.modelIds || [])
     setCustomModelId('')
@@ -164,18 +201,42 @@ export function APIKeysManager() {
     setCustomModelId('')
   }
 
+  const generateProxyHeaders = () => {
+    setProxyHeaderName('X-Cnote-Access')
+    setProxyHeaderValue(createAccessSecret())
+    setProxyScriptMessage('已生成访问请求头。复制脚本时会自动写入；部署后请把同样的名称和值保存在当前渠道。')
+  }
+
+  const copyProxyWorkerScript = async () => {
+    try {
+      const source = await createCloudflareWorkerScript('ai-proxy', {
+        CNOTE_PROXY_HEADER_NAME: proxyHeaderName.trim(),
+        CNOTE_PROXY_HEADER_VALUE: proxyHeaderValue || (editingChannelId ? getProxyHeaderValue(editingChannelId) || '' : ''),
+      })
+      await copyText(source)
+      setProxyScriptMessage('预制脚本已复制。切换到 Cloudflare 编辑器，全部替换后点击“部署”。')
+    } catch (error) {
+      setProxyScriptMessage(error instanceof Error ? error.message : '复制失败，请检查浏览器剪贴板权限。')
+    }
+  }
+
   const requestModels = async () => {
     const key = apiKey.trim() || (editingChannelId ? getAPIKey(editingChannelId) || '' : '')
     const endpoint = baseURL.trim().replace(/\/$/, '')
     if (!endpoint) throw new Error('请输入接口地址')
-    if (providerId !== 'ollama' && !key) throw new Error('请先输入 API Key')
+    if (!key) throw new Error('请先输入 API Key')
 
+    const inferredProviderId = inferProviderId(providerId, endpoint, modelIds, protocol)
+    const inferredProvider = getProvider(inferredProviderId) || selectedProvider
     const client = new AIClient({
-      id: providerId,
-      name: selectedProvider.name,
+      id: inferredProviderId,
+      name: inferredProvider.name,
       baseURL: endpoint,
       protocol,
       models: [],
+      extraHeaders: proxyHeaderName.trim() && (proxyHeaderValue || (editingChannelId ? getProxyHeaderValue(editingChannelId) : ''))
+        ? { [proxyHeaderName.trim()]: proxyHeaderValue || getProxyHeaderValue(editingChannelId || '') || '' }
+        : undefined,
     }, key)
     return client.listModels()
   }
@@ -192,7 +253,7 @@ export function APIKeysManager() {
       setConnectionMessage(ids.length ? `已拉取 ${ids.length} 个模型，请选择要启用的模型` : '连接成功，但接口没有返回模型')
     } catch (error) {
       const message = error instanceof TypeError
-        ? '连接失败，可能是接口未允许浏览器跨域请求。请改用服务商支持的浏览器端接口，或填写你自己信任的中转地址。'
+        ? '连接失败，接口可能未允许浏览器跨域请求。请展开下方“部署自己的 AI 代理”教程。'
         : error instanceof Error ? error.message : '拉取模型失败'
       setConnectionMessage(message)
     } finally {
@@ -202,20 +263,25 @@ export function APIKeysManager() {
   }
 
   const handleSaveChannel = () => {
-    const normalizedName = channelName.trim() || `${selectedProvider.name} 渠道`
     const normalizedBaseURL = baseURL.trim().replace(/\/$/, '')
-    const requiresKey = providerId !== 'ollama'
+    const normalizedProviderId = inferProviderId(providerId, normalizedBaseURL, modelIds, protocol)
+    const normalizedName = channelName.trim() || `${getProvider(normalizedProviderId)?.name || '自定义'} 渠道`
+    const normalizedProxyHeaderName = proxyHeaderName.trim()
 
     if (!normalizedBaseURL) {
       alert('请输入接口地址')
       return
     }
-    if (!editingChannelId && requiresKey && !apiKey.trim()) {
+    if (!editingChannelId && !apiKey.trim()) {
       alert('请输入 API Key')
       return
     }
-    if (apiKey.trim() && !validateAPIKey(providerId, apiKey.trim())) {
+    if (apiKey.trim() && !validateAPIKey(normalizedProviderId, apiKey.trim())) {
       alert('API Key 格式无效')
+      return
+    }
+    if (!editingChannelId && normalizedProxyHeaderName && !proxyHeaderValue) {
+      alert('请输入代理请求头值')
       return
     }
     if (modelIds.length === 0) {
@@ -225,18 +291,22 @@ export function APIKeysManager() {
 
     if (editingChannelId) {
       updateAPIKey(editingChannelId, {
-        providerId,
+        providerId: normalizedProviderId,
         name: normalizedName,
         baseURL: normalizedBaseURL,
         modelIds,
         protocol,
+        proxyHeaderName: normalizedProxyHeaderName || undefined,
+        ...(!normalizedProxyHeaderName ? { proxyHeaderValue: '' } : proxyHeaderValue ? { proxyHeaderValue } : {}),
         ...(apiKey.trim() ? { apiKey: apiKey.trim() } : {}),
       })
     } else {
-      addAPIKey(providerId, apiKey.trim(), normalizedName, {
+      addAPIKey(normalizedProviderId, apiKey.trim(), normalizedName, {
         baseURL: normalizedBaseURL,
         modelIds,
         protocol,
+        proxyHeaderName: normalizedProxyHeaderName || undefined,
+        proxyHeaderValue,
       })
     }
     resetChannelDialog()
@@ -254,6 +324,8 @@ export function APIKeysManager() {
         baseURL: channel.baseURL,
         modelIds: channel.modelIds,
         protocol: channel.protocol,
+        proxyHeaderName: channel.proxyHeaderName,
+        proxyHeaderValue: getProxyHeaderValue(channel.id) || undefined,
       })),
     }
     const blob = new Blob([JSON.stringify(configuration, null, 2)], { type: 'application/json' })
@@ -421,19 +493,64 @@ export function APIKeysManager() {
           <DialogHeader><DialogTitle className="text-base">{editingChannelId ? '编辑渠道' : '新增渠道'}</DialogTitle></DialogHeader>
           <div className="grid gap-4" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))' }}>
             <label className="block text-[13px] text-muted-foreground"><span className="mb-2 block font-medium">渠道名称</span><input autoFocus value={channelName} onChange={(event) => setChannelName(event.target.value)} placeholder="如：我的 OpenAI" className="h-10 w-full rounded-lg border border-border bg-background px-3 text-foreground outline-none focus:border-primary focus:ring-2 focus:ring-ring/20" /></label>
-            <label className="block text-[13px] text-muted-foreground">
+            <div ref={protocolMenuRef} className="relative block text-[13px] text-muted-foreground">
               <span className="mb-2 block font-medium">API 协议</span>
-              <span className="relative block">
-                <select value={protocol} onChange={(event) => setProtocol(event.target.value as ProtocolType)} className="h-10 w-full appearance-none rounded-lg border border-border bg-background pl-3 pr-10 text-foreground outline-none focus:border-primary focus:ring-2 focus:ring-ring/20">{PROTOCOL_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select>
-                <ChevronDown className="pointer-events-none absolute right-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-              </span>
-            </label>
+              <button type="button" aria-haspopup="menu" aria-expanded={showProtocolMenu} onClick={() => setShowProtocolMenu((value) => !value)} className="flex h-10 w-full items-center justify-between gap-3 rounded-lg border border-border bg-background px-3 text-left text-foreground outline-none hover:bg-muted/50 focus-visible:ring-2 focus-visible:ring-ring/20">
+                <span>{PROTOCOL_OPTIONS.find((option) => option.value === protocol)?.label || protocol}</span>
+                <ChevronDown className={`h-4 w-4 shrink-0 text-muted-foreground transition-transform ${showProtocolMenu ? 'rotate-180' : ''}`} />
+              </button>
+              {showProtocolMenu && (
+                <div role="menu" className="absolute left-0 right-0 top-full z-50 mt-1.5 space-y-1 rounded-lg border border-border bg-card p-1.5 shadow-xl">
+                  {PROTOCOL_OPTIONS.map((option) => (
+                    <button key={option.value} type="button" role="menuitemradio" aria-checked={protocol === option.value} onClick={() => { setProtocol(option.value); if (option.value === 'gemini') { setProviderId('google'); if (!baseURL.trim()) setBaseURL('https://generativelanguage.googleapis.com') } setShowProtocolMenu(false) }} className={`flex w-full items-center justify-between gap-3 rounded-lg px-3 py-2.5 text-left text-xs text-foreground hover:bg-muted ${protocol === option.value ? 'bg-muted font-medium' : ''}`}>
+                      <span>{option.label}</span>
+                      {protocol === option.value && <Check className="h-3.5 w-3.5 shrink-0" />}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
           <label className="mt-3 block text-[13px] text-muted-foreground"><span className="mb-2 block font-medium">接口地址</span><input value={baseURL} onChange={(event) => setBaseURL(event.target.value)} placeholder="https://api.openai.com" className="h-10 w-full rounded-lg border border-border bg-background px-3 text-foreground outline-none focus:border-primary focus:ring-2 focus:ring-ring/20" /></label>
           <div className="mt-4 text-[13px] text-muted-foreground">
             <span className="mb-2 block font-medium">API Key {editingChannelId && <span className="font-normal">（留空则保持不变）</span>}</span>
             <input type="password" value={apiKey} onChange={(event) => setAPIKey(event.target.value)} placeholder={editingChannelId ? '留空保持现有密钥' : '输入 API Key'} className="h-10 w-full rounded-lg border border-border bg-background px-3 text-foreground outline-none focus:border-primary focus:ring-2 focus:ring-ring/20" />
           </div>
+
+          <details className="mt-4 rounded-lg border border-border bg-muted/30 p-3.5">
+            <summary className="flex cursor-pointer list-none items-center justify-between gap-3 text-[13px] font-medium">
+              <span className="flex items-center gap-2"><ShieldCheck className="h-4 w-4 text-muted-foreground" />浏览器提示跨域？部署自己的 AI 代理</span>
+              <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground" />
+            </summary>
+            <div className="mt-3 space-y-3 text-[11px] leading-relaxed text-muted-foreground">
+              <p>直连是默认方式。只有服务商不允许网页直接访问时，才需要部署这个可选代理。不需要安装 npm 或命令行工具。</p>
+              <div className="rounded-lg border border-primary/25 bg-primary/5 p-3">
+                <h3 className="text-[12px] font-medium text-foreground">Cnote 还没有部署到 GitHub Pages 也可以继续</h3>
+                <p className="mt-1">这里不需要填写 Cnote 的网页域名。Worker 是一项独立服务，部署后 Cloudflare 会自动提供 <code className="text-foreground">workers.dev</code> 地址；当前本地运行的 Cnote 就能直接连接它。</p>
+              </div>
+              <ol className="space-y-2">
+                <li className="rounded-lg border border-border bg-background p-3"><span className="font-medium text-foreground">1. 打开 Cloudflare 控制台</span><p className="mt-1">登录后进入左侧 <strong>Workers 和 Pages</strong>，点击<strong>创建</strong>，选择 <strong>Worker</strong>，再点击<strong>部署</strong>。</p></li>
+                <li className="rounded-lg border border-border bg-background p-3"><span className="font-medium text-foreground">2. 打开在线编辑器</span><p className="mt-1">进入刚创建的 Worker，点击右上角<strong>编辑代码</strong>，删除编辑器中的示例内容。</p></li>
+                <li className="rounded-lg border border-border bg-background p-3"><span className="font-medium text-foreground">3. 生成配置并复制脚本</span><p className="mt-1">点击下方“生成访问请求头”，再点击“复制预制脚本”，把脚本全部粘贴到编辑器后点击<strong>部署</strong>。</p></li>
+              </ol>
+              <div className="rounded-lg border border-border bg-background p-3">
+                <div className="flex flex-wrap items-center justify-between gap-2"><div><h3 className="flex items-center gap-1.5 text-[12px] font-medium text-foreground"><ShieldCheck className="h-3.5 w-3.5" />访问请求头（推荐）</h3><p className="mt-1">名称和值会同时写入预制脚本，并用于 Cnote 请求代理时的身份校验。</p></div><Button type="button" variant="secondary" size="sm" className="gap-1.5" onClick={generateProxyHeaders}><ShieldCheck className="h-3.5 w-3.5" />生成访问请求头</Button></div>
+                <div className="mt-3 flex flex-wrap gap-2"><Button type="button" size="sm" className="gap-1.5" onClick={() => void copyProxyWorkerScript()}><Copy className="h-3.5 w-3.5" />复制预制脚本</Button><Button type="button" variant="secondary" size="sm" className="gap-1.5" onClick={() => window.open('https://dash.cloudflare.com/', '_blank', 'noopener,noreferrer')}><ExternalLink className="h-3.5 w-3.5" />打开 Cloudflare</Button></div>
+                {proxyScriptMessage && <p className="mt-2 text-[11px] text-foreground">{proxyScriptMessage}</p>}
+              </div>
+              <p>部署后会得到类似下面的 Worker 地址。按服务商追加路径：OpenAI 用 <code className="text-foreground">/proxy/openai</code>、Anthropic 用 <code className="text-foreground">/proxy/anthropic</code>、DeepSeek 用 <code className="text-foreground">/proxy/deepseek</code>、Gemini 用 <code className="text-foreground">/proxy/google</code>。</p>
+              <div className="rounded-lg border border-border bg-background p-3"><p className="mb-2 text-[11px]">当前渠道建议填写：</p><code className="block break-all rounded-md bg-muted/50 px-2.5 py-2 text-foreground">https://你的-worker-名称.你的-Cloudflare-子域.workers.dev/proxy/{proxyProviderPath}</code><p className="mt-2">不要照抄示例文字。请在 Worker 部署成功后复制 Cloudflare 显示的实际地址；这里的子域属于 Cloudflare，不是 GitHub Pages 域名。</p></div>
+              <div className="rounded-lg border border-border bg-background p-3"><h3 className="text-[12px] font-medium text-foreground">以后部署 GitHub Pages 时</h3><p className="mt-1">继续使用同一个 Worker 地址即可，不需要重新创建 Worker，也不需要修改预制脚本。</p></div>
+              <details className="rounded-lg border border-border bg-background p-3" open={Boolean(proxyHeaderName)}>
+                <summary className="cursor-pointer text-[12px] font-medium text-foreground">查看或手动修改访问请求头</summary>
+                <p className="mt-2">如果没有点击生成，也可以手动修改下面的名称和值；脚本与 Cnote 渠道中的两项必须完全一致。已有渠道的请求头值留空会保持不变。</p>
+                <div className="mt-3 grid gap-3" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))' }}>
+                  <label className="block text-[12px] text-muted-foreground"><span className="mb-1.5 block">请求头名称</span><input value={proxyHeaderName} onChange={(event) => setProxyHeaderName(event.target.value)} placeholder="如：X-Cnote-Access" className="h-9 w-full rounded-lg border border-border bg-background px-3 text-foreground outline-none focus:border-primary focus:ring-2 focus:ring-ring/20" /></label>
+                  <label className="block text-[12px] text-muted-foreground"><span className="mb-1.5 block">请求头值 {editingChannelId && <span>（留空保持不变）</span>}</span><input type="password" value={proxyHeaderValue} onChange={(event) => setProxyHeaderValue(event.target.value)} placeholder={editingChannelId ? '留空保持现有值' : '输入访问头值'} className="h-9 w-full rounded-lg border border-border bg-background px-3 text-foreground outline-none focus:border-primary focus:ring-2 focus:ring-ring/20" /></label>
+                </div>
+              </details>
+            </div>
+          </details>
 
           <div className="mt-5">
             <div className="flex items-center justify-between gap-3">

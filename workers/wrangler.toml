@@ -1,6 +1,7 @@
 name = "cnote-content-service"
 main = "src/scraper.ts"
 compatibility_date = "2024-12-01"
+compatibility_flags = ["global_fetch_strictly_public"]
 
 # Default configuration used by the Cloudflare Deploy Button. Each user deploys
 # this Worker into their own Cloudflare account and receives their own workers.dev URL.

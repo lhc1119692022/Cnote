@@ -1,7 +1,7 @@
 /**
- * API Key 加密存储
- * 使用 XOR 加密 + Base64 编码
- * 基于设备指纹作为密钥
+ * API Key 本地混淆存储
+ * 使用 XOR + Base64 避免直接以明文显示，不提供密码学保护
+ * 随机生成并保存在同一站点的设备标识仅作为混淆因子
  */
 
 /**
@@ -23,7 +23,7 @@ function getDeviceId(): string {
 }
 
 /**
- * XOR 加密/解密
+ * XOR 混淆/还原
  */
 function xorCipher(text: string, key: string): string {
   let result = ''
@@ -36,7 +36,7 @@ function xorCipher(text: string, key: string): string {
 }
 
 /**
- * 加密 API Key
+ * 混淆 API Key
  */
 export function encryptAPIKey(apiKey: string): string {
   const deviceId = getDeviceId()
@@ -45,7 +45,7 @@ export function encryptAPIKey(apiKey: string): string {
 }
 
 /**
- * 解密 API Key
+ * 还原 API Key
  */
 export function decryptAPIKey(encryptedKey: string): string {
   try {
