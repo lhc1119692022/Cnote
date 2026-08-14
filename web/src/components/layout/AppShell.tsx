@@ -31,7 +31,7 @@ export function AppShell({ children }: AppShellProps) {
       <aside className="w-[196px] shrink-0">
         <div className="flex h-full flex-col overflow-hidden rounded-xl border border-border bg-card shadow-[0_8px_28px_rgba(15,23,42,0.08)] dark:shadow-[0_12px_32px_rgba(0,0,0,0.3)]">
           <div className="flex h-14 shrink-0 items-center gap-2.5 border-b border-border px-4">
-            <img src="/icon.svg" alt="Cnote" className="h-7 w-7" />
+            <img src={`${import.meta.env.BASE_URL}icon.svg`} alt="Cnote" className="h-7 w-7" />
             <span className="text-sm font-semibold text-foreground">Cnote</span>
           </div>
 

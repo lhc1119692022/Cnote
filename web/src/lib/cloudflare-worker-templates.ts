@@ -1,8 +1,8 @@
 export type CloudflareWorkerTemplate = 'ai-proxy' | 'content-service'
 
 const templatePaths: Record<CloudflareWorkerTemplate, string> = {
-  'ai-proxy': '/cloudflare-worker-scripts/ai-proxy.js',
-  'content-service': '/cloudflare-worker-scripts/content-service.js',
+  'ai-proxy': `${import.meta.env.BASE_URL}cloudflare-worker-scripts/ai-proxy.js`,
+  'content-service': `${import.meta.env.BASE_URL}cloudflare-worker-scripts/content-service.js`,
 }
 
 function randomBytes(length: number) {

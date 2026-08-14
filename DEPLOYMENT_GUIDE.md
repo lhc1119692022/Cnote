@@ -13,104 +13,42 @@
 
 Cnote Web 应用是一个纯静态应用，可以部署到任何静态托管服务。
 
-### GitHub Pages（当前版本尚未完成适配）
+### GitHub Pages
 
-当前仓库使用浏览器历史路由，且构建配置尚未处理 GitHub Pages 项目子路径和
-页面刷新回退。直接把 `web/dist` 发布到 `https://用户名.github.io/Cnote/`
-可能出现资源 404 或刷新后空白。完成专门的 Pages 适配和验证前，不要把下面的
-工作流作为生产部署方案；当前可优先使用 Vercel 或 Cloudflare Pages。
+仓库已经包含 `.github/workflows/deploy-pages.yml`。推送到 `master` 后，GitHub
+Actions 会自动安装依赖、使用 `github-pages` 模式构建 `web/dist`，并通过
+GitHub Pages 官方部署 Action 发布站点。
 
-<details>
-<summary>待适配后使用的 GitHub Actions 参考</summary>
+项目页地址：
 
-#### 自动部署 (GitHub Actions)
-
-1. **创建部署工作流**
-
-创建 `.github/workflows/deploy.yml`:
-
-```yaml
-name: Deploy to GitHub Pages
-
-on:
-  push:
-    branches: [ master ]
-  workflow_dispatch:
-
-jobs:
-  build-and-deploy:
-    runs-on: ubuntu-latest
-    
-    steps:
-    - name: Checkout
-      uses: actions/checkout@v3
-    
-    - name: Setup Node.js
-      uses: actions/setup-node@v3
-      with:
-        node-version: '20'
-        cache: 'npm'
-        cache-dependency-path: web/package-lock.json
-    
-    - name: Install dependencies
-      run: |
-        cd web
-        npm ci
-    
-    - name: Build
-      run: |
-        cd web
-        npm run build
-      env:
-        # Optional. Leave empty when each user configures their own service.
-        VITE_SCRAPER_URL: ${{ secrets.VITE_SCRAPER_URL }}
-    
-    - name: Deploy to GitHub Pages
-      uses: peaceiris/actions-gh-pages@v3
-      with:
-        github_token: ${{ secrets.GITHUB_TOKEN }}
-        publish_dir: ./web/dist
-        cname: cnote.yourdomain.com  # 可选：自定义域名
+```text
+https://lhc1119692022.github.io/Cnote/
 ```
 
-2. **配置 GitHub Secrets**
+前端使用哈希路由，页面地址类似：
 
-进入仓库 Settings → Secrets and variables → Actions:
-- 可选添加 `VITE_SCRAPER_URL`: 你为该站点提供的默认内容解析服务 URL。
-  留空时，每位用户可在设置中连接自己部署的服务。
+```text
+https://lhc1119692022.github.io/Cnote/#/dashboard
+```
 
-3. **启用 GitHub Pages**
+这样在 GitHub Pages 上直接刷新 Dashboard、Flow 和设置页面时不会产生 SPA
+路由 404。Vite 的 `github-pages` 构建模式会自动给静态资源添加 `/Cnote/`
+前缀。
 
-进入仓库 Settings → Pages:
-- Source: 选择 "Deploy from a branch"
-- Branch: 选择 `gh-pages` 分支
-- 点击 Save
+首次部署时，在 GitHub 仓库的 **Settings → Pages** 中确认 **Source** 为
+**GitHub Actions**。后续只需推送到 `master`，无需维护 `gh-pages` 分支。
 
-4. **触发部署**
-
-推送代码到 master 分支即可自动部署。
-
-访问: `https://yourusername.github.io/Cnote/`
-
-#### 手动部署
+本地验证 Pages 构建：
 
 ```bash
 cd web
-
-# 安装依赖
-npm install
-
-# 构建
-npm run build
-
-# 安装 gh-pages 工具
-npm install -g gh-pages
-
-# 部署
-gh-pages -d dist
+npm ci
+npm run build -- --mode github-pages
 ```
 
-</details>
+可选的 `VITE_SCRAPER_URL` 只应填写公开的内容解析 Worker 地址，不要在任何
+`VITE_*` 变量中保存私钥。留空时，每位用户可以在 Cnote 设置中连接自己的
+内容解析服务。
 
 ---
 
@@ -569,13 +507,14 @@ Cloudflare Dashboard 提供:
 ### 更新前端
 
 **GitHub Pages (自动)**:
-推送代码到 master 分支即可自动部署
+推送代码到 `master` 分支即可触发 `.github/workflows/deploy-pages.yml`，无需
+手动维护 `gh-pages` 分支。
 
 **手动更新**:
 ```bash
 cd web
 npm run build
-gh-pages -d dist  # 或其他部署命令
+npm run build -- --mode github-pages
 ```
 
 ### 更新 Workers
