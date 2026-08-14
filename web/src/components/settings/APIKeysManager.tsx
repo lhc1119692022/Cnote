@@ -489,12 +489,14 @@ export function APIKeysManager() {
             <input type="password" value={apiKey} onChange={(event) => setAPIKey(event.target.value)} placeholder={editingChannelId ? '留空保持现有密钥' : '输入 API Key'} className="h-10 w-full rounded-lg border border-border bg-background px-3 text-foreground outline-none focus:border-primary focus:ring-2 focus:ring-ring/20" />
           </div>
 
-          <div className="mt-4 rounded-lg border border-border bg-muted/30 p-3.5">
-            <div className="flex flex-wrap items-start justify-between gap-3">
-              <div className="max-w-[390px]">
-                <h3 className="flex items-center gap-2 text-[13px] font-medium"><ShieldCheck className="h-4 w-4 text-muted-foreground" />浏览器提示跨域？</h3>
-                <p className="mt-1.5 text-[11px] leading-relaxed text-muted-foreground">直连失败时，可以部署自己的 AI 代理。完整部署步骤、可复制脚本、服务商路径和排错说明已放在 GitHub 文档中。</p>
-              </div>
+          <details className="group mt-4 rounded-lg border border-border bg-muted/30 p-3.5">
+            <summary className="flex cursor-pointer list-none items-center justify-between gap-3 text-[13px] font-medium">
+              <span className="flex items-center gap-2"><ShieldCheck className="h-4 w-4 text-muted-foreground" />浏览器提示跨域？</span>
+              <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground transition-transform group-open:rotate-180" />
+            </summary>
+
+            <div className="mt-3 flex flex-wrap items-start justify-between gap-3">
+              <p className="max-w-[390px] text-[11px] leading-relaxed text-muted-foreground">直连失败时，可以部署自己的 AI 代理。完整部署步骤、可复制脚本、服务商路径和排错说明已放在 GitHub 文档中。</p>
               <a href={AI_PROXY_WORKER_GUIDE_URL} target="_blank" rel="noreferrer" className={buttonVariants({ variant: 'secondary', size: 'sm', className: 'gap-1.5' })}><ExternalLink className="h-3.5 w-3.5" />查看部署文档</a>
             </div>
 
@@ -508,7 +510,7 @@ export function APIKeysManager() {
                 <label className="block text-[12px] text-muted-foreground"><span className="mb-1.5 block">请求头值 {editingChannelId && <span>（留空保持不变）</span>}</span><input type="password" value={proxyHeaderValue} onChange={(event) => setProxyHeaderValue(event.target.value)} placeholder={editingChannelId ? '留空保持现有值' : '输入随机请求头值'} className="h-9 w-full rounded-lg border border-border bg-background px-3 text-foreground outline-none focus:border-primary focus:ring-2 focus:ring-ring/20" /></label>
               </div>
             </div>
-          </div>
+          </details>
 
           <div className="mt-5">
             <div className="flex items-center justify-between gap-3">
