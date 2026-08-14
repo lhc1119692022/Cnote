@@ -2,13 +2,20 @@
  * Cnote AI 跨域代理
  *
  * 只在 Cnote 提示“第三方 API 跨域错误”时使用。
- * 复制整份脚本到 Cloudflare，只修改下面 3 项。
+ *
+ * 地址怎么填（先看）：
+ * 1. 下面左边是“线路名”，右边填写这个第三方 API 原接口地址。
+ * 2. 部署后，Cnote 接口地址 = Worker 地址/proxy/线路名。
+ * 3. 直接打开 Worker 根地址，页面会列出已经拼好的完整地址，复制即可。
  */
 
-/* ==================== ① 必填：第三方 API 原接口地址 ==================== */
-// 把 Cnote 中原本填写、但出现跨域错误的接口地址完整粘贴到引号里。
-// 只填原接口地址，不要填 Worker 地址，也不要额外添加 /v1/models 等路径。
-globalThis.CNOTE_PROXY_UPSTREAM_URL = "";
+/* ==================== ① 必填：第三方 API 线路 ==================== */
+// 只用一个第三方接口就填 api-1；需要更多接口就继续填写 api-2，或照着再加一行。
+// 原接口地址不要额外添加 /v1/models、/v1/responses 等请求路径。
+globalThis.CNOTE_PROXY_ROUTES = {
+  "api-1": "", // Cnote 接口地址：Worker 地址/proxy/api-1
+  "api-2": "", // Cnote 接口地址：Worker 地址/proxy/api-2
+};
 
 /* ==================== ② 建议：给 Worker 加访问校验 ==================== */
 // 请求头名称不懂就保持不变；部署后，Cnote 里也填写同一个名称。
@@ -23,16 +30,46 @@ globalThis.CNOTE_PROXY_HEADER_VALUE = "";
 // src/proxy.ts
 var dashboardProxyConfig = globalThis;
 var DEFAULT_PROXY_HEADER_NAME = "X-Cnote-Access";
+function configuredProxyRoutes(env) {
+  let rawRoutes = dashboardProxyConfig.CNOTE_PROXY_ROUTES || {};
+  if (env.CN_PROXY_ROUTES?.trim()) {
+    try {
+      rawRoutes = JSON.parse(env.CN_PROXY_ROUTES);
+    } catch {
+      throw new Error("CN_PROXY_ROUTES \u5FC5\u987B\u662F\u6B63\u786E\u7684 JSON \u5BF9\u8C61");
+    }
+  }
+  if (!rawRoutes || typeof rawRoutes !== "object" || Array.isArray(rawRoutes)) {
+    throw new Error("AI \u4EE3\u7406\u7EBF\u8DEF\u914D\u7F6E\u683C\u5F0F\u4E0D\u6B63\u786E");
+  }
+  const routes = {};
+  for (const [rawName, rawURL] of Object.entries(rawRoutes)) {
+    const name = rawName.trim();
+    const upstreamURL = typeof rawURL === "string" ? rawURL.trim() : "";
+    if (!upstreamURL)
+      continue;
+    if (!/^[A-Za-z0-9_-]{1,64}$/.test(name))
+      throw new Error(`\u7EBF\u8DEF\u540D\u79F0\u201C${name}\u201D\u53EA\u80FD\u4F7F\u7528\u5B57\u6BCD\u3001\u6570\u5B57\u3001\u77ED\u6A2A\u7EBF\u548C\u4E0B\u5212\u7EBF`);
+    routes[name] = upstreamURL;
+  }
+  const legacyUpstreamURL = env.CN_PROXY_UPSTREAM_URL?.trim() || dashboardProxyConfig.CNOTE_PROXY_UPSTREAM_URL?.trim() || "";
+  if (legacyUpstreamURL && Object.keys(routes).length === 0)
+    routes.default = legacyUpstreamURL;
+  return routes;
+}
+function proxyHeaderName(env) {
+  return env.CN_PROXY_HEADER_NAME?.trim() || dashboardProxyConfig.CNOTE_PROXY_HEADER_NAME?.trim() || DEFAULT_PROXY_HEADER_NAME;
+}
 function proxyConfig(env) {
   return {
-    upstreamURL: env.CN_PROXY_UPSTREAM_URL?.trim() || dashboardProxyConfig.CNOTE_PROXY_UPSTREAM_URL?.trim() || "",
-    headerName: env.CN_PROXY_HEADER_NAME?.trim() || dashboardProxyConfig.CNOTE_PROXY_HEADER_NAME?.trim() || DEFAULT_PROXY_HEADER_NAME,
+    routes: configuredProxyRoutes(env),
+    headerName: proxyHeaderName(env),
     headerValue: env.CN_PROXY_HEADER_VALUE || dashboardProxyConfig.CNOTE_PROXY_HEADER_VALUE || ""
   };
 }
 function getCorsHeaders(env) {
   const allowedHeaders = ["Content-Type", "Authorization", "x-api-key", "x-goog-api-key", "anthropic-version"];
-  const customHeaderName = proxyConfig(env).headerName;
+  const customHeaderName = proxyHeaderName(env);
   if (customHeaderName && !allowedHeaders.some((name) => name.toLowerCase() === customHeaderName.toLowerCase())) {
     new Headers({ [customHeaderName]: "validation" });
     allowedHeaders.push(customHeaderName);
@@ -58,11 +95,38 @@ function isAllowedEndpoint(endpoint) {
     return true;
   return /^v1beta\/models\/[A-Za-z0-9._-]+:(?:generateContent|streamGenerateContent)$/.test(endpoint);
 }
-function requestEndpoint(pathname) {
+function proxyRequest(pathname, routes) {
   const parts = pathname.split("/").filter(Boolean);
-  if (parts[0] === "proxy" && parts.length >= 3)
-    return parts.slice(2).join("/");
-  return parts.join("/");
+  if (parts[0] === "proxy" && parts.length >= 3) {
+    return { routeName: decodeURIComponent(parts[1]), endpoint: parts.slice(2).join("/") };
+  }
+  const routeNames = Object.keys(routes);
+  if (routeNames.length === 1 && parts.length > 0)
+    return { routeName: routeNames[0], endpoint: parts.join("/") };
+  return void 0;
+}
+function cnoteInterfaceAddresses(origin, routes) {
+  return Object.keys(routes).map((name) => ({
+    name,
+    address: `${origin}/proxy/${encodeURIComponent(name)}`
+  }));
+}
+function setupResponse(url, routes, corsHeaders) {
+  const addresses = cnoteInterfaceAddresses(url.origin, routes);
+  const lines = addresses.length > 0 ? [
+    "Cnote AI \u8DE8\u57DF\u4EE3\u7406\u5DF2\u8FD0\u884C\u3002",
+    "",
+    "\u8BF7\u628A\u4E0B\u9762\u5BF9\u5E94\u7EBF\u8DEF\u7684\u5B8C\u6574\u5730\u5740\u590D\u5236\u5230 Cnote \u7684\u201C\u63A5\u53E3\u5730\u5740\u201D\uFF1A",
+    ...addresses.map((item) => `${item.name}: ${item.address}`),
+    "",
+    "\u4E0D\u8981\u5220\u6389 /proxy/\u7EBF\u8DEF\u540D\uFF0C\u4E5F\u4E0D\u8981\u518D\u8FFD\u52A0 /v1/models \u7B49\u8DEF\u5F84\u3002"
+  ] : [
+    "\u5C1A\u672A\u914D\u7F6E\u7B2C\u4E09\u65B9 API \u7EBF\u8DEF\u3002",
+    "\u8BF7\u56DE\u5230 Worker \u811A\u672C\u9876\u90E8\u586B\u5199 CNOTE_PROXY_ROUTES \u540E\u91CD\u65B0\u90E8\u7F72\u3002"
+  ];
+  return new Response(lines.join("\n"), {
+    headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store", ...corsHeaders }
+  });
 }
 function buildTargetURL(upstreamURL, endpoint, search) {
   if (!upstreamURL)
@@ -127,8 +191,8 @@ function errorResponse(status, message, corsHeaders) {
     headers: { "Content-Type": "application/json", ...corsHeaders }
   });
 }
-function assertProxyAccess(request, env) {
-  const { headerName, headerValue } = proxyConfig(env);
+function assertProxyAccess(request, config) {
+  const { headerName, headerValue } = config;
   if (!headerValue)
     return;
   if (request.headers.get(headerName) !== headerValue)
@@ -144,15 +208,18 @@ var proxy_default = {
       });
     }
     try {
-      assertProxyAccess(request, env);
       const url = new URL(request.url);
       const path = url.pathname;
+      const config = proxyConfig(env);
+      if (path === "/" && request.method === "GET")
+        return setupResponse(url, config.routes, corsHeaders);
       if (path === "/health") {
         return new Response(
           JSON.stringify({
             status: "ok",
             timestamp: (/* @__PURE__ */ new Date()).toISOString(),
-            version: "1.0.0"
+            version: "1.0.0",
+            channels: cnoteInterfaceAddresses(url.origin, config.routes)
           }),
           {
             headers: {
@@ -162,29 +229,33 @@ var proxy_default = {
           }
         );
       }
-      const endpoint = requestEndpoint(path);
-      if (endpoint) {
+      assertProxyAccess(request, config);
+      const targetRequest = proxyRequest(path, config.routes);
+      if (targetRequest) {
         if (!["GET", "POST"].includes(request.method))
           return errorResponse(405, "\u4EE3\u7406\u4EC5\u652F\u6301 GET \u548C POST", corsHeaders);
-        if (!isAllowedEndpoint(endpoint))
+        if (!isAllowedEndpoint(targetRequest.endpoint))
           return errorResponse(404, "\u6B64 AI \u7AEF\u70B9\u672A\u5F00\u653E\u4EE3\u7406", corsHeaders);
-        const target = buildTargetURL(proxyConfig(env).upstreamURL, endpoint, url.search);
+        const upstreamURL = config.routes[targetRequest.routeName];
+        if (!upstreamURL)
+          return errorResponse(404, `\u6CA1\u6709\u627E\u5230\u7EBF\u8DEF\u201C${targetRequest.routeName}\u201D\uFF0C\u8BF7\u68C0\u67E5 Cnote \u63A5\u53E3\u5730\u5740\u672B\u5C3E\u7684\u7EBF\u8DEF\u540D`, corsHeaders);
+        const target = buildTargetURL(upstreamURL, targetRequest.endpoint, url.search);
         const headers = new Headers(request.headers);
         const body = request.method === "POST" ? await readRequestBodyLimited(request) : void 0;
-        const proxyHeaderName = proxyConfig(env).headerName;
-        if (proxyHeaderName)
-          headers.delete(proxyHeaderName);
+        const proxyHeaderName2 = config.headerName;
+        if (proxyHeaderName2)
+          headers.delete(proxyHeaderName2);
         headers.delete("Host");
         headers.delete("Origin");
         headers.delete("Referer");
         headers.delete("Cookie");
         headers.delete("Content-Length");
-        const proxyRequest = new Request(target.toString(), {
+        const proxyRequest2 = new Request(target.toString(), {
           method: request.method,
           headers,
           body
         });
-        const response = await fetch(proxyRequest, { redirect: "manual" });
+        const response = await fetch(proxyRequest2, { redirect: "manual" });
         if (response.status >= 300 && response.status < 400) {
           const location = response.headers.get("Location");
           if (!location || new URL(location, target).origin !== target.origin)
@@ -210,7 +281,7 @@ var proxy_default = {
       return new Response(
         JSON.stringify({
           error: "Not found",
-          message: "\u8BF7\u5728 Cnote \u4E2D\u586B\u5199\u8FD9\u4E2A Worker \u7684\u6839\u5730\u5740\uFF0C\u4E0D\u8981\u8FFD\u52A0\u5176\u4ED6\u8DEF\u5F84"
+          message: Object.keys(config.routes).length > 1 ? "\u8BF7\u4F7F\u7528 Worker \u5730\u5740/proxy/\u7EBF\u8DEF\u540D\uFF1B\u6253\u5F00 Worker \u6839\u5730\u5740\u53EF\u67E5\u770B\u5DF2\u7ECF\u62FC\u597D\u7684\u5B8C\u6574\u5730\u5740" : "\u6253\u5F00 Worker \u6839\u5730\u5740\uFF0C\u590D\u5236\u9875\u9762\u4E2D\u5DF2\u7ECF\u62FC\u597D\u7684 Cnote \u63A5\u53E3\u5730\u5740"
         }),
         {
           status: 404,
@@ -223,7 +294,7 @@ var proxy_default = {
     } catch (error) {
       const unauthorized = error instanceof Error && error.message === "\u4EE3\u7406\u8BBF\u95EE\u5934\u65E0\u6548";
       const tooLarge = error instanceof Error && error.message === "PROXY_REQUEST_TOO_LARGE";
-      const configurationError = error instanceof Error && (error.message.includes("\u7B2C\u4E09\u65B9 API \u539F\u63A5\u53E3\u5730\u5740") || error.message.includes("\u5B8C\u6574\u7684 http \u6216 https \u5730\u5740"));
+      const configurationError = error instanceof Error && (error.message.includes("\u7B2C\u4E09\u65B9 API \u539F\u63A5\u53E3\u5730\u5740") || error.message.includes("\u5B8C\u6574\u7684 http \u6216 https \u5730\u5740") || error.message.includes("\u7EBF\u8DEF") || error.message.includes("CN_PROXY_ROUTES"));
       if (!unauthorized && !tooLarge && !configurationError)
         console.error("Proxy error:", error);
       return new Response(

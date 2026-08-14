@@ -89,7 +89,7 @@ export function ContentServiceSettings() {
         <div className="mt-5 flex flex-wrap items-start justify-between gap-3 rounded-lg border border-border bg-muted/30 p-3.5">
           <div className="max-w-[560px]">
             <h3 className="flex items-center gap-2 text-[13px] font-medium"><Cloud className="h-4 w-4 text-muted-foreground" />还没有内容解析服务？</h3>
-            <p className="mt-1.5 text-[11px] leading-relaxed text-muted-foreground">按文档复制脚本、填写醒目标出的访问令牌，再把 Worker 地址和同一令牌粘贴回来即可。</p>
+            <p className="mt-1.5 text-[11px] leading-relaxed text-muted-foreground">按文档填写令牌并部署，再打开 Worker 根地址，复制页面显示的完整服务地址和同一令牌。</p>
           </div>
           <a href={CONTENT_SERVICE_WORKER_GUIDE_URL} target="_blank" rel="noreferrer" className={buttonVariants({ variant: 'secondary', size: 'sm', className: 'gap-1.5' })}><ExternalLink className="h-3.5 w-3.5" />查看部署文档</a>
         </div>

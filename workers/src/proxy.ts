@@ -4,12 +4,14 @@
  */
 
 interface Env {
+  CN_PROXY_ROUTES?: string
   CN_PROXY_UPSTREAM_URL?: string
   CN_PROXY_HEADER_NAME?: string
   CN_PROXY_HEADER_VALUE?: string
 }
 
 interface DashboardProxyConfig {
+  CNOTE_PROXY_ROUTES?: Record<string, string>
   CNOTE_PROXY_UPSTREAM_URL?: string
   CNOTE_PROXY_HEADER_NAME?: string
   CNOTE_PROXY_HEADER_VALUE?: string
@@ -19,17 +21,49 @@ const dashboardProxyConfig = globalThis as typeof globalThis & DashboardProxyCon
 
 const DEFAULT_PROXY_HEADER_NAME = 'X-Cnote-Access'
 
+function configuredProxyRoutes(env: Env) {
+  let rawRoutes: unknown = dashboardProxyConfig.CNOTE_PROXY_ROUTES || {}
+  if (env.CN_PROXY_ROUTES?.trim()) {
+    try {
+      rawRoutes = JSON.parse(env.CN_PROXY_ROUTES)
+    } catch {
+      throw new Error('CN_PROXY_ROUTES 必须是正确的 JSON 对象')
+    }
+  }
+  if (!rawRoutes || typeof rawRoutes !== 'object' || Array.isArray(rawRoutes)) {
+    throw new Error('AI 代理线路配置格式不正确')
+  }
+
+  const routes: Record<string, string> = {}
+  for (const [rawName, rawURL] of Object.entries(rawRoutes)) {
+    const name = rawName.trim()
+    const upstreamURL = typeof rawURL === 'string' ? rawURL.trim() : ''
+    if (!upstreamURL) continue
+    if (!/^[A-Za-z0-9_-]{1,64}$/.test(name)) throw new Error(`线路名称“${name}”只能使用字母、数字、短横线和下划线`)
+    routes[name] = upstreamURL
+  }
+
+  // 兼容上一版单线路配置及命令行环境变量。
+  const legacyUpstreamURL = env.CN_PROXY_UPSTREAM_URL?.trim() || dashboardProxyConfig.CNOTE_PROXY_UPSTREAM_URL?.trim() || ''
+  if (legacyUpstreamURL && Object.keys(routes).length === 0) routes.default = legacyUpstreamURL
+  return routes
+}
+
+function proxyHeaderName(env: Env) {
+  return env.CN_PROXY_HEADER_NAME?.trim() || dashboardProxyConfig.CNOTE_PROXY_HEADER_NAME?.trim() || DEFAULT_PROXY_HEADER_NAME
+}
+
 function proxyConfig(env: Env) {
   return {
-    upstreamURL: env.CN_PROXY_UPSTREAM_URL?.trim() || dashboardProxyConfig.CNOTE_PROXY_UPSTREAM_URL?.trim() || '',
-    headerName: env.CN_PROXY_HEADER_NAME?.trim() || dashboardProxyConfig.CNOTE_PROXY_HEADER_NAME?.trim() || DEFAULT_PROXY_HEADER_NAME,
+    routes: configuredProxyRoutes(env),
+    headerName: proxyHeaderName(env),
     headerValue: env.CN_PROXY_HEADER_VALUE || dashboardProxyConfig.CNOTE_PROXY_HEADER_VALUE || '',
   }
 }
 
 function getCorsHeaders(env: Env) {
   const allowedHeaders = ['Content-Type', 'Authorization', 'x-api-key', 'x-goog-api-key', 'anthropic-version']
-  const customHeaderName = proxyConfig(env).headerName
+  const customHeaderName = proxyHeaderName(env)
   if (customHeaderName && !allowedHeaders.some((name) => name.toLowerCase() === customHeaderName.toLowerCase())) {
     new Headers({ [customHeaderName]: 'validation' })
     allowedHeaders.push(customHeaderName)
@@ -57,11 +91,42 @@ function isAllowedEndpoint(endpoint: string) {
   return /^v1beta\/models\/[A-Za-z0-9._-]+:(?:generateContent|streamGenerateContent)$/.test(endpoint)
 }
 
-function requestEndpoint(pathname: string) {
+function proxyRequest(pathname: string, routes: Record<string, string>) {
   const parts = pathname.split('/').filter(Boolean)
-  // 兼容旧版渠道中已经保存的 /proxy/任意名称 地址。
-  if (parts[0] === 'proxy' && parts.length >= 3) return parts.slice(2).join('/')
-  return parts.join('/')
+  if (parts[0] === 'proxy' && parts.length >= 3) {
+    return { routeName: decodeURIComponent(parts[1]), endpoint: parts.slice(2).join('/') }
+  }
+  const routeNames = Object.keys(routes)
+  // 兼容上一版直接填写 Worker 根地址的单线路渠道。
+  if (routeNames.length === 1 && parts.length > 0) return { routeName: routeNames[0], endpoint: parts.join('/') }
+  return undefined
+}
+
+function cnoteInterfaceAddresses(origin: string, routes: Record<string, string>) {
+  return Object.keys(routes).map((name) => ({
+    name,
+    address: `${origin}/proxy/${encodeURIComponent(name)}`,
+  }))
+}
+
+function setupResponse(url: URL, routes: Record<string, string>, corsHeaders: Record<string, string>) {
+  const addresses = cnoteInterfaceAddresses(url.origin, routes)
+  const lines = addresses.length > 0
+    ? [
+        'Cnote AI 跨域代理已运行。',
+        '',
+        '请把下面对应线路的完整地址复制到 Cnote 的“接口地址”：',
+        ...addresses.map((item) => `${item.name}: ${item.address}`),
+        '',
+        '不要删掉 /proxy/线路名，也不要再追加 /v1/models 等路径。',
+      ]
+    : [
+        '尚未配置第三方 API 线路。',
+        '请回到 Worker 脚本顶部填写 CNOTE_PROXY_ROUTES 后重新部署。',
+      ]
+  return new Response(lines.join('\n'), {
+    headers: { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store', ...corsHeaders },
+  })
 }
 
 function buildTargetURL(upstreamURL: string, endpoint: string, search: string) {
@@ -130,8 +195,8 @@ function errorResponse(status: number, message: string, corsHeaders: Record<stri
   })
 }
 
-function assertProxyAccess(request: Request, env: Env) {
-  const { headerName, headerValue } = proxyConfig(env)
+function assertProxyAccess(request: Request, config: ReturnType<typeof proxyConfig>) {
+  const { headerName, headerValue } = config
   if (!headerValue) return
   if (request.headers.get(headerName) !== headerValue) throw new Error('代理访问头无效')
 }
@@ -148,9 +213,11 @@ export default {
     }
 
     try {
-      assertProxyAccess(request, env)
       const url = new URL(request.url)
       const path = url.pathname
+      const config = proxyConfig(env)
+
+      if (path === '/' && request.method === 'GET') return setupResponse(url, config.routes, corsHeaders)
 
       // 健康检查
       if (path === '/health') {
@@ -159,6 +226,7 @@ export default {
             status: 'ok',
             timestamp: new Date().toISOString(),
             version: '1.0.0',
+            channels: cnoteInterfaceAddresses(url.origin, config.routes),
           }),
           {
             headers: {
@@ -169,16 +237,19 @@ export default {
         )
       }
 
-      const endpoint = requestEndpoint(path)
-      if (endpoint) {
+      assertProxyAccess(request, config)
+      const targetRequest = proxyRequest(path, config.routes)
+      if (targetRequest) {
         if (!['GET', 'POST'].includes(request.method)) return errorResponse(405, '代理仅支持 GET 和 POST', corsHeaders)
-        if (!isAllowedEndpoint(endpoint)) return errorResponse(404, '此 AI 端点未开放代理', corsHeaders)
-        const target = buildTargetURL(proxyConfig(env).upstreamURL, endpoint, url.search)
+        if (!isAllowedEndpoint(targetRequest.endpoint)) return errorResponse(404, '此 AI 端点未开放代理', corsHeaders)
+        const upstreamURL = config.routes[targetRequest.routeName]
+        if (!upstreamURL) return errorResponse(404, `没有找到线路“${targetRequest.routeName}”，请检查 Cnote 接口地址末尾的线路名`, corsHeaders)
+        const target = buildTargetURL(upstreamURL, targetRequest.endpoint, url.search)
 
         // 构建目标 URL
         const headers = new Headers(request.headers)
         const body = request.method === 'POST' ? await readRequestBodyLimited(request) : undefined
-        const proxyHeaderName = proxyConfig(env).headerName
+        const proxyHeaderName = config.headerName
         if (proxyHeaderName) headers.delete(proxyHeaderName)
         headers.delete('Host')
         headers.delete('Origin')
@@ -225,7 +296,9 @@ export default {
       return new Response(
         JSON.stringify({
           error: 'Not found',
-          message: '请在 Cnote 中填写这个 Worker 的根地址，不要追加其他路径',
+          message: Object.keys(config.routes).length > 1
+            ? '请使用 Worker 地址/proxy/线路名；打开 Worker 根地址可查看已经拼好的完整地址'
+            : '打开 Worker 根地址，复制页面中已经拼好的 Cnote 接口地址',
         }),
         {
           status: 404,
@@ -241,6 +314,8 @@ export default {
       const configurationError = error instanceof Error && (
         error.message.includes('第三方 API 原接口地址')
         || error.message.includes('完整的 http 或 https 地址')
+        || error.message.includes('线路')
+        || error.message.includes('CN_PROXY_ROUTES')
       )
       if (!unauthorized && !tooLarge && !configurationError) console.error('Proxy error:', error)
 

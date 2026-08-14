@@ -4,5 +4,5 @@ compatibility_date = "2024-12-01"
 
 # This optional proxy is intentionally separate from the content service.
 # It has no shared Cnote route; deploy it only into your own Cloudflare account.
-# Configure CN_PROXY_UPSTREAM_URL before use. It should be the API base URL
-# that the browser cannot call directly.
+# Configure CN_PROXY_ROUTES before use. It is a JSON object mapping route names
+# to API base URLs, for example {"work":"https://work-api.example"}.

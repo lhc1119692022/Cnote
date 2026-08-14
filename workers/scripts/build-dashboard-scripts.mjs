@@ -16,13 +16,20 @@ const scripts = [
  * Cnote AI 跨域代理
  *
  * 只在 Cnote 提示“第三方 API 跨域错误”时使用。
- * 复制整份脚本到 Cloudflare，只修改下面 3 项。
+ *
+ * 地址怎么填（先看）：
+ * 1. 下面左边是“线路名”，右边填写这个第三方 API 原接口地址。
+ * 2. 部署后，Cnote 接口地址 = Worker 地址/proxy/线路名。
+ * 3. 直接打开 Worker 根地址，页面会列出已经拼好的完整地址，复制即可。
  */
 
-/* ==================== ① 必填：第三方 API 原接口地址 ==================== */
-// 把 Cnote 中原本填写、但出现跨域错误的接口地址完整粘贴到引号里。
-// 只填原接口地址，不要填 Worker 地址，也不要额外添加 /v1/models 等路径。
-globalThis.CNOTE_PROXY_UPSTREAM_URL = "";
+/* ==================== ① 必填：第三方 API 线路 ==================== */
+// 只用一个第三方接口就填 api-1；需要更多接口就继续填写 api-2，或照着再加一行。
+// 原接口地址不要额外添加 /v1/models、/v1/responses 等请求路径。
+globalThis.CNOTE_PROXY_ROUTES = {
+  "api-1": "", // Cnote 接口地址：Worker 地址/proxy/api-1
+  "api-2": "", // Cnote 接口地址：Worker 地址/proxy/api-2
+};
 
 /* ==================== ② 建议：给 Worker 加访问校验 ==================== */
 // 请求头名称不懂就保持不变；部署后，Cnote 里也填写同一个名称。
@@ -39,7 +46,11 @@ globalThis.CNOTE_PROXY_HEADER_VALUE = "";
     outfile: path.join(outputDirectory, 'content-service.js'),
     banner: `/**
  * Cnote 内容解析服务
- * 复制整份脚本到 Cloudflare，部署前先填写下面的访问令牌。
+ *
+ * 地址怎么填（先看）：
+ * 1. 部署后，直接打开 Cloudflare 给你的 Worker 根地址。
+ * 2. 页面会显示已经准备好的“服务地址”，完整复制到 Cnote 即可。
+ * 3. 服务地址不要追加 /v1/health 或其他路径。
  */
 
 /* ==================== 部署前先填：访问令牌 ==================== */

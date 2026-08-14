@@ -208,8 +208,8 @@ URL: https://example.com/article
 ### 跨域接口（可选）
 
 如果渠道显示“第三方 API 跨域错误！”，请展开下方提示并打开 AI 代理部署
-文档。把发生错误的原接口地址写入自己的 Worker，再将 Cloudflare 给出的
-Worker 根地址填回 Cnote；不需要拼接额外路径。
+文档。一个 Worker 可以配置多条第三方线路；部署后打开 Worker 根地址，
+复制页面中已经拼好的 `Worker 地址/proxy/线路名` 填回对应渠道。
 
 ---
 

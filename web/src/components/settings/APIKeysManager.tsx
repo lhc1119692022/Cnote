@@ -496,7 +496,7 @@ export function APIKeysManager() {
             </summary>
 
             <div className="mt-3 flex flex-wrap items-start justify-between gap-3">
-              <p className="max-w-[390px] text-[11px] leading-relaxed text-muted-foreground">只有第三方接口无法直连时才需要部署。文档会带你复制脚本、填写原接口地址，再把 Worker 地址粘贴回来。</p>
+              <p className="max-w-[390px] text-[11px] leading-relaxed text-muted-foreground">一个 Worker 可以配置多条第三方线路。部署后打开 Worker 根地址，复制页面中已经拼好的“Worker 地址/proxy/线路名”。</p>
               <a href={AI_PROXY_WORKER_GUIDE_URL} target="_blank" rel="noreferrer" className={buttonVariants({ variant: 'secondary', size: 'sm', className: 'gap-1.5' })}><ExternalLink className="h-3.5 w-3.5" />查看部署文档</a>
             </div>
 

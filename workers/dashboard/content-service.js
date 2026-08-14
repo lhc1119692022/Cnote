@@ -1,6 +1,10 @@
 /**
  * Cnote 内容解析服务
- * 复制整份脚本到 Cloudflare，部署前先填写下面的访问令牌。
+ *
+ * 地址怎么填（先看）：
+ * 1. 部署后，直接打开 Cloudflare 给你的 Worker 根地址。
+ * 2. 页面会显示已经准备好的“服务地址”，完整复制到 Cnote 即可。
+ * 3. 服务地址不要追加 /v1/health 或其他路径。
  */
 
 /* ==================== 部署前先填：访问令牌 ==================== */
@@ -1731,12 +1735,27 @@ async function fetchYouTubeContent(videoId) {
     return { ...metadata, ...transcriptResult.value };
   return { ...metadata, subtitles: "", transcriptError: scrapeErrorShape(transcriptResult.reason) };
 }
+function contentSetupResponse(url, request, env) {
+  return new Response([
+    "Cnote \u5185\u5BB9\u89E3\u6790 Worker \u5DF2\u8FD0\u884C\u3002",
+    "",
+    "\u8BF7\u628A\u4E0B\u9762\u5B8C\u6574\u5730\u5740\u590D\u5236\u5230 Cnote \u2192 \u8BBE\u7F6E \u2192 \u5185\u5BB9\u89E3\u6790\u670D\u52A1 \u2192 \u670D\u52A1\u5730\u5740\uFF1A",
+    url.origin,
+    "",
+    "\u4E0D\u8981\u5728\u5730\u5740\u540E\u8FFD\u52A0 /v1/health \u6216\u5176\u4ED6\u8DEF\u5F84\u3002",
+    contentAccessToken(env) ? "\u8BBF\u95EE\u4EE4\u724C\uFF1A\u586B\u5199 Worker \u811A\u672C\u9876\u90E8\u8BBE\u7F6E\u7684\u540C\u4E00\u4E32\u5185\u5BB9\u3002" : "\u8BBF\u95EE\u4EE4\u724C\uFF1A\u5F53\u524D\u672A\u542F\u7528\uFF0C\u5EFA\u8BAE\u56DE\u5230\u811A\u672C\u9876\u90E8\u586B\u5199\u540E\u91CD\u65B0\u90E8\u7F72\u3002"
+  ].join("\n"), {
+    headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store", ...corsHeaders(request, env) }
+  });
+}
 var scraper_default = {
   async fetch(request, env, _ctx) {
     if (request.method === "OPTIONS")
       return new Response(null, { status: 204, headers: corsHeaders(request, env) });
     const url = new URL(request.url);
     try {
+      if (url.pathname === "/" && request.method === "GET")
+        return contentSetupResponse(url, request, env);
       assertRequestAccess(request, env);
       if (url.pathname === "/v1/health")
         return new Response(JSON.stringify({ ...SERVICE_INFO, timestamp: (/* @__PURE__ */ new Date()).toISOString() }), { headers: { "Content-Type": "application/json", ...corsHeaders(request, env) } });

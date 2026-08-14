@@ -158,7 +158,7 @@ AI 跨域代理和内容解析服务是两个独立的 Worker。为避免主部�
 - [`workers/dashboard/ai-proxy.js`](./workers/dashboard/ai-proxy.js)
 - [`workers/dashboard/content-service.js`](./workers/dashboard/content-service.js)
 
-两个脚本顶部都把需要填写的内容直接标在对应代码旁边：AI 代理填写发生跨域错误的原接口地址，内容解析服务先填写访问令牌。产品界面只负责保存 Worker 地址及匹配的请求头或令牌。
+两个脚本顶部会先说明地址怎么填写。AI 代理可配置多条第三方线路，部署后打开 Worker 根地址即可复制每条已经拼好的 Cnote 接口地址；内容解析 Worker 的根页面会直接显示应填写的服务地址。
 
 ---
 
@@ -278,7 +278,7 @@ curl https://your-proxy-url/health
 # {"status":"ok","timestamp":"...","version":"1.0.0"}
 
 # 测试代理 (需要有效的 API Key)
-curl -X POST https://your-proxy-url/v1/chat/completions \
+curl -X POST https://your-proxy-url/proxy/YOUR_ROUTE/v1/chat/completions \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer YOUR_API_KEY" \
   -d '{

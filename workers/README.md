@@ -16,11 +16,12 @@ This is a separate, optional example for users who choose to operate their own
 AI API proxy. Cnote neither deploys it nor sends API keys through a shared
 Cnote endpoint.
 
-Each deployment forwards to one explicitly configured upstream API. Set
-`CN_PROXY_UPSTREAM_URL` to the API base URL that cannot be called directly
-from the browser, then use the Worker's root URL as the Cnote channel address.
-The dashboard-ready script exposes the same setting as
-`CNOTE_PROXY_UPSTREAM_URL` at the top of the file.
+Each deployment can forward multiple named routes to different upstream APIs.
+Set `CN_PROXY_ROUTES` to a JSON object such as
+`{"work":"https://work-api.example","personal":"https://personal-api.example"}`.
+The dashboard-ready script exposes the same mapping as `CNOTE_PROXY_ROUTES`.
+Use `https://YOUR_WORKER.workers.dev/proxy/{route}` as the Cnote channel
+address. Opening the Worker root URL lists every fully assembled address.
 
 The proxy accepts only `GET`, `POST`, and CORS preflight requests. Request
 bodies are limited to 20 MiB. Its endpoint allowlist covers model listing,
@@ -29,17 +30,17 @@ model/chat paths; other upstream paths are rejected.
 
 Example:
 ```bash
-curl -X POST https://YOUR_AI_PROXY.workers.dev/v1/chat/completions \
+curl -X POST https://YOUR_AI_PROXY.workers.dev/proxy/work/v1/chat/completions \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer YOUR_API_KEY" \
   -d '{"model":"gpt-4","messages":[{"role":"user","content":"Hello"}]}'
 ```
 
-Deploy it independently with `npm run deploy:proxy`. Configure the upstream
-URL first, then optionally require a custom request header:
+Deploy it independently with `npm run deploy:proxy`. Configure the route map
+first, then optionally require a custom request header:
 
 ```bash
-npx wrangler secret put CN_PROXY_UPSTREAM_URL --config wrangler-proxy.toml
+npx wrangler secret put CN_PROXY_ROUTES --config wrangler-proxy.toml
 npx wrangler secret put CN_PROXY_HEADER_NAME --config wrangler-proxy.toml
 npx wrangler secret put CN_PROXY_HEADER_VALUE --config wrangler-proxy.toml
 npm run deploy:proxy
@@ -124,7 +125,8 @@ Optional Cloudflare variables:
 
 - `CN_CONTENT_TOKEN`: require `Authorization: Bearer ...` on requests.
 - `SCRAPER_ALLOWED_ORIGINS`: comma-separated list of allowed Cnote origins.
-- `CN_PROXY_UPSTREAM_URL`: the single upstream API base URL for the AI proxy.
+- `CN_PROXY_ROUTES`: JSON object mapping AI proxy route names to upstream API base URLs.
+- `CN_PROXY_UPSTREAM_URL`: backward-compatible single-upstream setting, exposed as route `default`.
 - `CN_PROXY_HEADER_NAME`: optional AI proxy access-header name.
 - `CN_PROXY_HEADER_VALUE`: optional AI proxy access-header value.
 

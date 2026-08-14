@@ -38,6 +38,12 @@ async function withMockedFetch(handler, run) {
   }
 }
 
+const setup = await request('/')
+assert.equal(setup.status, 200)
+const setupText = await setup.text()
+assert.match(setupText, /https:\/\/worker\.example\.test/)
+assert.match(setupText, /不要在地址后追加 \/v1\/health/)
+
 const health = await request('/v1/health', { headers: allowedHeaders })
 assert.equal(health.status, 200)
 assert.equal(health.headers.get('access-control-allow-origin'), 'https://app.example.test')

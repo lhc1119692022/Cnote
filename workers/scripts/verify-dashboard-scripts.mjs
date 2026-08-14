@@ -11,14 +11,16 @@ async function importDashboardScript(name) {
   assert.doesNotMatch(source, /__CNOTE_[A-Z_]+__/)
   assert.match(source, /以下内容不用修改/)
   if (name === 'ai-proxy') {
-    const upstreamConfig = source.indexOf('globalThis.CNOTE_PROXY_UPSTREAM_URL')
+    const routesConfig = source.indexOf('globalThis.CNOTE_PROXY_ROUTES')
     const headerNameConfig = source.indexOf('globalThis.CNOTE_PROXY_HEADER_NAME')
     const headerValueConfig = source.indexOf('globalThis.CNOTE_PROXY_HEADER_VALUE')
     const internalConfig = source.indexOf('var dashboardProxyConfig')
-    assert.ok(upstreamConfig >= 0 && upstreamConfig < headerNameConfig)
+    assert.match(source, /Worker 地址\/proxy\/线路名/)
+    assert.ok(routesConfig >= 0 && routesConfig < headerNameConfig)
     assert.ok(headerNameConfig < headerValueConfig)
     assert.ok(headerValueConfig < internalConfig)
   } else {
+    assert.match(source, /服务地址不要追加 \/v1\/health/)
     assert.match(source, /部署前先填：访问令牌/)
     assert.match(source, /globalThis\.CNOTE_CONTENT_TOKEN = "";/)
   }
@@ -29,18 +31,22 @@ async function importDashboardScript(name) {
 const proxyModule = await importDashboardScript('ai-proxy')
 const publicProxyHealth = await proxyModule.default.fetch(new Request('https://worker.example/health'), {}, {})
 assert.equal(publicProxyHealth.status, 200)
+globalThis.CNOTE_PROXY_ROUTES = { dashboard: 'https://dashboard-upstream.example/v1' }
 globalThis.CNOTE_PROXY_HEADER_NAME = 'X-Dashboard-Test'
 globalThis.CNOTE_PROXY_HEADER_VALUE = 'dashboard-proxy-secret'
-const protectedProxyHealth = await proxyModule.default.fetch(new Request('https://worker.example/health', {
-  headers: { 'X-Dashboard-Test': 'dashboard-proxy-secret' },
-}), {}, {})
-assert.equal(protectedProxyHealth.status, 200)
-const deniedProxyHealth = await proxyModule.default.fetch(new Request('https://worker.example/health'), {}, {})
-assert.equal(deniedProxyHealth.status, 401)
+const proxySetup = await proxyModule.default.fetch(new Request('https://worker.example/'), {}, {})
+assert.equal(proxySetup.status, 200)
+assert.match(await proxySetup.text(), /https:\/\/worker\.example\/proxy\/dashboard/)
+const deniedProxyRequest = await proxyModule.default.fetch(new Request('https://worker.example/proxy/dashboard/v1/models'), {}, {})
+assert.equal(deniedProxyRequest.status, 401)
+delete globalThis.CNOTE_PROXY_ROUTES
 delete globalThis.CNOTE_PROXY_HEADER_NAME
 delete globalThis.CNOTE_PROXY_HEADER_VALUE
 
 const contentModule = await importDashboardScript('content-service')
+const contentSetup = await contentModule.default.fetch(new Request('https://worker.example/'), {}, {})
+assert.equal(contentSetup.status, 200)
+assert.match(await contentSetup.text(), /https:\/\/worker\.example/)
 const publicContentHealth = await contentModule.default.fetch(new Request('https://worker.example/v1/health'), {}, {})
 assert.equal(publicContentHealth.status, 200)
 globalThis.CNOTE_CONTENT_TOKEN = 'dashboard-content-secret'
