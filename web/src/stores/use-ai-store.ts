@@ -142,11 +142,10 @@ export const useAIStore = create<AIState>()(
 
       initializeDefaultChannels: () => {
         set((state) => {
-          if (state.defaultsVersion >= 4) return state
+          if (state.defaultsVersion >= 5) return state
           const defaultSpecs = [
             { id: 'official-openai', providerId: 'openai', name: 'OpenAI 官方' },
             { id: 'official-deepseek', providerId: 'deepseek', name: 'DeepSeek 官方' },
-            { id: 'official-google', providerId: 'google', name: 'Gemini 官方' },
           ]
           const createDefaultChannel = ({ id, providerId, name }: typeof defaultSpecs[number]) => {
             const provider = getProvider(providerId)
@@ -161,18 +160,39 @@ export const useAIStore = create<AIState>()(
             }
           }
           if (state.apiKeys.length > 0) {
-            const apiKeys = state.apiKeys.map((channel) => {
+            let migratedGoogleChannelId: string | null = null
+            const apiKeys = state.apiKeys.flatMap((channel) => {
+              if (channel.id === 'official-google') {
+                const googleProvider = getProvider('google')
+                const hasUserConfiguration = Boolean(
+                  decryptAPIKey(channel.encryptedKey).trim()
+                  || channel.modelIds?.length
+                  || channel.proxyHeaderName
+                  || channel.encryptedProxyHeaderValue
+                  || channel.name !== 'Gemini 官方'
+                  || (channel.baseURL && channel.baseURL !== googleProvider?.baseURL)
+                  || (channel.protocol && channel.protocol !== googleProvider?.protocol)
+                )
+                if (!hasUserConfiguration) return []
+                migratedGoogleChannelId = `key-google-${Date.now()}`
+                return [{
+                  ...channel,
+                  id: migratedGoogleChannelId,
+                  name: channel.name === 'Gemini 官方' ? 'Gemini' : channel.name,
+                }]
+              }
               if (state.defaultsVersion >= 3 || (channel.id !== 'official-openai' && channel.id !== 'official-deepseek')) return channel
               const provider = getProvider(channel.providerId)
-              return { ...channel, modelIds: [], protocol: provider?.protocol || channel.protocol }
+              return [{ ...channel, modelIds: [], protocol: provider?.protocol || channel.protocol }]
             })
             defaultSpecs.forEach((spec) => {
               if (!apiKeys.some((channel) => channel.id === spec.id)) apiKeys.push(createDefaultChannel(spec))
             })
             return {
               apiKeys,
+              currentAPIKeyId: state.currentAPIKeyId === 'official-google' ? migratedGoogleChannelId : state.currentAPIKeyId,
               defaultsInitialized: true,
-              defaultsVersion: 4,
+              defaultsVersion: 5,
             }
           }
 
@@ -182,7 +202,7 @@ export const useAIStore = create<AIState>()(
             apiKeys: defaults,
             currentAPIKeyId: null,
             defaultsInitialized: true,
-            defaultsVersion: 4,
+            defaultsVersion: 5,
           }
         })
       },

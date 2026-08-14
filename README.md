@@ -50,31 +50,16 @@ npm run dev
 npm run build
 ```
 
-### 可选：部署自己的内容解析 Worker
-
-```bash
-cd workers
-
-# 安装依赖
-npm install
-
-# 本地开发
-npm run dev
-
-# 部署内容解析 Worker（使用你自己的 Cloudflare 账户）
-npm run deploy
-```
-
 访问 http://localhost:5173 开始使用。
 
-部署完成后，将生成的 `workers.dev` 地址填写到 Cnote → 设置 → 内容解析服务。
-未配置该 Worker 时，本地文件、URL 输出和 YouTube 播放仍可使用；网页正文、
-YouTube 字幕、社媒和公开网页文档预览会明确提示需要内容解析服务。
+### 可选：部署自己的 Cloudflare Worker
 
-AI 渠道与内容 Worker 相互独立。需要解决某个 AI 提供商的浏览器跨域限制时，
-请在“设置 → 渠道”中填写服务商支持的浏览器端接口，或你自己信任的中转地址。
-无 Key、Bearer Key 和 AI CORS 代理的快速部署命令见
-[部署指南](./DEPLOYMENT_GUIDE.md#cloudflare-workers-部署)。
+AI 跨域代理与内容解析服务是两个完全独立的 Worker。产品内只保留配置入口，详细步骤和可直接粘贴的脚本见：
+
+- [AI 跨域代理 Worker 部署教程](./docs/AI_PROXY_WORKER.md)
+- [内容解析 Worker 部署教程](./docs/CONTENT_SERVICE_WORKER.md)
+
+未配置内容解析 Worker 时，本地文件、URL 输出和 YouTube 播放仍可使用；网页正文、YouTube 字幕、社媒和公开网页文档预览会明确提示需要内容解析服务。
 
 ## 📖 开发计划
 
@@ -110,6 +95,7 @@ cnote/
 │   │   └── types/        # TypeScript 类型
 │   └── public/           # 静态资源
 ├── workers/              # Cloudflare Workers
+│   ├── dashboard/        # 可直接粘贴到 Cloudflare 控制台的脚本
 │   ├── src/
 │   │   ├── proxy.ts     # AI API 代理
 │   │   └── scraper.ts   # 网页抓取

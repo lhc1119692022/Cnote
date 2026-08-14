@@ -4,11 +4,8 @@
   "type": "module",
   "private": true,
   "scripts": {
-    "prebuild": "node scripts/build-cloudflare-worker-templates.mjs",
-    "predev": "node scripts/build-cloudflare-worker-templates.mjs",
     "dev": "vite",
     "build": "tsc && vite build",
-    "test:worker-templates": "node scripts/build-cloudflare-worker-templates.mjs && node scripts/verify-cloudflare-worker-templates.mjs",
     "preview": "vite preview",
     "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
     "format": "prettier --write \"src/**/*.{ts,tsx,css}\""

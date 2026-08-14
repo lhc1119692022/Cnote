@@ -3,11 +3,13 @@
   "version": "1.0.0",
   "description": "Cloudflare Workers for Cnote API",
   "scripts": {
+    "build:dashboard-scripts": "node scripts/build-dashboard-scripts.mjs",
     "dev": "wrangler dev --config wrangler.toml",
     "deploy": "wrangler deploy --config wrangler.toml",
     "dev:proxy": "wrangler dev --config wrangler-proxy.toml",
     "deploy:proxy": "wrangler deploy --config wrangler-proxy.toml",
-    "test:contract": "node scripts/verify-content-service.mjs && node scripts/verify-ai-proxy.mjs"
+    "test:dashboard-scripts": "npm run build:dashboard-scripts && node scripts/verify-dashboard-scripts.mjs",
+    "test:contract": "npm run test:dashboard-scripts && node scripts/verify-content-service.mjs && node scripts/verify-ai-proxy.mjs"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20241218.0",

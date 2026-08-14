@@ -4,6 +4,11 @@ This directory contains optional, user-deployed Cloudflare Workers for Cnote.
 AI API proxy and content parsing are separate services. Cnote does not require
 the project maintainer to operate either service for all users.
 
+Chinese deployment tutorials and dashboard-ready scripts:
+
+- [AI proxy deployment guide](../docs/AI_PROXY_WORKER.md) · [`dashboard/ai-proxy.js`](./dashboard/ai-proxy.js)
+- [Content service deployment guide](../docs/CONTENT_SERVICE_WORKER.md) · [`dashboard/content-service.js`](./dashboard/content-service.js)
+
 ## Workers
 
 ### 1. Optional AI API Proxy (`src/proxy.ts`)

@@ -2,7 +2,6 @@ import { useCallback, useEffect, useRef, useState, type ChangeEvent } from 'reac
 import {
   Check,
   ChevronDown,
-  Copy,
   Database,
   Download,
   ExternalLink,
@@ -17,11 +16,11 @@ import {
   X,
 } from 'lucide-react'
 import { AppShell } from '@/components/layout/AppShell'
-import { Button } from '@/components/ui/button'
+import { Button, buttonVariants } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { ContentServiceSettings } from '@/components/settings/ContentServiceSettings'
+import { AI_PROXY_WORKER_GUIDE_URL } from '@/config/links'
 import { AIClient, PROVIDERS, getProvider, inferProviderId, validateAPIKey, type ProtocolType } from '@/lib/api'
-import { copyText, createAccessSecret, createCloudflareWorkerScript } from '@/lib/cloudflare-worker-templates'
 import { localForageStorage } from '@/lib/localforage-storage'
 import { useAIStore, type APIChannel, type APIChannelInput } from '@/stores/use-ai-store'
 import { useFlowStore } from '@/stores/use-flow-store'
@@ -94,7 +93,6 @@ export function APIKeysManager() {
   const [apiKey, setAPIKey] = useState('')
   const [proxyHeaderName, setProxyHeaderName] = useState('')
   const [proxyHeaderValue, setProxyHeaderValue] = useState('')
-  const [proxyScriptMessage, setProxyScriptMessage] = useState('')
   const [modelIds, setModelIds] = useState<string[]>([])
   const [availableModelIds, setAvailableModelIds] = useState<string[]>([])
   const [customModelId, setCustomModelId] = useState('')
@@ -107,11 +105,6 @@ export function APIKeysManager() {
   const protocolMenuRef = useRef<HTMLDivElement>(null)
 
   const selectedProvider = getProvider(providerId) || getProvider('custom') || PROVIDERS[0]
-  const inferredProxyProviderId = inferProviderId(providerId, baseURL, modelIds, protocol)
-  const proxyProviderPath = ['openai', 'anthropic', 'deepseek', 'google'].includes(inferredProxyProviderId)
-    ? inferredProxyProviderId
-    : 'openai'
-
   const refreshStorageEstimate = useCallback(async () => {
     const [estimate, flows, templates, sources, channels] = await Promise.all([
       navigator.storage?.estimate?.() ?? Promise.resolve({ usage: 0, quota: 0 }),
@@ -158,7 +151,6 @@ export function APIKeysManager() {
     setAPIKey('')
     setProxyHeaderName('')
     setProxyHeaderValue('')
-    setProxyScriptMessage('')
     setModelIds([])
     setAvailableModelIds([])
     setCustomModelId('')
@@ -180,7 +172,6 @@ export function APIKeysManager() {
     setAPIKey('')
     setProxyHeaderName(channel.proxyHeaderName || '')
     setProxyHeaderValue('')
-    setProxyScriptMessage('')
     setModelIds(channel.modelIds || [])
     setAvailableModelIds(channel.modelIds || [])
     setCustomModelId('')
@@ -199,25 +190,6 @@ export function APIKeysManager() {
     if (!modelId || modelIds.includes(modelId)) return
     setModelIds((current) => [...current, modelId])
     setCustomModelId('')
-  }
-
-  const generateProxyHeaders = () => {
-    setProxyHeaderName('X-Cnote-Access')
-    setProxyHeaderValue(createAccessSecret())
-    setProxyScriptMessage('已生成访问请求头。复制脚本时会自动写入；部署后请把同样的名称和值保存在当前渠道。')
-  }
-
-  const copyProxyWorkerScript = async () => {
-    try {
-      const source = await createCloudflareWorkerScript('ai-proxy', {
-        CNOTE_PROXY_HEADER_NAME: proxyHeaderName.trim(),
-        CNOTE_PROXY_HEADER_VALUE: proxyHeaderValue || (editingChannelId ? getProxyHeaderValue(editingChannelId) || '' : ''),
-      })
-      await copyText(source)
-      setProxyScriptMessage('预制脚本已复制。切换到 Cloudflare 编辑器，全部替换后点击“部署”。')
-    } catch (error) {
-      setProxyScriptMessage(error instanceof Error ? error.message : '复制失败，请检查浏览器剪贴板权限。')
-    }
   }
 
   const requestModels = async () => {
@@ -253,7 +225,7 @@ export function APIKeysManager() {
       setConnectionMessage(ids.length ? `已拉取 ${ids.length} 个模型，请选择要启用的模型` : '连接成功，但接口没有返回模型')
     } catch (error) {
       const message = error instanceof TypeError
-        ? '连接失败，接口可能未允许浏览器跨域请求。请展开下方“部署自己的 AI 代理”教程。'
+        ? '连接失败，接口可能未允许浏览器跨域请求。请查看下方的 AI 代理部署文档。'
         : error instanceof Error ? error.message : '拉取模型失败'
       setConnectionMessage(message)
     } finally {
@@ -517,40 +489,26 @@ export function APIKeysManager() {
             <input type="password" value={apiKey} onChange={(event) => setAPIKey(event.target.value)} placeholder={editingChannelId ? '留空保持现有密钥' : '输入 API Key'} className="h-10 w-full rounded-lg border border-border bg-background px-3 text-foreground outline-none focus:border-primary focus:ring-2 focus:ring-ring/20" />
           </div>
 
-          <details className="mt-4 rounded-lg border border-border bg-muted/30 p-3.5">
-            <summary className="flex cursor-pointer list-none items-center justify-between gap-3 text-[13px] font-medium">
-              <span className="flex items-center gap-2"><ShieldCheck className="h-4 w-4 text-muted-foreground" />浏览器提示跨域？部署自己的 AI 代理</span>
-              <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground" />
-            </summary>
-            <div className="mt-3 space-y-3 text-[11px] leading-relaxed text-muted-foreground">
-              <p>直连是默认方式。只有服务商不允许网页直接访问时，才需要部署这个可选代理。不需要安装 npm 或命令行工具。</p>
-              <div className="rounded-lg border border-primary/25 bg-primary/5 p-3">
-                <h3 className="text-[12px] font-medium text-foreground">Cnote 还没有部署到 GitHub Pages 也可以继续</h3>
-                <p className="mt-1">这里不需要填写 Cnote 的网页域名。Worker 是一项独立服务，部署后 Cloudflare 会自动提供 <code className="text-foreground">workers.dev</code> 地址；当前本地运行的 Cnote 就能直接连接它。</p>
+          <div className="mt-4 rounded-lg border border-border bg-muted/30 p-3.5">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div className="max-w-[390px]">
+                <h3 className="flex items-center gap-2 text-[13px] font-medium"><ShieldCheck className="h-4 w-4 text-muted-foreground" />浏览器提示跨域？</h3>
+                <p className="mt-1.5 text-[11px] leading-relaxed text-muted-foreground">直连失败时，可以部署自己的 AI 代理。完整部署步骤、可复制脚本、服务商路径和排错说明已放在 GitHub 文档中。</p>
               </div>
-              <ol className="space-y-2">
-                <li className="rounded-lg border border-border bg-background p-3"><span className="font-medium text-foreground">1. 打开 Cloudflare 控制台</span><p className="mt-1">登录后进入左侧 <strong>Workers 和 Pages</strong>，点击<strong>创建</strong>，选择 <strong>Worker</strong>，再点击<strong>部署</strong>。</p></li>
-                <li className="rounded-lg border border-border bg-background p-3"><span className="font-medium text-foreground">2. 打开在线编辑器</span><p className="mt-1">进入刚创建的 Worker，点击右上角<strong>编辑代码</strong>，删除编辑器中的示例内容。</p></li>
-                <li className="rounded-lg border border-border bg-background p-3"><span className="font-medium text-foreground">3. 生成配置并复制脚本</span><p className="mt-1">点击下方“生成访问请求头”，再点击“复制预制脚本”，把脚本全部粘贴到编辑器后点击<strong>部署</strong>。</p></li>
-              </ol>
-              <div className="rounded-lg border border-border bg-background p-3">
-                <div className="flex flex-wrap items-center justify-between gap-2"><div><h3 className="flex items-center gap-1.5 text-[12px] font-medium text-foreground"><ShieldCheck className="h-3.5 w-3.5" />访问请求头（推荐）</h3><p className="mt-1">名称和值会同时写入预制脚本，并用于 Cnote 请求代理时的身份校验。</p></div><Button type="button" variant="secondary" size="sm" className="gap-1.5" onClick={generateProxyHeaders}><ShieldCheck className="h-3.5 w-3.5" />生成访问请求头</Button></div>
-                <div className="mt-3 flex flex-wrap gap-2"><Button type="button" size="sm" className="gap-1.5" onClick={() => void copyProxyWorkerScript()}><Copy className="h-3.5 w-3.5" />复制预制脚本</Button><Button type="button" variant="secondary" size="sm" className="gap-1.5" onClick={() => window.open('https://dash.cloudflare.com/', '_blank', 'noopener,noreferrer')}><ExternalLink className="h-3.5 w-3.5" />打开 Cloudflare</Button></div>
-                {proxyScriptMessage && <p className="mt-2 text-[11px] text-foreground">{proxyScriptMessage}</p>}
-              </div>
-              <p>部署后会得到类似下面的 Worker 地址。按服务商追加路径：OpenAI 用 <code className="text-foreground">/proxy/openai</code>、Anthropic 用 <code className="text-foreground">/proxy/anthropic</code>、DeepSeek 用 <code className="text-foreground">/proxy/deepseek</code>、Gemini 用 <code className="text-foreground">/proxy/google</code>。</p>
-              <div className="rounded-lg border border-border bg-background p-3"><p className="mb-2 text-[11px]">当前渠道建议填写：</p><code className="block break-all rounded-md bg-muted/50 px-2.5 py-2 text-foreground">https://你的-worker-名称.你的-Cloudflare-子域.workers.dev/proxy/{proxyProviderPath}</code><p className="mt-2">不要照抄示例文字。请在 Worker 部署成功后复制 Cloudflare 显示的实际地址；这里的子域属于 Cloudflare，不是 GitHub Pages 域名。</p></div>
-              <div className="rounded-lg border border-border bg-background p-3"><h3 className="text-[12px] font-medium text-foreground">以后部署 GitHub Pages 时</h3><p className="mt-1">继续使用同一个 Worker 地址即可，不需要重新创建 Worker，也不需要修改预制脚本。</p></div>
-              <details className="rounded-lg border border-border bg-background p-3" open={Boolean(proxyHeaderName)}>
-                <summary className="cursor-pointer text-[12px] font-medium text-foreground">查看或手动修改访问请求头</summary>
-                <p className="mt-2">如果没有点击生成，也可以手动修改下面的名称和值；脚本与 Cnote 渠道中的两项必须完全一致。已有渠道的请求头值留空会保持不变。</p>
-                <div className="mt-3 grid gap-3" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))' }}>
-                  <label className="block text-[12px] text-muted-foreground"><span className="mb-1.5 block">请求头名称</span><input value={proxyHeaderName} onChange={(event) => setProxyHeaderName(event.target.value)} placeholder="如：X-Cnote-Access" className="h-9 w-full rounded-lg border border-border bg-background px-3 text-foreground outline-none focus:border-primary focus:ring-2 focus:ring-ring/20" /></label>
-                  <label className="block text-[12px] text-muted-foreground"><span className="mb-1.5 block">请求头值 {editingChannelId && <span>（留空保持不变）</span>}</span><input type="password" value={proxyHeaderValue} onChange={(event) => setProxyHeaderValue(event.target.value)} placeholder={editingChannelId ? '留空保持现有值' : '输入访问头值'} className="h-9 w-full rounded-lg border border-border bg-background px-3 text-foreground outline-none focus:border-primary focus:ring-2 focus:ring-ring/20" /></label>
-                </div>
-              </details>
+              <a href={AI_PROXY_WORKER_GUIDE_URL} target="_blank" rel="noreferrer" className={buttonVariants({ variant: 'secondary', size: 'sm', className: 'gap-1.5' })}><ExternalLink className="h-3.5 w-3.5" />查看部署文档</a>
             </div>
-          </details>
+
+            <div className="mt-4 border-t border-border pt-4">
+              <div>
+                <h3 className="text-[12px] font-medium text-foreground">代理访问校验 <span className="font-normal text-muted-foreground">（可选）</span></h3>
+                <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">只有在 Worker 脚本中启用了访问请求头时才填写。名称和值由你按照脚本注释自行设置，并且必须与 Worker 完全一致；已有渠道的请求头值留空会保持不变。</p>
+              </div>
+              <div className="mt-3 grid gap-3" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))' }}>
+                <label className="block text-[12px] text-muted-foreground"><span className="mb-1.5 block">请求头名称</span><input value={proxyHeaderName} onChange={(event) => setProxyHeaderName(event.target.value)} placeholder="如：X-Cnote-Access" className="h-9 w-full rounded-lg border border-border bg-background px-3 text-foreground outline-none focus:border-primary focus:ring-2 focus:ring-ring/20" /></label>
+                <label className="block text-[12px] text-muted-foreground"><span className="mb-1.5 block">请求头值 {editingChannelId && <span>（留空保持不变）</span>}</span><input type="password" value={proxyHeaderValue} onChange={(event) => setProxyHeaderValue(event.target.value)} placeholder={editingChannelId ? '留空保持现有值' : '输入随机请求头值'} className="h-9 w-full rounded-lg border border-border bg-background px-3 text-foreground outline-none focus:border-primary focus:ring-2 focus:ring-ring/20" /></label>
+              </div>
+            </div>
+          </div>
 
           <div className="mt-5">
             <div className="flex items-center justify-between gap-3">

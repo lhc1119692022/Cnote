@@ -148,112 +148,17 @@ Environment Variables 中添加 `VITE_SCRAPER_URL`。
 
 ## Cloudflare Workers 部署
 
-### 前置要求
+AI 跨域代理和内容解析服务是两个独立的 Worker。为避免主部署文档过长，完整的控制台操作、命令行部署、配置说明、可直接粘贴的脚本和排错方法分别放在：
 
-1. **Cloudflare 账号**
-   - 注册: https://dash.cloudflare.com/sign-up
-   - 免费计划即可使用 Workers
+- [AI 跨域代理 Worker 部署教程](./docs/AI_PROXY_WORKER.md)
+- [内容解析 Worker 部署教程](./docs/CONTENT_SERVICE_WORKER.md)
 
-2. **登录 Cloudflare**
+对应的 Cloudflare 控制台粘贴版脚本位于：
 
-```bash
-npx wrangler login
-```
+- [`workers/dashboard/ai-proxy.js`](./workers/dashboard/ai-proxy.js)
+- [`workers/dashboard/content-service.js`](./workers/dashboard/content-service.js)
 
-浏览器会打开授权页面，点击授权。
-
----
-
-### 内容解析 Worker：无 Key 快速部署
-
-1. **进入 Workers 目录**
-
-```bash
-cd workers
-npm install
-```
-
-2. **登录并部署**
-
-```bash
-npx wrangler login
-npm run deploy
-```
-
-部署成功后会显示类似以下 URL：
-
-```text
-https://cnote-content-service.your-subdomain.workers.dev
-```
-
-在 Cnote 中打开“设置 → 内容解析服务”，填写该 URL，Key 留空，然后测试并保存。
-无 Key 是默认模式，适合个人使用和快速部署；公开 URL 可能被他人调用，配额风险由部署者承担。
-
-### 内容解析 Worker：Bearer Key 快速部署
-
-先完成上一节的安装和登录，然后执行：
-
-```bash
-npx wrangler secret put CN_CONTENT_TOKEN
-npm run deploy
-```
-
-Wrangler 提示输入值时，填写自行生成的随机 Key。部署后，在 Cnote 的“设置 →
-内容解析服务”中填写 Worker URL 和同一个 Key。客户端会发送：
-
-```http
-Authorization: Bearer YOUR_RANDOM_KEY
-```
-
-如需恢复无 Key 模式，删除 Secret 后重新部署：
-
-```bash
-npx wrangler secret delete CN_CONTENT_TOKEN
-npm run deploy
-```
-
-### AI CORS 代理：可选自定义请求头
-
-AI 代理与内容解析 Worker 是两个独立服务。仅当 AI 服务商不允许浏览器直接请求，
-且你愿意自行承担代理流量和密钥传输风险时部署：
-
-```bash
-cd workers
-npm install
-npx wrangler login
-npm run deploy:proxy
-```
-
-代理地址格式为：
-
-```text
-https://cnote-ai-proxy.your-subdomain.workers.dev/proxy/{provider}/{endpoint}
-```
-
-代理仅接受 `GET`、`POST` 和浏览器预检请求，单次请求体上限为 20 MiB。
-允许的上游路径为模型列表、Chat Completions、Responses、Anthropic Messages，
-以及 Gemini OpenAI 兼容的模型列表和 Chat Completions；其他路径会被拒绝。
-
-默认不要求额外的代理访问头。需要简单防滥用时，同时配置请求头名称和值：
-
-```bash
-npx wrangler secret put CN_PROXY_HEADER_NAME --config wrangler-proxy.toml
-npx wrangler secret put CN_PROXY_HEADER_VALUE --config wrangler-proxy.toml
-npm run deploy:proxy
-```
-
-例如分别输入 `X-Cnote-Proxy-Key` 和一个随机 Key，调用时附加：
-
-```http
-X-Cnote-Proxy-Key: YOUR_RANDOM_KEY
-```
-
-两个变量必须同时配置。只有调用端能够附加自定义请求头时才启用此保护；Cnote
-发布站点不会内置维护者或部署者的代理 URL、Key。AI 服务商的 API Key 仍通过
-`Authorization`、`x-api-key` 等官方请求头传给上游。
-
-AI API 代理不是应用的默认组件。若某个 AI 渠道没有提供浏览器 CORS 支持，请在
-“设置 → 渠道”填写你自己部署并信任的中转地址；不要把 API Key 发送到公共代理。
+两个脚本顶部都标出了可操作配置区、随机值生成方法和 Cloudflare 变量名称。产品界面只负责保存 Worker 地址及匹配的请求头或令牌，不再内置部署教程和脚本复制功能。
 
 ---
 

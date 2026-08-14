@@ -1,0 +1,4 @@
+const GITHUB_REPOSITORY_URL = 'https://github.com/lhc1119692022/Cnote'
+
+export const AI_PROXY_WORKER_GUIDE_URL = `${GITHUB_REPOSITORY_URL}/blob/master/docs/AI_PROXY_WORKER.md`
+export const CONTENT_SERVICE_WORKER_GUIDE_URL = `${GITHUB_REPOSITORY_URL}/blob/master/docs/CONTENT_SERVICE_WORKER.md`
