@@ -9,7 +9,7 @@ const APIKeysManager = lazy(() => import('@/components/settings/APIKeysManager')
 
 function App() {
   useEffect(() => {
-    const theme = localStorage.getItem('cnote-theme') || 'dark'
+    const theme = localStorage.getItem('cnote-theme') || 'light'
     document.documentElement.classList.add(theme)
     document.documentElement.style.colorScheme = theme
   }, [])

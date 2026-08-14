@@ -5,7 +5,7 @@ export type Theme = 'light' | 'dark'
 export function useTheme() {
   const [theme, setTheme] = useState<Theme>(() => {
     const stored = localStorage.getItem('cnote-theme')
-    return (stored as Theme) || 'dark'
+    return (stored as Theme) || 'light'
   })
 
   useEffect(() => {
