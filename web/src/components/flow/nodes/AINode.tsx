@@ -121,6 +121,15 @@ function closeOpenMenus(root: ParentNode | null, except?: HTMLDetailsElement | n
   })
 }
 
+function AINodeDragGutters() {
+  return <div className="ai-node-drag-gutters" aria-hidden="true">
+    <span data-side="top" />
+    <span data-side="right" />
+    <span data-side="bottom" />
+    <span data-side="left" />
+  </div>
+}
+
 export const AINode = memo(({ id, data, selected }: NodeProps<AINodeData>) => {
   const apiKeys = useAIStore((state) => state.apiKeys)
   const getAPIKey = useAIStore((state) => state.getAPIKey)
@@ -584,6 +593,7 @@ export const AINode = memo(({ id, data, selected }: NodeProps<AINodeData>) => {
     <div ref={nodeRef} className={`node-card node-panel-shadow group relative flex h-full w-full flex-col overflow-visible rounded-[22px] border bg-card ${selected ? 'node-selected' : 'border-border'} ${disabled ? 'opacity-60' : ''}`} style={{ minWidth: AI_NODE_MIN_SIZE.width, minHeight: AI_NODE_MIN_SIZE.height }}>
       <NodeHandle type="target" position={Position.Left} id="in" />
       <NodeHandle type="source" position={Position.Right} id="out" />
+      <AINodeDragGutters />
       <NodeResizeArc nodeId={id} minWidth={AI_NODE_MIN_SIZE.width} minHeight={AI_NODE_MIN_SIZE.height} />
       {upstreamEntries.length > 0 && <div className="ai-variable-rail nodrag nowheel" onPointerDown={(event) => event.stopPropagation()}>
         {upstreamEntries.map((entry) => <button key={entry.nodeId} type="button" draggable onDragStart={(event) => { event.dataTransfer.effectAllowed = 'copy'; event.dataTransfer.setData('application/x-cnote-ai-variable', entry.nodeId) }} onClick={() => insertVariable(entry)} className="ai-source-variable" title={`拖入输入框引用${entry.label}`}><span className={`ai-source-variable-dot ${entry.color}`} /><span className="truncate">{entry.label}</span></button>)}

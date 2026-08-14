@@ -184,6 +184,54 @@
   width: 10px;
 }
 
+.ai-node-drag-gutters {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  pointer-events: none;
+}
+
+.ai-node-drag-gutters > span {
+  position: absolute;
+  pointer-events: auto;
+  cursor: grab;
+  touch-action: none;
+}
+
+.ai-node-drag-gutters > span:active {
+  cursor: grabbing;
+}
+
+/* Keep the top and side padding of the AI card available as a reliable drag
+   target while the conversation and composer remain text/input surfaces. */
+.ai-node-drag-gutters > [data-side="top"] {
+  left: 16px;
+  right: 16px;
+  top: 0;
+  height: 28px;
+}
+
+.ai-node-drag-gutters > [data-side="right"] {
+  right: 0;
+  top: 28px;
+  bottom: 54px;
+  width: 16px;
+}
+
+.ai-node-drag-gutters > [data-side="bottom"] {
+  left: 16px;
+  right: 54px;
+  bottom: 0;
+  height: 18px;
+}
+
+.ai-node-drag-gutters > [data-side="left"] {
+  left: 0;
+  top: 28px;
+  bottom: 18px;
+  width: 16px;
+}
+
 .node-panel-shadow {
   box-shadow: 0 5px 18px rgb(15 23 42 / 0.055);
 }
