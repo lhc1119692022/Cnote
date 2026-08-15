@@ -68,6 +68,7 @@ import {
 } from "@/lib/content-import-controller";
 import { cloneFlowValue } from "@/lib/flow/clone";
 import { hasCycle } from "@/lib/flow/graph";
+import { hasNodeConnections } from "@/lib/flow/disabled";
 import { AI_NODE_DEFAULT_SIZE, GROUP_NODE_PADDING } from "@/lib/flow/node-dimensions";
 import type { ContentNodeData } from "@/types/flow";
 import { useLocalResourceUrl } from "@/hooks/use-local-resource-url";
@@ -190,12 +191,11 @@ function PanelNodeIcon({
     if (isSourceItem) return;
     useFlowStore.getState().updateNode(node.id, {
       data: resourceLost
-        ? { ...node.data, resourceLost: true }
+        ? { ...node.data, state: 'missing', resourceLost: true }
         : {
             ...node.data,
             resourceLost: false,
-            disabled: false,
-            enabled: true,
+            ...(node.data?.state === 'missing' ? { state: 'ready' } : {}),
           },
     });
   };
@@ -247,10 +247,9 @@ function isLocalVideoNode(node?: Node) {
 }
 
 function isNodeDisabled(node: { type?: string; data?: any }) {
-  if (node.data?.resourceLost) return false;
+  if (node.data?.resourceLost || node.data?.state === "missing") return true;
   if (node.data?.disabled || node.data?.enabled === false || node.data?.hidden)
     return true;
-  if (node.type === "ai") return !node.data?.channelId || !node.data?.model;
   return false;
 }
 
@@ -478,11 +477,13 @@ function FlowEditorInner() {
   const openContentEditor = useContentEditorStore((state) => state.open);
   const closeContentEditor = useContentEditorStore((state) => state.close);
   const [showMinimap, setShowMinimap] = useState(true);
+  const [isViewportMoving, setIsViewportMoving] = useState(false);
   const [showGuide, setShowGuide] = useState(false);
   const [panelTab, setPanelTab] = useState<"nodes" | "content">("nodes");
   const [panelFilter, setPanelFilter] = useState("all");
   const [filterMenuOpen, setFilterMenuOpen] = useState(false);
   const [panelSearch, setPanelSearch] = useState("");
+  const [panelNotice, setPanelNotice] = useState<string | null>(null);
   const [selectionMode, setSelectionMode] = useState(false);
   const [selectedPanelIds, setSelectedPanelIds] = useState<string[]>([]);
   const [extensionWidth, setExtensionWidth] = useState(370);
@@ -618,6 +619,7 @@ function FlowEditorInner() {
   const addNode = useFlowStore((state) => state.addNode);
   const deleteNode = useFlowStore((state) => state.deleteNode);
   const deleteEdge = useFlowStore((state) => state.deleteEdge);
+  const restoreNode = useFlowStore((state) => state.restoreNode);
   const replaceGraph = useFlowStore((state) => state.replaceGraph);
   const sources = useSourceStore((state) => state.sources);
   const deleteSource = useSourceStore((state) => state.deleteSource);
@@ -678,6 +680,10 @@ function FlowEditorInner() {
     currentLeftInset,
     currentRightInset,
   );
+  const handleRestoreNode = useCallback(async (nodeId: string) => {
+    const result = await restoreNode(nodeId);
+    setPanelNotice(result.ok ? null : result.message || "节点仍保持禁用。" );
+  }, [restoreNode]);
   const handleToolbarGroupLayoutChange = useCallback(
     (layout: {
       leftWidth: number;
@@ -1675,10 +1681,16 @@ function FlowEditorInner() {
 
   const handleMoveEnd = useCallback(
     (_event: MouseEvent | TouchEvent | null, viewport: Viewport) => {
+      setIsViewportMoving(false);
       if (!isResizingPanel) saveLightweight(viewport);
     },
     [isResizingPanel, saveLightweight],
   );
+
+  const handleMoveStart = useCallback(() => {
+    setIsViewportMoving(true);
+    closeCanvasMenus();
+  }, [closeCanvasMenus]);
 
   const handleSelectionStart = useCallback((event: ReactMouseEvent) => {
     setMarqueeSelectionIds([]);
@@ -2140,14 +2152,16 @@ function FlowEditorInner() {
             </div>
           </div>
           <div className="flex-1 space-y-1 overflow-auto p-3">
+            {panelNotice && <p role="status" className="rounded-lg border border-amber-200 bg-amber-50 px-2.5 py-2 text-xs leading-5 text-amber-900">{panelNotice}</p>}
             {(panelTab === "content"
               ? panelContentNodes
               : filteredPanelNodes
             ).map((node) => {
-              const resourceLost = Boolean(node.data?.resourceLost);
+              const resourceLost = Boolean(node.data?.resourceLost || node.data?.state === "missing");
               const disabled = isNodeDisabled(node);
               const isSourceItem = node.id.startsWith("source:");
               const linkedNodeId = isSourceItem ? undefined : node.id;
+              const canRestore = !isSourceItem && disabled && !resourceLost && !hasNodeConnections(node.id, edges);
               return (
                 <div
                   key={node.id}
@@ -2200,12 +2214,25 @@ function FlowEditorInner() {
                       {node.data?.description || nodeSummary(node)}
                     </span>
                   </span>
-                  <span
-                    className={`h-2 w-2 rounded-full ${resourceLost ? "bg-red-500" : disabled ? "bg-muted-foreground/40" : "bg-emerald-500"}`}
-                    title={
-                      resourceLost ? "资源丢失" : disabled ? "未启用" : "正常"
-                    }
-                  />
+                  {canRestore ? (
+                    <button
+                      type="button"
+                      className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md hover:bg-muted"
+                      aria-label="重新激活节点"
+                      title="重新激活节点"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        void handleRestoreNode(node.id);
+                      }}
+                    >
+                      <span className="h-2 w-2 rounded-full bg-muted-foreground/40" />
+                    </button>
+                  ) : (
+                    <span
+                      className={`h-2 w-2 shrink-0 rounded-full ${resourceLost ? "bg-red-500" : disabled ? "bg-muted-foreground/40" : "bg-emerald-500"}`}
+                      title={resourceLost ? "资源丢失" : disabled ? "未启用" : "正常"}
+                    />
+                  )}
                   <button
                     type="button"
                     className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-destructive"
@@ -2404,7 +2431,7 @@ function FlowEditorInner() {
       {/* React Flow 画布 */}
       <div
         ref={reactFlowWrapper}
-        className="relative h-full w-full overflow-hidden"
+        className={`relative h-full w-full overflow-hidden ${isViewportMoving ? "canvas-viewport-moving" : ""}`}
         onDoubleClickCapture={handleCanvasDoubleClick}
         onContextMenu={(event) => {
           if (isEditableTarget(event.target) || nodes.some((node) => node.selected)) return;
@@ -2468,14 +2495,15 @@ function FlowEditorInner() {
           proOptions={{ hideAttribution: true }}
           fitView={!currentFlow?.viewport}
           fitViewOptions={FLOW_FIT_VIEW_OPTIONS}
+          onlyRenderVisibleElements
           zoomOnDoubleClick={false}
-          onMoveStart={closeCanvasMenus}
+          onMoveStart={handleMoveStart}
           onMoveEnd={handleMoveEnd}
           minZoom={0.1}
           maxZoom={4}
           defaultEdgeOptions={DEFAULT_EDGE_OPTIONS}
         >
-          <Background color="var(--border)" gap={16} />
+          <Background color="var(--canvas-grid)" gap={28} size={1.6} />
           <NodeToolbar
             nodeId={marqueeSelectionIds}
             isVisible={marqueeSelectionIds.length > 1}
@@ -2502,7 +2530,7 @@ function FlowEditorInner() {
         ) : (
           <div className="h-full w-full bg-background" aria-hidden="true" />
         )}
-        {isCurrentFlowReady && showMinimap && (
+        {isCurrentFlowReady && showMinimap && !isViewportMoving && (
           <InteractiveMiniMap
             right={showExtensionPanel ? extensionWidth + 24 : 24}
           />

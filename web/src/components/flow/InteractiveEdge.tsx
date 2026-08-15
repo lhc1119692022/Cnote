@@ -12,24 +12,14 @@ export const InteractiveEdge = memo(({ id, source, target, sourceX, sourceY, tar
   const visibleTargetX = targetPosition === Position.Left ? targetX + handleRadius : targetPosition === Position.Right ? targetX - handleRadius : targetX
   const [path, labelX, labelY] = getBezierPath({ sourceX: visibleSourceX, sourceY, sourcePosition, targetX: visibleTargetX, targetY, targetPosition })
   const endpointSelected = useFlowStore((state) => state.nodes.some((node) => (node.id === source || node.id === target) && node.selected))
-  const updateNode = useFlowStore((state) => state.updateNode)
   const deleteEdge = useFlowStore((state) => state.deleteEdge)
   const actionsVisible = Boolean(selected || endpointSelected || isHovered)
 
   const toggleDownstream = () => {
-    const { nodes, edges } = useFlowStore.getState()
+    const { nodes, setNodeDisabledByUser } = useFlowStore.getState()
     const targetNode = nodes.find((node) => node.id === target)
     const nextDisabled = !Boolean(targetNode?.data?.disabled)
-    const queue = [target]
-    const visited = new Set<string>()
-    while (queue.length) {
-      const nodeId = queue.shift() as string
-      if (visited.has(nodeId)) continue
-      visited.add(nodeId)
-      const node = useFlowStore.getState().nodes.find((item) => item.id === nodeId)
-      if (node) updateNode(nodeId, { data: { ...node.data, disabled: nextDisabled, enabled: !nextDisabled } })
-      edges.filter((edge) => edge.source === nodeId).forEach((edge) => queue.push(edge.target))
-    }
+    if (targetNode) setNodeDisabledByUser(target, nextDisabled)
   }
 
   return (

@@ -7,7 +7,8 @@ import type { Flow, Folder } from '@/types/flow'
 import { FlowExecutor, type ExecutionContext } from '@/lib/flow'
 import { useAIStore } from '@/stores/use-ai-store'
 import { localForageStorage } from '@/lib/localforage-storage'
-import { deleteLocalResource, retainLocalResource } from '@/lib/resource-storage'
+import { deleteLocalResource, hasLocalResource, retainLocalResource } from '@/lib/resource-storage'
+import { hasNodeConnections, reconcileDisabledNodes } from '@/lib/flow/disabled'
 import { cloneFlowValue } from '@/lib/flow/clone'
 import {
   AI_NODE_DEFAULT_SIZE,
@@ -168,6 +169,13 @@ function nodeResourceId(node?: Node) {
   return source?.kind === 'file' || source?.kind === 'clipboard-image' ? source.resourceId as string : undefined
 }
 
+function isLocalMediaNode(node?: Node) {
+  if (node?.type !== 'content') return false
+  const category = node.data?.category
+  const sourceKind = node.data?.source?.kind
+  return (category === 'image' || category === 'video') && (sourceKind === 'file' || sourceKind === 'clipboard-image')
+}
+
 function resourceCounts(nodes: Node[]) {
   const counts = new Map<string, number>()
   nodes.forEach((node) => {
@@ -256,6 +264,8 @@ interface FlowState {
   addNode: (node: Omit<Node, 'id'>) => Node
   deleteNode: (id: string) => void
   updateNode: (id: string, updates: Partial<Node>) => void
+  setNodeDisabledByUser: (id: string, disabled: boolean) => void
+  restoreNode: (id: string) => Promise<{ ok: boolean; message?: string }>
   duplicateNode: (id: string) => void
   replaceGraph: (nodes: Node[], edges: Edge[], recordHistory?: boolean) => void
 
@@ -398,29 +408,30 @@ export const useFlowStore = create<FlowState>()(
           target: nodeIdMap.get(edge.target) || edge.target,
           selected: false,
         }))
+        const reconciledNodes = reconcileDisabledNodes(initialNodes, initialEdges)
         const newFlow: Flow = {
           id: nanoid(),
           name,
           title: name,
           description: description || '',
-          nodes: initialNodes,
+          nodes: reconciledNodes,
           edges: initialEdges,
           folderId,
           createdAt: Date.now(),
           updatedAt: Date.now(),
         }
-        const initialHistory = cloneHistoryEntry(initialNodes, initialEdges)
+        const initialHistory = cloneHistoryEntry(reconciledNodes, initialEdges)
 
         set((state) => ({
           flows: [...state.flows, newFlow],
           currentFlow: newFlow,
           currentFlowId: newFlow.id,
-          nodes: initialNodes,
+          nodes: reconciledNodes,
           edges: initialEdges,
           history: [initialHistory],
           historyIndex: 0,
         }))
-        void adjustResourceReferences([], initialNodes)
+        void adjustResourceReferences([], reconciledNodes)
         void replaceHistoryResourceReferences(previousHistory, [initialHistory])
 
         return newFlow
@@ -468,8 +479,9 @@ export const useFlowStore = create<FlowState>()(
         const previousHistory = get().history
         const flow = get().flows.find((f) => f.id === id)
         if (!flow) return
-        const nodes = ensureUniqueNodeLabels(normalizeNodes(cloneFlowValue(flow.nodes || [])))
         const edges = cloneFlowValue(flow.edges || [])
+        const normalizedNodes = ensureUniqueNodeLabels(normalizeNodes(cloneFlowValue(flow.nodes || [])))
+        const nodes = reconcileDisabledNodes(normalizedNodes, edges)
         const normalizedFlow = { ...flow, nodes: cloneFlowValue(nodes), edges: cloneFlowValue(edges) }
         const initialHistory = cloneHistoryEntry(nodes, edges)
 
@@ -571,7 +583,7 @@ export const useFlowStore = create<FlowState>()(
             data: { ...clonedNode.data, label },
           }
           createdNode = newNode
-          const newNodes = [...state.nodes, newNode]
+          const newNodes = reconcileDisabledNodes([...state.nodes, newNode], state.edges)
           return { nodes: newNodes }
         })
 
@@ -586,7 +598,7 @@ export const useFlowStore = create<FlowState>()(
         if (!removed) return
         if (removed.type === 'group') {
           set((state) => ({
-            nodes: state.nodes.map((node) => {
+            nodes: reconcileDisabledNodes(state.nodes.map((node) => {
               if (node.parentNode !== id) return node
               return {
                 ...node,
@@ -597,7 +609,7 @@ export const useFlowStore = create<FlowState>()(
                   y: removed.position.y + node.position.y,
                 },
               }
-            }).filter((node) => node.id !== id),
+            }).filter((node) => node.id !== id), state.edges),
           }))
           get().addToHistory()
           get().saveCurrentFlow()
@@ -605,7 +617,10 @@ export const useFlowStore = create<FlowState>()(
         }
         void deleteLocalResource(nodeResourceId(removed))
         set((state) => ({
-          nodes: state.nodes.filter((n) => n.id !== id),
+          nodes: reconcileDisabledNodes(
+            state.nodes.filter((n) => n.id !== id),
+            state.edges.filter((e) => e.source !== id && e.target !== id),
+          ),
           edges: state.edges.filter((e) => e.source !== id && e.target !== id),
         }))
 
@@ -626,10 +641,61 @@ export const useFlowStore = create<FlowState>()(
           }
           const usedLabels = new Set(state.nodes.filter((node) => node.id !== id).map(getNodeLabel))
           const label = getUniqueNodeLabel(getNodeLabel(merged), usedLabels)
-          return { nodes: state.nodes.map((node) => node.id === id ? { ...merged, data: { ...merged.data, label } } : node) }
+          const nextNodes = state.nodes.map((node) => node.id === id ? { ...merged, data: { ...merged.data, label } } : node)
+          return { nodes: reconcileDisabledNodes(nextNodes, state.edges) }
         })
 
         scheduleCurrentFlowSave(get)
+      },
+
+      setNodeDisabledByUser: (id, disabled) => {
+        const current = get().nodes.find((node) => node.id === id)
+        if (!current) return
+        set((state) => ({
+          nodes: reconcileDisabledNodes(
+            state.nodes.map((node) => node.id === id
+              ? { ...node, data: { ...node.data, disabledByUser: disabled } }
+              : node),
+            state.edges,
+          ),
+        }))
+        get().addToHistory()
+        get().saveCurrentFlow()
+      },
+
+      restoreNode: async (id) => {
+        const initial = get().nodes.find((node) => node.id === id)
+        if (!initial) return { ok: false, message: '节点不存在，无法恢复。' }
+        if (hasNodeConnections(id, get().edges)) return { ok: false, message: '请先断开节点连接，再恢复该节点。' }
+
+        if (isLocalMediaNode(initial)) {
+          const resourceId = nodeResourceId(initial)
+          const exists = Boolean(resourceId && await hasLocalResource(resourceId))
+          if (!exists) {
+            const current = get().nodes.find((node) => node.id === id)
+            if (current) {
+              get().updateNode(id, { data: { ...current.data, state: 'missing', resourceLost: true } })
+            }
+            return { ok: false, message: '本地图片或视频资源不存在，节点仍保持禁用。请刷新节点连接资源。' }
+          }
+        }
+
+        const current = get().nodes.find((node) => node.id === id)
+        if (!current || hasNodeConnections(id, get().edges)) return { ok: false, message: '节点连接已变化，请先断开连接。' }
+        set((state) => ({
+          nodes: reconcileDisabledNodes(
+            state.nodes.map((node) => {
+              if (node.id !== id) return node
+              const data = { ...node.data, disabledByUser: false, resourceLost: false }
+              if (data.state === 'missing') data.state = 'ready'
+              return { ...node, data }
+            }),
+            state.edges,
+          ),
+        }))
+        get().addToHistory()
+        get().saveCurrentFlow()
+        return { ok: true }
       },
 
       // 复制节点
@@ -651,7 +717,7 @@ export const useFlowStore = create<FlowState>()(
               y: node.position.y + 50,
             },
           }
-          return { nodes: [...state.nodes, newNode] }
+          return { nodes: reconcileDisabledNodes([...state.nodes, newNode], state.edges) }
         })
 
         get().addToHistory()
@@ -660,8 +726,8 @@ export const useFlowStore = create<FlowState>()(
 
       replaceGraph: (nodes, edges, recordHistory = true) => {
         const previousNodes = get().nodes
-        const nextNodes = cloneFlowValue(nodes)
         const nextEdges = cloneFlowValue(edges)
+        const nextNodes = reconcileDisabledNodes(cloneFlowValue(nodes), nextEdges)
         set({ nodes: nextNodes, edges: nextEdges })
         void adjustResourceReferences(previousNodes, nextNodes)
         if (recordHistory) {
@@ -678,6 +744,7 @@ export const useFlowStore = create<FlowState>()(
         }
 
         set((state) => ({
+          nodes: reconcileDisabledNodes(state.nodes, [...state.edges, newEdge]),
           edges: [...state.edges, newEdge],
         }))
 
@@ -688,9 +755,10 @@ export const useFlowStore = create<FlowState>()(
       // 删除边
       deleteEdge: (id) => {
         if (!get().edges.some((edge) => edge.id === id)) return
-        set((state) => ({
-          edges: state.edges.filter((e) => e.id !== id),
-        }))
+        set((state) => {
+          const nextEdges = state.edges.filter((e) => e.id !== id)
+          return { nodes: reconcileDisabledNodes(state.nodes, nextEdges), edges: nextEdges }
+        })
 
         get().addToHistory()
         get().saveCurrentFlow()
@@ -721,9 +789,10 @@ export const useFlowStore = create<FlowState>()(
 
       // React Flow 边变更处理
       onEdgesChange: (changes) => {
-        set((state) => ({
-          edges: applyEdgeChanges(changes, state.edges),
-        }))
+        set((state) => {
+          const nextEdges = applyEdgeChanges(changes, state.edges)
+          return { nodes: reconcileDisabledNodes(state.nodes, nextEdges), edges: nextEdges }
+        })
 
         if (changes.some((change) => change.type !== 'select')) {
           scheduleCurrentFlowSave(get)
@@ -767,7 +836,10 @@ export const useFlowStore = create<FlowState>()(
         if (historyIndex <= 0) return
 
         const prevState = history[historyIndex - 1]
-        const nextState = cloneHistoryEntry(prevState.nodes, prevState.edges)
+        const nextState = cloneHistoryEntry(
+          reconcileDisabledNodes(prevState.nodes, prevState.edges),
+          prevState.edges,
+        )
         void adjustResourceReferences(get().nodes, nextState.nodes)
         set({
           nodes: nextState.nodes,
@@ -784,7 +856,10 @@ export const useFlowStore = create<FlowState>()(
         if (historyIndex >= history.length - 1) return
 
         const historyState = history[historyIndex + 1]
-        const nextState = cloneHistoryEntry(historyState.nodes, historyState.edges)
+        const nextState = cloneHistoryEntry(
+          reconcileDisabledNodes(historyState.nodes, historyState.edges),
+          historyState.edges,
+        )
         void adjustResourceReferences(get().nodes, nextState.nodes)
         set({
           nodes: nextState.nodes,
@@ -847,8 +922,9 @@ export const useFlowStore = create<FlowState>()(
           flushScheduledFlowSave(get)
           const previousHistory = get().history
           const data = JSON.parse(json)
-          const nodes = ensureUniqueNodeLabels(normalizeNodes(cloneFlowValue(data.nodes || [])))
           const edges = cloneFlowValue(data.edges || [])
+          const normalizedNodes = ensureUniqueNodeLabels(normalizeNodes(cloneFlowValue(data.nodes || [])))
+          const nodes = reconcileDisabledNodes(normalizedNodes, edges)
           const newFlow: Flow = {
             id: nanoid(),
             name: data.name || '导入的 Flow',

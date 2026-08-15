@@ -17,7 +17,7 @@ import { NodeHandle, NodeHoverToolbar, NodeResizeArc, NodeResourceLostNotice } f
 import { MarkdownPreview } from '../ContentEditorPanel'
 
 interface CategoryOption { id: ContentCategory; label: string; icon: typeof Video; iconClass: string }
-export const contentCategoryOptions: CategoryOption[] = [
+const contentCategoryOptions: CategoryOption[] = [
   { id: 'text', label: '文本', icon: AlignLeft, iconClass: 'text-slate-500' },
   { id: 'video', label: '视频', icon: Video, iconClass: 'text-red-500' },
   { id: 'social', label: '社媒', icon: Share2, iconClass: 'text-pink-500' },
@@ -53,8 +53,52 @@ function limitMindmapTree(root: MindmapTreeNode, maxNodes = 60, maxDepth = 5) {
   return visit(root, 0) || { ...root, children: [] }
 }
 
-function MindmapMapBranch({ node, depth = 0 }: { node: MindmapTreeNode; depth?: number }) {
-  return <div className="flex items-center gap-3"><div className={`max-w-36 shrink-0 rounded-lg border px-3 py-2 text-xs leading-4 ${depth === 0 ? 'border-violet-300 bg-violet-50 font-semibold text-violet-950 dark:border-violet-700 dark:bg-violet-950/40 dark:text-violet-100' : 'border-border bg-card text-foreground'}`}>{node.text}</div>{node.children.length > 0 && <div className="flex flex-col gap-2 border-l border-violet-200 pl-4 dark:border-violet-800">{node.children.map((child) => <MindmapMapBranch key={child.id} node={child} depth={depth + 1} />)}</div>}</div>
+function countMindmapNodes(node: MindmapTreeNode): number {
+  return 1 + node.children.reduce((total, child) => total + countMindmapNodes(child), 0)
+}
+
+function MindmapNodeCard({ node, depth, root = false }: { node: MindmapTreeNode; depth: number; root?: boolean }) {
+  const levelLabel = depth === 1 ? '主分支' : depth === 2 ? '子项' : `${depth - 1} 级子项`
+  return <div className={`mindmap-node-card ${root ? 'mindmap-node-card-root' : `mindmap-node-card-depth-${Math.min(depth, 4)}`}`}>
+    <div className="mindmap-node-kicker">{root ? <><Workflow className="h-3.5 w-3.5" />中心主题</> : levelLabel}</div>
+    <div className="mindmap-node-text">{node.text || '未命名主题'}</div>
+    {node.children.length > 0 && <div className="mindmap-node-count">{node.children.length} 个下级主题</div>}
+  </div>
+}
+
+type MindmapSide = 'left' | 'right'
+
+function MindmapBranchList({ nodes, depth, side, nested = false }: { nodes: MindmapTreeNode[]; depth: number; side: MindmapSide; nested?: boolean }) {
+  return <div className={`mindmap-branch-list mindmap-branch-list-${side} ${nested ? 'mindmap-branch-list-nested' : 'mindmap-branch-list-primary'} mindmap-branch-list-depth-${Math.min(depth, 4)}`}>
+    {nodes.map((node) => <MindmapMapBranch key={node.id} node={node} depth={depth} side={side} />)}
+  </div>
+}
+
+function MindmapMapBranch({ node, depth, side }: { node: MindmapTreeNode; depth: number; side: MindmapSide }) {
+  return <div className={`mindmap-branch mindmap-branch-${side} ${node.children.length > 0 ? 'mindmap-branch-has-children' : ''}`}>
+    <MindmapNodeCard node={node} depth={depth} />
+    {node.children.length > 0 && <MindmapBranchList nodes={node.children} depth={depth + 1} side={side} nested />}
+  </div>
+}
+
+function MindmapMap({ root }: { root: MindmapTreeNode }) {
+  const totalNodes = countMindmapNodes(root)
+  const leftCount = Math.floor(root.children.length / 2)
+  const leftNodes = root.children.slice(0, leftCount).reverse()
+  const rightNodes = root.children.slice(leftCount)
+  return <div className="mindmap-map">
+    <div className="mindmap-map-header"><span className="mindmap-map-label">结构地图</span><span>{totalNodes} 个主题 · {root.children.length} 个主分支</span></div>
+    <div className="mindmap-map-layout">
+      <div className={`mindmap-map-side mindmap-map-side-left ${leftNodes.length ? 'mindmap-map-side-has-branches' : ''}`}>
+        {leftNodes.length > 0 && <MindmapBranchList nodes={leftNodes} depth={1} side="left" />}
+      </div>
+      <div className="mindmap-root-wrap"><MindmapNodeCard node={root} depth={0} root /></div>
+      <div className={`mindmap-map-side mindmap-map-side-right ${rightNodes.length ? 'mindmap-map-side-has-branches' : ''}`}>
+        {rightNodes.length > 0 && <MindmapBranchList nodes={rightNodes} depth={1} side="right" />}
+      </div>
+    </div>
+    {root.children.length === 0 && <div className="mindmap-map-empty">在面板中添加主分支，即可展开结构</div>}
+  </div>
 }
 
 function RemoteLinkPreview({ title, description, thumbnailUrl, url, label }: { title: string; description?: string; thumbnailUrl?: string; url: string; label: string }) {
@@ -668,9 +712,10 @@ export const ContentLeafNode = memo(({ id, data, selected }: NodeProps<ContentNo
     <NodeHoverToolbar nodeId={id} /><NodeResizeArc nodeId={id} minWidth={CONTENT_NODE_MIN_SIZE.width} minHeight={minHeight} />
     {(data.state === 'missing' || data.resourceLost) && <NodeResourceLostNotice />}
     {(category === 'text' || category === 'mindmap') && <Button variant="ghost" size="icon" className="nodrag absolute right-3 top-3 z-10 h-8 w-8 rounded-full bg-card/80 text-muted-foreground opacity-0 shadow-sm backdrop-blur transition-opacity hover:text-foreground group-hover:opacity-100" aria-label="展开编辑器" onClick={openEditorPanel}><Maximize2 className="h-4 w-4" /></Button>}
+    <div className="node-scroll-clip flex min-h-0 w-full flex-1 flex-col">
     <div
       ref={socialScrollRef}
-      className={`relative flex min-h-0 flex-1 flex-col ${isOnlinePlayableVideo ? 'overflow-hidden p-[11px]' : isMediaNode ? 'overflow-auto p-[11px]' : category === 'mindmap' ? 'overflow-auto p-0' : category === 'social' ? 'nodrag nowheel select-text overflow-y-auto overscroll-contain p-5' : 'overflow-auto p-5'} ${centerContent ? 'justify-center' : ''}`}
+      className={`relative flex min-h-0 min-w-0 flex-1 flex-col ${isOnlinePlayableVideo ? 'overflow-hidden p-[11px]' : isMediaNode ? 'overflow-auto p-[11px]' : category === 'mindmap' ? 'overflow-auto p-0' : category === 'social' ? 'nodrag nowheel select-text overflow-y-auto overscroll-contain p-5' : category === 'text' && editorMode === 'inline' && activeEditorNodeId === id && textEditing ? 'overflow-hidden p-5' : 'overflow-auto p-5'} custom-scrollbar ${centerContent ? 'justify-center' : ''}`}
       onPointerDownCapture={(event) => {
         if (category === 'social') event.stopPropagation()
         if (category === 'text' && textEditing && editorMode === 'inline' && activeEditorNodeId === id && event.target instanceof HTMLTextAreaElement) {
@@ -694,7 +739,7 @@ export const ContentLeafNode = memo(({ id, data, selected }: NodeProps<ContentNo
             }} onBlur={() => {
               setTextEditing(false)
               if (textDirtyRef.current) void saveTextContentToNode(id, draft).finally(() => { textDirtyRef.current = false })
-            }} className="nodrag nowheel min-h-0 flex-1 resize-none border-0 bg-transparent p-1 text-base leading-7 outline-none" placeholder="此处粘贴或编辑" />
+            }} className="custom-scrollbar nodrag nowheel min-h-0 flex-1 resize-none overflow-y-auto border-0 bg-transparent p-1 text-base leading-7 outline-none" placeholder="此处粘贴或编辑" />
           : draft.trim()
             ? <button type="button" className="nodrag flex min-h-0 flex-1 w-full flex-col items-stretch justify-start p-0 text-left" onClick={beginTextEditing}><MarkdownPreview source={draft} /></button>
             : <button type="button" className="nodrag flex min-h-0 flex-1 w-full flex-col items-center justify-center gap-3 text-muted-foreground" onClick={beginTextEditing}><AlignLeft className="h-10 w-10 stroke-[1.5]" /><span className="text-sm">点击开始编辑</span></button>}
@@ -777,7 +822,7 @@ export const ContentLeafNode = memo(({ id, data, selected }: NodeProps<ContentNo
         {category === 'video' && !isOnlinePlayableVideo && parseWarning && <div className="mt-3 flex items-start gap-2 rounded-lg border border-amber-200/80 bg-amber-50/70 px-3 py-2 text-xs leading-5 text-amber-900 dark:border-amber-900/70 dark:bg-amber-950/30 dark:text-amber-100"><AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" /><span>{parseWarning.message}</span></div>}
         {category === 'document' && (displayText ? <div className="space-y-3"><p className="line-clamp-8 whitespace-pre-wrap text-base leading-7">{displayText}</p>{documentPayload?.pageCount && <span className="text-xs text-muted-foreground">共 {documentPayload.pageCount} 页</span>}{sourceUrl && <a href={sourceUrl} target="_blank" rel="noreferrer" className="nodrag inline-flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground" onPointerDown={(event) => event.stopPropagation()}><ExternalLink className="h-3.5 w-3.5" />打开原文</a>}</div> : <RemoteLinkPreview title={data.preview?.title || data.label} description={data.preview?.description} thumbnailUrl={data.preview?.thumbnailUrl} url={sourceUrl} label="原文" />)}
         {category === 'data' && dataPayload && (dataPayload.sheets.length > 0 ? <div className="overflow-auto"><div className="mb-2 text-xs text-muted-foreground">{dataPayload.sheets[0]?.name} · {dataPayload.sheets[0]?.totalRows || 0} 行</div><table className="w-full border-collapse text-xs"><thead><tr>{dataPayload.sheets[0]?.columns.slice(0, 6).map((column) => <th key={column} className="border border-border bg-muted/50 px-2 py-1.5 text-left">{column}</th>)}</tr></thead><tbody>{dataPayload.sheets[0]?.rows.slice(0, 5).map((row, index) => <tr key={index}>{row.slice(0, 6).map((cell, cellIndex) => <td key={cellIndex} className="max-w-28 truncate border border-border px-2 py-1.5">{String(cell ?? '')}</td>)}</tr>)}</tbody></table></div> : <RemoteLinkPreview title={data.preview?.title || data.label} description={data.preview?.description} thumbnailUrl={data.preview?.thumbnailUrl} url={sourceUrl} label="数据源" />)}
-        {category === 'mindmap' && limitedMindmap && <div className="flex h-full min-h-[360px] w-full items-center justify-center overflow-auto p-6"><MindmapMapBranch node={limitedMindmap} />{sourceUrl && <a href={sourceUrl} target="_blank" rel="noreferrer" className="nodrag absolute bottom-4 right-4 inline-flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground" onPointerDown={(event) => event.stopPropagation()}><ExternalLink className="h-3.5 w-3.5" />打开原导图</a>}</div>}
+        {category === 'mindmap' && limitedMindmap && <div className="mindmap-scroll-area custom-scrollbar nodrag nowheel select-text"><MindmapMap root={limitedMindmap} />{sourceUrl && <a href={sourceUrl} target="_blank" rel="noreferrer" className="nodrag absolute bottom-4 right-4 inline-flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground" onPointerDown={(event) => event.stopPropagation()}><ExternalLink className="h-3.5 w-3.5" />打开原导图</a>}</div>}
         {category === 'social' && social && <div ref={socialContentRef} className="space-y-4">
           {socialMediaItems.length > 0
             ? <SocialMediaCarousel items={socialMediaItems} activeIndex={socialMediaIndex} onActiveIndexChange={setSocialMediaIndex} resolveMediaUrl={resolveSocialMediaUrl} maxAspectRatio={socialMediaAspectRatio} />
@@ -809,6 +854,7 @@ export const ContentLeafNode = memo(({ id, data, selected }: NodeProps<ContentNo
         </div>}
         {category === 'presentation' && (sourceUrl ? <RemoteLinkPreview title={data.preview?.title || '演示文稿'} description={data.preview?.description} thumbnailUrl={data.preview?.thumbnailUrl} url={sourceUrl} label="演示文稿" /> : presentationPayload?.slides?.length ? <div className="grid grid-cols-1 gap-3">{presentationPayload.slides.slice(0, 6).map((slide) => <article key={slide.index} className="min-h-32 rounded-xl border border-border bg-muted/20 p-4"><div className="mb-2 text-xs font-medium text-muted-foreground">第 {slide.index} 页</div><h4 className="line-clamp-1 text-lg font-semibold leading-7">{slide.title || `第 ${slide.index} 页`}</h4><p className="mt-1 line-clamp-4 whitespace-pre-wrap text-base leading-7 text-muted-foreground">{slide.text}</p></article>)}{presentationPayload.slideCount && presentationPayload.slideCount > 6 && <div className="text-center text-xs text-muted-foreground">共 {presentationPayload.slideCount} 页，当前显示前 6 页</div>}</div> : <div className="flex min-h-44 flex-col items-center justify-center gap-2 text-center text-sm text-muted-foreground"><Presentation className="h-8 w-8 text-orange-500" /><span>{data.preview?.title || '演示文稿'}</span><span className="text-xs">未提取到可展示的页面内容</span></div>)}
       </>}
+    </div>
     </div>
     <input ref={fileRef} type="file" className="hidden" accept={CONTENT_FILE_ACCEPT_BY_CATEGORY[category]} onChange={onFile} />
   </div>
