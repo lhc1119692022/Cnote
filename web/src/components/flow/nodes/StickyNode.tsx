@@ -50,7 +50,7 @@ export const StickyNode = memo(({ id, data, selected }: NodeProps<StickyNodeData
           value={content}
           onChange={(event) => { const value = event.target.value; setContent(value); updateNode(id, { data: { ...data, content: value, text: value } }) }}
           placeholder="添加备注..."
-          className="h-full min-h-0 w-full resize-none overflow-auto bg-transparent px-0 py-0 text-base leading-7 focus:outline-none"
+          className="custom-scrollbar h-full min-h-0 w-full resize-none overflow-auto bg-transparent px-0 py-0 text-base leading-7 focus:outline-none"
           style={{ color: '#1d1d1f' }}
         />
       </div>

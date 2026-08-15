@@ -4,7 +4,7 @@ import { Download, FileText, Globe, Layers3, Copy, Bookmark, RefreshCw, Scissors
 import { useFlowStore } from '@/stores/use-flow-store'
 import { useSourceStore } from '@/stores/use-source-store'
 import type { ContentCategory, ContentNodeData } from '@/types/flow'
-import { cloneLocalResource, deleteLocalResource, loadLocalResourceBlob } from '@/lib/resource-storage'
+import { cloneLocalResource, deleteLocalResource, hasLocalResource, loadLocalResourceBlob } from '@/lib/resource-storage'
 import { getContentCategoryVisual } from '@/lib/content-visuals'
 import { canNodeOutputText, importContentIntoNode, refreshTextFromUpstream, reparseContentNode } from '@/lib/content-import-controller'
 import { getContentFileAccept } from '@/lib/content-import'
@@ -145,6 +145,10 @@ export function NodeHoverToolbar({ nodeId, children }: { nodeId: string; childre
       const nextResourceId = nextData.source?.kind === 'file' || nextData.source?.kind === 'clipboard-image'
         ? nextData.source.resourceId
         : undefined
+      if (nextResourceId && !(await hasLocalResource(nextResourceId))) {
+        updateNode(nodeId, { data: { ...node.data, state: 'missing', resourceLost: true } })
+        return
+      }
       if (currentResourceId !== nextResourceId) {
         const retained = nextResourceId ? await cloneLocalResource(nextResourceId) : undefined
         if (nextResourceId && !retained) return

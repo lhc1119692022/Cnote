@@ -238,6 +238,10 @@ function markdownHeadings(text: string) {
   })
 }
 
+function unescapeMindmapContinuation(value: string) {
+  return value.trim().replace(/^\\(#{1,6}|[-*+])(?=\s)/, '$1')
+}
+
 export function markdownPlainText(text: string) {
   return text
     .replace(/```[\s\S]*?```/g, (block) => block.replace(/^```[^\n]*|```$/g, ''))
@@ -251,38 +255,42 @@ export function markdownPlainText(text: string) {
 }
 
 export function markdownToMindmap(markdown: string): MindmapPayload {
-  const nonEmptyLines = markdown.split(/\r?\n/).filter((line) => line.trim())
-  const usesMarkdownStructure = nonEmptyLines.some((line) => /^(#{1,6})\s+(.+)$/.test(line) || /^(\s*)[-*+]\s+(.+)$/.test(line))
+  const normalizedMarkdown = markdown.replace(/\r\n?/g, '\n')
+  const nonEmptyLines = normalizedMarkdown.split('\n').filter((line) => line.trim())
+  const usesMarkdownStructure = nonEmptyLines.some((line) => /^(#{1,6})\s+(.*)$/.test(line) || /^(\s*)[-*+]\s+(.*)$/.test(line))
   if (!usesMarkdownStructure && nonEmptyLines.length) {
-    const root: MindmapTreeNode = { id: nanoid(), text: nonEmptyLines[0].trim(), children: [] }
-    const stack: Array<{ depth: number; node: MindmapTreeNode }> = [{ depth: 0, node: root }]
-    for (const rawLine of nonEmptyLines.slice(1)) {
-      const indentation = rawLine.match(/^[\t ]*/)?.[0] || ''
-      const spaces = indentation.replace(/\t/g, '  ').length
-      const depth = Math.floor(spaces / 2) + 1
-      const node: MindmapTreeNode = { id: nanoid(), text: rawLine.trim(), children: [] }
-      while (stack.length && stack[stack.length - 1].depth >= depth) stack.pop()
-      ;(stack[stack.length - 1]?.node || root).children.push(node)
-      stack.push({ depth, node })
-    }
+    const root: MindmapTreeNode = { id: nanoid(), text: normalizedMarkdown.trim(), children: [] }
     return { kind: 'mindmap', root, sourceMarkdown: markdown }
   }
   const virtualRoot: MindmapTreeNode = { id: nanoid(), text: '思维导图', children: [] }
   const stack: Array<{ depth: number; node: MindmapTreeNode }> = [{ depth: -1, node: virtualRoot }]
   let currentHeadingDepth = -1
-  for (const rawLine of markdown.split(/\r?\n/)) {
-    const heading = rawLine.match(/^(#{1,6})\s+(.+)$/)
-    const list = rawLine.match(/^(\s*)[-*+]\s+(.+)$/)
-    if (!heading && !list) continue
+  let currentNode: MindmapTreeNode | undefined
+  for (const rawLine of normalizedMarkdown.split('\n')) {
+    const heading = rawLine.match(/^(#{1,6})\s+(.*)$/)
+    const list = rawLine.match(/^(\s*)[-*+]\s+(.*)$/)
+    if (!heading && !list) {
+      const continuation = unescapeMindmapContinuation(rawLine)
+      if (currentNode) {
+        currentNode.text = `${currentNode.text}\n${continuation}`
+      } else if (continuation) {
+        const rootNode: MindmapTreeNode = { id: nanoid(), text: continuation, children: [] }
+        virtualRoot.children.push(rootNode)
+        stack.push({ depth: 0, node: rootNode })
+        currentNode = rootNode
+      }
+      continue
+    }
+    if (currentNode) currentNode.text = currentNode.text.replace(/\n+$/g, '')
     const depth = heading
       ? heading[1].length - 1
       : Math.max(1, currentHeadingDepth + 1) + Math.floor((list?.[1].replace(/\t/g, '  ').length || 0) / 2)
     const text = (heading?.[2] || list?.[2] || '').trim()
-    if (!text) continue
     const node: MindmapTreeNode = { id: nanoid(), text, children: [] }
     while (stack.length && stack[stack.length - 1].depth >= depth) stack.pop()
     ;(stack[stack.length - 1]?.node || virtualRoot).children.push(node)
     stack.push({ depth, node })
+    currentNode = node
     if (heading) currentHeadingDepth = depth
   }
   if (virtualRoot.children.length === 1) return { kind: 'mindmap', root: virtualRoot.children[0], sourceMarkdown: markdown }

@@ -215,7 +215,13 @@ export interface TextPayload {
 
 export type ContentPayload = TextPayload | DocumentPayload | DataPayload | MindmapPayload | SocialPayload | VideoPayload | ImagePayload | PresentationPayload
 
-export interface BaseNodeData { label: string; description?: string }
+export interface BaseNodeData {
+  label: string
+  description?: string
+  disabled?: boolean
+  disabledByUser?: boolean
+  disabledByGraph?: boolean
+}
 export interface ContentNodeData extends BaseNodeData {
   schemaVersion: 2
   category: ContentCategory | null

@@ -1,6 +1,6 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { NodeProps, Position } from 'reactflow'
-import { ArrowUp, Brain, ChevronDown, Copy, FileCog, GitBranch, History, LoaderCircle, MessageSquarePlus, Search, Settings, Sparkles, SquarePen, Trash2, X } from 'lucide-react'
+import { ArrowUp, Brain, ChevronDown, Copy, FileCog, GitBranch, History, LoaderCircle, MessageSquarePlus, Search, Settings, Sparkles, Square, SquarePen, Trash2, X } from 'lucide-react'
 import { useAIStore } from '@/stores/use-ai-store'
 import { useFlowStore } from '@/stores/use-flow-store'
 import { saveTextContentToNode } from '@/lib/content-import-controller'
@@ -161,6 +161,7 @@ export const AINode = memo(({ id, data, selected }: NodeProps<AINodeData>) => {
   const lastAutoSizeRef = useRef<{ width: number; height: number } | null>(null)
   const manuallyResizedRef = useRef(false)
   const replyHoverTimerRef = useRef<number | null>(null)
+  const requestControllerRef = useRef<AbortController | null>(null)
 
   const availableChannels = useMemo(
     () => apiKeys.filter((channel) => Boolean(getAPIKey(channel.id)) && Boolean(channel.modelIds?.length)),
@@ -186,7 +187,7 @@ export const AINode = memo(({ id, data, selected }: NodeProps<AINodeData>) => {
   const webSearch = data.webSearch || 'auto'
   const reasoningLevel = data.reasoningLevel || 'medium'
   const effectiveReasoningLevel = adaptReasoningLevel(modelCapabilities, reasoningLevel)
-  const disabled = Boolean(data.disabled || !selectedModel)
+  const disabled = Boolean(data.disabled)
   const upstreamEntries = useMemo<UpstreamEntry[]>(() => {
     const sourceIds = [...new Set(edges.filter((edge) => edge.target === id).map((edge) => edge.source))]
     return sourceIds.flatMap((sourceId) => {
@@ -252,6 +253,7 @@ export const AINode = memo(({ id, data, selected }: NodeProps<AINodeData>) => {
 
   useEffect(() => () => {
     if (replyHoverTimerRef.current !== null) window.clearTimeout(replyHoverTimerRef.current)
+    requestControllerRef.current?.abort()
   }, [])
 
   useEffect(() => {
@@ -457,6 +459,10 @@ export const AINode = memo(({ id, data, selected }: NodeProps<AINodeData>) => {
     setHoveredReplyIndex(null)
   }
 
+  const stopSending = useCallback(() => {
+    requestControllerRef.current?.abort()
+  }, [])
+
   const sendMessage = async () => {
     const displayContent = prompt.trim()
     if (!promptHasUsableContent(displayContent) || isSending) return
@@ -486,6 +492,8 @@ export const AINode = memo(({ id, data, selected }: NodeProps<AINodeData>) => {
     setPrompt('')
     setRequestError(null)
     setIsSending(true)
+    const controller = new AbortController()
+    requestControllerRef.current = controller
     try {
       const resolvedEntries = await buildAIContextEntries(useFlowStore.getState().nodes, upstreamSourceIds)
       const resolvedById = new Map(resolvedEntries.map((entry) => [entry.nodeId, entry]))
@@ -529,7 +537,7 @@ export const AINode = memo(({ id, data, selected }: NodeProps<AINodeData>) => {
         reasoning_effort: effectiveReasoningLevel,
       }
       let response = ''
-      for await (const delta of client.completeStream(request)) {
+      for await (const delta of client.completeStream(request, controller.signal)) {
         response += delta
         setStreamingReply(response)
       }
@@ -555,8 +563,13 @@ export const AINode = memo(({ id, data, selected }: NodeProps<AINodeData>) => {
       useFlowStore.getState().addToHistory()
       useFlowStore.getState().saveCurrentFlow()
     } catch (error) {
-      setRequestError(error instanceof Error ? error.message : 'AI 请求失败，请稍后重试。')
+      if (controller.signal.aborted || (error instanceof DOMException && error.name === 'AbortError')) {
+        setRequestError(null)
+      } else {
+        setRequestError(error instanceof Error ? error.message : 'AI 请求失败，请稍后重试。')
+      }
     } finally {
+      if (requestControllerRef.current === controller) requestControllerRef.current = null
       setStreamingReply('')
       setIsSending(false)
     }
@@ -627,6 +640,7 @@ export const AINode = memo(({ id, data, selected }: NodeProps<AINodeData>) => {
         </div>
       </div>
 
+      <div className="node-scroll-clip flex min-h-0 flex-1 flex-col">
       {showSystemPrompt && <div className="nodrag border-b border-border bg-muted/20 px-4 py-3" onPointerDown={(event) => event.stopPropagation()}>
         <label className="mb-1.5 block text-xs font-medium text-foreground">系统提示词</label>
         <textarea value={systemPromptDraft} onPointerDown={(event) => event.stopPropagation()} onChange={(event) => setSystemPromptDraft(event.target.value)} onBlur={() => persist({ systemPrompt: systemPromptDraft })} placeholder="为这个 AI 节点设置独立的系统提示词" rows={3} className="nodrag nowheel block w-full resize-none rounded-lg border border-border bg-card px-3 py-2 text-base leading-7 outline-none focus:border-foreground/30 focus:ring-1 focus:ring-foreground/10" />
@@ -637,7 +651,7 @@ export const AINode = memo(({ id, data, selected }: NodeProps<AINodeData>) => {
         onScroll={() => { if (hoveredReplyIndex !== null) updateReplyActionsPosition(hoveredReplyIndex) }}
         onPointerDown={(event) => event.stopPropagation()}
         onWheel={(event) => event.stopPropagation()}
-        className={`nodrag nopan nowheel select-text overscroll-contain min-h-0 flex-1 overflow-auto px-5 pt-5 ${showEmptyState ? 'flex items-center justify-center pb-5' : ''}`}
+        className={`nodrag nopan nowheel select-text overscroll-contain min-h-0 flex-1 overflow-auto custom-scrollbar px-5 pt-5 ${showEmptyState ? 'flex items-center justify-center pb-5' : ''}`}
       >
         <div ref={messageContentRef} className={showEmptyState ? 'w-full' : undefined}>
         {showEmptyState && <div className="mx-auto max-w-[360px] px-4 text-center">
@@ -661,7 +675,17 @@ export const AINode = memo(({ id, data, selected }: NodeProps<AINodeData>) => {
       <div ref={composerAreaRef} className="relative p-3 pt-1">
         <div className="flex items-center gap-2 rounded-2xl border border-border bg-card p-2 shadow-sm focus-within:border-foreground/30 focus-within:ring-1 focus-within:ring-foreground/10">
           <div ref={composerRef} role="textbox" aria-multiline="true" aria-label="输入消息" contentEditable={!isSending} suppressContentEditableWarning data-placeholder="有问题，随便问" onInput={(event) => persistPrompt(promptValueFromEditor(event.currentTarget))} onDragOver={(event) => event.preventDefault()} onDrop={receiveVariableDrop} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void sendMessage() } }} className="ai-prompt-editor nodrag nowheel flex-1 px-3 text-base leading-7 text-foreground outline-none" />
-          <button type="button" data-ai-send-button className="nodrag ai-send-button flex shrink-0 items-center justify-center rounded-full text-white transition-colors disabled:bg-muted disabled:text-muted-foreground" disabled={!canSend} onClick={() => void sendMessage()} aria-label="发送消息">{isSending ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <ArrowUp className="h-[18px] w-[18px] stroke-[2]" />}</button>
+          <button
+            type="button"
+            data-ai-send-button
+            className={`nodrag ai-send-button flex shrink-0 items-center justify-center rounded-full text-white transition-colors disabled:bg-muted disabled:text-muted-foreground ${isSending ? 'is-stopping' : ''}`}
+            disabled={isSending ? false : !canSend}
+            onClick={() => { if (isSending) stopSending(); else void sendMessage() }}
+            aria-label={isSending ? '终止请求' : '发送消息'}
+            title={isSending ? '终止请求' : '发送消息'}
+          >
+            {isSending ? <Square className="h-3.5 w-3.5 fill-current" /> : <ArrowUp className="h-[18px] w-[18px] stroke-[2]" />}
+          </button>
         </div>
         {showSettings && <div className="nodrag mt-2 flex items-center justify-between gap-3">
           <div className="flex min-w-0 items-center gap-2">
@@ -673,6 +697,7 @@ export const AINode = memo(({ id, data, selected }: NodeProps<AINodeData>) => {
             {groupedModelMenu('right')}
           </details>
         </div>}
+      </div>
       </div>
     </div>
   )
