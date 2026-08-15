@@ -715,14 +715,14 @@ export const ContentLeafNode = memo(({ id, data, selected }: NodeProps<ContentNo
     <div className="node-scroll-clip flex min-h-0 w-full flex-1 flex-col">
     <div
       ref={socialScrollRef}
-      className={`relative flex min-h-0 min-w-0 flex-1 flex-col ${isOnlinePlayableVideo ? 'overflow-hidden p-[11px]' : isMediaNode ? 'overflow-auto p-[11px]' : category === 'mindmap' ? 'overflow-auto p-0' : category === 'social' ? 'nodrag nowheel select-text overflow-y-auto overscroll-contain p-5' : category === 'text' && editorMode === 'inline' && activeEditorNodeId === id && textEditing ? 'overflow-hidden p-5' : 'overflow-auto p-5'} custom-scrollbar ${centerContent ? 'justify-center' : ''}`}
+      className={`relative flex min-h-0 min-w-0 flex-1 flex-col ${isOnlinePlayableVideo ? 'overflow-hidden p-[11px]' : isMediaNode ? 'overflow-auto p-[11px]' : category === 'mindmap' ? 'overflow-auto p-0' : category === 'social' ? 'nodrag nowheel select-text overflow-y-auto overscroll-contain p-5' : category === 'text' && editorMode === 'inline' && activeEditorNodeId === id && textEditing ? 'overflow-hidden p-5' : 'overflow-auto p-5'} custom-scrollbar ${category === 'text' ? 'nodrag nowheel' : ''} ${centerContent ? 'justify-center' : ''}`}
       onPointerDownCapture={(event) => {
         if (category === 'social') event.stopPropagation()
         if (category === 'text' && textEditing && editorMode === 'inline' && activeEditorNodeId === id && event.target instanceof HTMLTextAreaElement) {
           event.stopPropagation()
         }
       }}
-      onWheelCapture={(event) => { if (category === 'social') event.stopPropagation() }}
+      onWheelCapture={(event) => { if (category === 'social' || category === 'text') event.stopPropagation() }}
     >
       {busy && <div className="flex flex-1 flex-col items-center justify-center gap-3 text-sm text-muted-foreground"><LoaderCircle className="h-7 w-7 animate-spin" /><span>{data.state === 'importing' ? '正在导入文件…' : data.state === 'detecting' ? '正在识别内容类型…' : '正在解析内容…'}</span></div>}
       {!busy && (data.state === 'error' || data.state === 'unsupported') && <div className="flex flex-1 flex-col items-center justify-center gap-3 text-center"><AlertCircle className="h-7 w-7 text-amber-500" /><p className="text-sm font-medium">{error?.message || '无法识别此内容'}</p>{(data.source || data.parse?.retryText) && <Button variant="secondary" size="sm" onClick={() => void reparseContentNode(id)}><RefreshCw className="mr-1.5 h-3.5 w-3.5" />重新识别</Button>}</div>}
