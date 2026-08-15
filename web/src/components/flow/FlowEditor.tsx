@@ -2503,7 +2503,7 @@ function FlowEditorInner() {
           maxZoom={4}
           defaultEdgeOptions={DEFAULT_EDGE_OPTIONS}
         >
-          <Background color="var(--canvas-grid)" gap={28} size={1.6} />
+          <Background color="var(--canvas-grid)" gap={48} size={3} />
           <NodeToolbar
             nodeId={marqueeSelectionIds}
             isVisible={marqueeSelectionIds.length > 1}

@@ -773,7 +773,7 @@ export const ContentLeafNode = memo(({ id, data, selected }: NodeProps<ContentNo
               </div>}
             </div>
             {video?.transcript && <div
-              className={`nodrag nopan nowheel select-text overscroll-contain min-h-0 py-2.5 text-base leading-7 text-muted-foreground ${isOnlineVideoManuallySized || isPortraitVideo ? 'flex-1 overflow-y-auto' : 'overflow-y-auto'}`}
+              className={`custom-scrollbar nodrag nopan nowheel select-text overscroll-contain min-h-0 py-2.5 text-base leading-7 text-muted-foreground ${isOnlineVideoManuallySized || isPortraitVideo ? 'flex-1 overflow-y-auto' : 'overflow-y-auto'}`}
               onPointerDown={(event) => event.stopPropagation()}
               onWheel={(event) => event.stopPropagation()}
               style={isOnlineVideoManuallySized || isPortraitVideo ? undefined : { maxHeight: ONLINE_VIDEO_TRANSCRIPT_MAX_HEIGHT }}
