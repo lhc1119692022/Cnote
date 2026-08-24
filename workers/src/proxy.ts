@@ -62,7 +62,7 @@ function proxyConfig(env: Env) {
 }
 
 function getCorsHeaders(env: Env) {
-  const allowedHeaders = ['Content-Type', 'Authorization', 'x-api-key', 'x-goog-api-key', 'anthropic-version']
+  const allowedHeaders = ['Content-Type', 'Authorization', 'x-api-key', 'x-goog-api-key', 'anthropic-version', 'Accept', 'Range']
   const customHeaderName = proxyHeaderName(env)
   if (customHeaderName && !allowedHeaders.some((name) => name.toLowerCase() === customHeaderName.toLowerCase())) {
     new Headers({ [customHeaderName]: 'validation' })
@@ -89,6 +89,8 @@ const ALLOWED_ENDPOINTS = new Set([
 function isAllowedEndpoint(endpoint: string) {
   if (ALLOWED_ENDPOINTS.has(endpoint)) return true
   return /^v1beta\/models\/[A-Za-z0-9._-]+:(?:generateContent|streamGenerateContent)$/.test(endpoint)
+    || /^v1\/(?:videos|images)(?:\/(?:tasks\/)?[A-Za-z0-9._-]+(?:\/content)?)?$/.test(endpoint)
+    || /^v1\/tasks\/[A-Za-z0-9._-]+$/.test(endpoint)
 }
 
 function proxyRequest(pathname: string, routes: Record<string, string>) {

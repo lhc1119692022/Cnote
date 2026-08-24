@@ -1,23 +1,8 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
-  <defs>
-    <linearGradient id="grad" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" style="stop-color:#34c759;stop-opacity:1" />
-      <stop offset="100%" style="stop-color:#30b350;stop-opacity:1" />
-    </linearGradient>
-  </defs>
-
-  <!-- 圆角矩形背景 -->
-  <rect width="256" height="256" rx="60" fill="url(#grad)"/>
-
-  <!-- C 字母 -->
-  <path d="M 180 80 Q 200 80 200 100 L 200 156 Q 200 176 180 176 L 100 176 Q 80 176 80 156 L 80 100 Q 80 80 100 80 L 140 80"
-        fill="none"
-        stroke="white"
-        stroke-width="24"
-        stroke-linecap="round"/>
-
-  <!-- 流程节点装饰 -->
-  <circle cx="70" cy="70" r="8" fill="white" opacity="0.6"/>
-  <circle cx="186" cy="70" r="8" fill="white" opacity="0.6"/>
-  <circle cx="70" cy="186" r="8" fill="white" opacity="0.6"/>
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Cnote — three layered context bars -->
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" fill="none">
+  <rect width="1024" height="1024" rx="229" fill="#FFFFFF"/>
+  <rect x="326" y="300" width="426" height="104" rx="52" fill="#0A0A0A"/>
+  <rect x="238" y="460" width="286" height="104" rx="52" fill="#0A0A0A"/>
+  <rect x="326" y="620" width="382" height="104" rx="52" fill="#0A0A0A"/>
 </svg>

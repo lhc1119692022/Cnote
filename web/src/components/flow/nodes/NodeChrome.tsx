@@ -35,8 +35,19 @@ export function NodeHandle({ type, position, id }: NodeHandleProps) {
   )
 }
 
+/** Shared edge gutters keep container-style nodes draggable from every side. */
+export function NodeDragGutters() {
+  return <div className="content-node-drag-gutters" aria-hidden="true">
+    <span data-side="top" />
+    <span data-side="right" />
+    <span data-side="bottom" />
+    <span data-side="left" />
+  </div>
+}
+
 const nodeChromeByType: Record<string, { icon: typeof FileText; iconClass: string }> = {
   ai: { icon: Sparkles, iconClass: 'text-violet-600' },
+  request: { icon: Sparkles, iconClass: 'text-primary' },
   browser: { icon: Globe, iconClass: 'text-blue-600' },
   sticky: { icon: StickyNote, iconClass: 'text-amber-600' },
   content: { icon: Layers3, iconClass: 'text-slate-600' },
@@ -44,6 +55,7 @@ const nodeChromeByType: Record<string, { icon: typeof FileText; iconClass: strin
 
 const nodeChromeLabels: Record<string, string> = {
   ai: 'AI 节点',
+  request: '请求体',
   browser: '浏览器节点',
   sticky: '贴纸',
   content: '内容类型选择',

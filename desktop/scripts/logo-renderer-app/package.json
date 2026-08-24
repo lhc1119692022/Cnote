@@ -1,0 +1,5 @@
+{
+  "name": "cnote-logo-renderer",
+  "private": true,
+  "main": "../render-logo-pngs.cjs"
+}

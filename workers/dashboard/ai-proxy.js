@@ -68,7 +68,7 @@ function proxyConfig(env) {
   };
 }
 function getCorsHeaders(env) {
-  const allowedHeaders = ["Content-Type", "Authorization", "x-api-key", "x-goog-api-key", "anthropic-version"];
+  const allowedHeaders = ["Content-Type", "Authorization", "x-api-key", "x-goog-api-key", "anthropic-version", "Accept", "Range"];
   const customHeaderName = proxyHeaderName(env);
   if (customHeaderName && !allowedHeaders.some((name) => name.toLowerCase() === customHeaderName.toLowerCase())) {
     new Headers({ [customHeaderName]: "validation" });
@@ -93,7 +93,7 @@ var ALLOWED_ENDPOINTS = /* @__PURE__ */ new Set([
 function isAllowedEndpoint(endpoint) {
   if (ALLOWED_ENDPOINTS.has(endpoint))
     return true;
-  return /^v1beta\/models\/[A-Za-z0-9._-]+:(?:generateContent|streamGenerateContent)$/.test(endpoint);
+  return /^v1beta\/models\/[A-Za-z0-9._-]+:(?:generateContent|streamGenerateContent)$/.test(endpoint) || /^v1\/(?:videos|images)(?:\/(?:tasks\/)?[A-Za-z0-9._-]+(?:\/content)?)?$/.test(endpoint) || /^v1\/tasks\/[A-Za-z0-9._-]+$/.test(endpoint);
 }
 function proxyRequest(pathname, routes) {
   const parts = pathname.split("/").filter(Boolean);

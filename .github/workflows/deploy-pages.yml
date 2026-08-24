@@ -15,7 +15,29 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  desktop-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+      - name: Install Desktop dependencies
+        working-directory: desktop
+        run: npm ci --ignore-scripts
+      - name: Typecheck Desktop
+        working-directory: desktop
+        run: npm run typecheck
+      - name: Build Desktop runtime
+        working-directory: desktop
+        run: npm run build
+
   build:
+    needs: desktop-gate
     runs-on: ubuntu-latest
     steps:
       - name: Checkout

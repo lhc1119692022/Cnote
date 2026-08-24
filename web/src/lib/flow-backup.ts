@@ -25,9 +25,19 @@ interface BackupResource {
 interface FlowBackupManifest {
   format: 'cnote-flow-backup'
   version: 1
+  /** Versioned domain schema metadata for future Web/Desktop migration. */
+  schemaVersion?: 1
+  sourceRuntime?: 'web-preview' | 'desktop'
+  capabilities?: string[]
+  warnings?: string[]
   exportedAt: string
   flow: Flow
   resources: BackupResource[]
+}
+
+export interface FlowRestoreResult {
+  flowId: string | null
+  warnings: string[]
 }
 
 export class FlowBackupError extends Error {
@@ -96,6 +106,14 @@ export async function createFlowBackup(flow: Flow) {
   const manifest: FlowBackupManifest = {
     format: 'cnote-flow-backup',
     version: 1,
+    schemaVersion: 1,
+    sourceRuntime: window.cnoteDesktop ? 'desktop' : 'web-preview',
+    capabilities: [
+      'flow',
+      'local-resources',
+      ...(window.cnoteDesktop ? ['desktop-native-browser-snapshots'] : []),
+    ],
+    warnings: ['浏览器 Cookie、登录态、API Key、后台任务和系统路径不会写入普通备份。'],
     exportedAt: new Date().toISOString(),
     flow: cloneFlowValue(flow),
     resources,
@@ -118,6 +136,9 @@ function validateManifest(value: unknown): FlowBackupManifest {
   if (manifest.format !== 'cnote-flow-backup' || manifest.version !== 1 || !manifest.flow || !Array.isArray(manifest.resources)) {
     throw new FlowBackupError('INVALID_BACKUP', '这不是受支持的 Cnote Flow 备份。')
   }
+  if (manifest.schemaVersion !== undefined && manifest.schemaVersion !== 1) {
+    throw new FlowBackupError('UNSUPPORTED_SCHEMA', `备份 schema 版本 ${String(manifest.schemaVersion)} 暂不支持。`)
+  }
   return manifest as FlowBackupManifest
 }
 
@@ -126,6 +147,9 @@ export async function restoreFlowBackup(file: Blob) {
   const manifestFile = zip.file('manifest.json')
   if (!manifestFile) throw new FlowBackupError('INVALID_BACKUP', '备份中缺少 manifest.json。')
   const manifest = validateManifest(JSON.parse(await manifestFile.async('string')))
+  const warnings = new Set<string>(Array.isArray(manifest.warnings) ? manifest.warnings.filter((warning): warning is string => typeof warning === 'string' && Boolean(warning.trim())) : [])
+  if (manifest.schemaVersion === undefined) warnings.add('这是早期格式备份，已按 schema 1 兼容恢复。')
+  if (manifest.sourceRuntime === 'desktop') warnings.add('Desktop 专属浏览器会话和后台任务不会随 Flow 备份迁移。')
   const referencedResourceIds = new Set(collectResources(manifest.flow).map((resource) => resource.resourceId))
   const archivedResourceIds = new Set(manifest.resources.map((resource) => resource.resourceId))
   const missingResource = [...referencedResourceIds].find((resourceId) => !archivedResourceIds.has(resourceId))
@@ -158,7 +182,7 @@ export async function restoreFlowBackup(file: Blob) {
 
     useFlowStore.getState().importFlowFromJSON(JSON.stringify(manifest.flow))
     await Promise.all(temporaryResourceIds.map((resourceId) => deleteLocalResource(resourceId)))
-    return useFlowStore.getState().currentFlowId
+    return { flowId: useFlowStore.getState().currentFlowId, warnings: [...warnings] } satisfies FlowRestoreResult
   } catch (error) {
     await Promise.all(temporaryResourceIds.map((resourceId) => deleteLocalResource(resourceId)))
     throw error

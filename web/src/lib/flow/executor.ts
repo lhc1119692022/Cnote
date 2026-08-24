@@ -1,7 +1,8 @@
-import type { FlowNode, FlowEdge, ContentNodeData, BrowserNodeData } from '@/types/flow'
+import type { FlowNode, FlowEdge, ContentNodeData, BrowserNodeData, RequestNodeData } from '@/types/flow'
 import type { ChatContentPart, ChatMessage } from '@/lib/api'
 import { compileAiPrompt, compileAiPromptParts, type AIContextEntry } from './ai-prompt'
 import { buildAIContextEntries } from './ai-context'
+import { runDesktopNativeJob } from '@/lib/desktop-native-jobs'
 
 function compactConversation(messages: ChatMessage[], maxTokens = 258000, threshold = 0.7): ChatMessage[] {
   const triggerTokens = Math.floor(maxTokens * threshold)
@@ -76,6 +77,12 @@ export interface ExecutionResult {
   error?: string
 }
 
+export interface ExecutionProgress {
+  nodeId: string
+  status: ExecutionContext['status']
+  contexts: Map<string, ExecutionContext>
+}
+
 /**
  * Flow 执行引擎
  */
@@ -88,8 +95,10 @@ export class FlowExecutor {
   private scraperClient?: ScraperClient
   private onNodeDataUpdate?: (nodeId: string, data: Record<string, unknown>) => void
   private signal?: AbortSignal
+  private onProgress?: (progress: ExecutionProgress) => void
+  private initialContexts?: Array<Partial<ExecutionContext> & { nodeId: string }>
 
-  constructor(nodes: FlowNode[], edges: FlowEdge[], aiClient?: AIClient, scraperClient?: ScraperClient, aiClientResolver?: (channelId?: string) => AIClient | undefined, onNodeDataUpdate?: (nodeId: string, data: Record<string, unknown>) => void, signal?: AbortSignal) {
+  constructor(nodes: FlowNode[], edges: FlowEdge[], aiClient?: AIClient, scraperClient?: ScraperClient, aiClientResolver?: (channelId?: string) => AIClient | undefined, onNodeDataUpdate?: (nodeId: string, data: Record<string, unknown>) => void, signal?: AbortSignal, onProgress?: (progress: ExecutionProgress) => void, initialContexts?: Array<Partial<ExecutionContext> & { nodeId: string }>) {
     this.nodes = nodes
     this.edges = edges
     this.contexts = new Map()
@@ -98,6 +107,21 @@ export class FlowExecutor {
     this.aiClientResolver = aiClientResolver
     this.onNodeDataUpdate = onNodeDataUpdate
     this.signal = signal
+    this.onProgress = onProgress
+    this.initialContexts = initialContexts
+  }
+
+  private publishProgress(nodeId: string) {
+    if (!this.onProgress) return
+    try {
+      this.onProgress({
+        nodeId,
+        status: this.contexts.get(nodeId)?.status || 'pending',
+        contexts: new Map([...this.contexts.entries()].map(([id, context]) => [id, { ...context }])),
+      })
+    } catch {
+      // Progress persistence is best-effort and must not fail a Flow execution.
+    }
   }
 
   private throwIfAborted() {
@@ -114,10 +138,15 @@ export class FlowExecutor {
 
       // 初始化所有节点的上下文
       this.nodes.forEach((node) => {
+        const initial = this.initialContexts?.find((context) => context.nodeId === node.id)
         this.contexts.set(node.id, {
           nodeId: node.id,
-          inputs: {},
-          status: 'pending',
+          inputs: initial?.inputs || {},
+          output: initial?.output,
+          error: initial?.error,
+          status: initial?.status === 'completed' && initial.output !== undefined ? 'completed' : 'pending',
+          startTime: initial?.startTime,
+          endTime: initial?.endTime,
         })
       })
 
@@ -126,6 +155,12 @@ export class FlowExecutor {
         this.throwIfAborted()
         const node = this.nodes.find((n) => n.id === nodeId)
         if (!node) continue
+
+        const context = this.contexts.get(nodeId)
+        if (context?.status === 'completed' && context.output !== undefined) {
+          this.publishProgress(nodeId)
+          continue
+        }
 
         await this.executeNode(node)
       }
@@ -174,6 +209,9 @@ export class FlowExecutor {
         case 'ai':
           output = await this.executeAINode(node, inputs)
           break
+        case 'request':
+          output = await this.executeRequestNode(node, inputs)
+          break
         case 'browser':
           output = await this.executeBrowserNode(node, inputs)
           break
@@ -187,10 +225,12 @@ export class FlowExecutor {
       context.output = output
       context.status = 'completed'
       context.endTime = Date.now()
+      this.publishProgress(node.id)
     } catch (error) {
       context.status = 'failed'
       context.error = error instanceof Error ? error.message : 'Unknown error'
       context.endTime = Date.now()
+      this.publishProgress(node.id)
       throw error
     }
   }
@@ -322,6 +362,40 @@ export class FlowExecutor {
   }
 
   /**
+   * Generation request nodes currently normalize their inputs into a stable
+   * request envelope. Provider submission and polling are intentionally kept
+   * behind the generation adapter layer so the Flow engine can already carry
+   * the new node type without exposing provider credentials in the canvas.
+   */
+  private async executeRequestNode(
+    node: FlowNode,
+    inputs: Record<string, any>,
+  ): Promise<Record<string, unknown>> {
+    const data = node.data as RequestNodeData
+    const variant = data.variant || 'body'
+    if (variant === 'body') {
+      return { kind: 'generation-request', variant: 'body', inputs }
+    }
+
+    const config = data[variant]
+    if (!config?.prompt?.trim() && !config?.references?.length && !Object.keys(inputs).length) {
+      throw new Error(`${variant === 'image' ? '图片' : '视频'}生成节点需要提示词、参考文件或上游输入`)
+    }
+
+    return {
+      kind: 'generation-request',
+      variant,
+      channelId: config.channelId,
+      model: config.model,
+      capability: config.capability,
+      prompt: config.prompt,
+      references: config.references,
+      inputs,
+      status: 'ready-to-submit',
+    }
+  }
+
+  /**
    * 执行 Browser 节点
    */
   private async executeBrowserNode(
@@ -348,6 +422,29 @@ export class FlowExecutor {
       return outputMode === 'text'
         ? data.snapshot.text
         : { url, title: data.snapshot.title, text: data.snapshot.text }
+    }
+
+    if (data.desktopSessionId && typeof window !== 'undefined' && window.cnoteDesktop) {
+      try {
+        const capture = await window.cnoteDesktop.browser.capture(data.desktopSessionId)
+        const parsed = await runDesktopNativeJob<Awaited<ReturnType<typeof window.cnoteDesktop.content.parseHtml>>>({ kind: 'native:content-parse', input: { html: capture.html, url: capture.url, title: capture.title } }, this.signal)
+        const snapshot = {
+          url: capture.url,
+          title: parsed.title || capture.title,
+          text: parsed.text || capture.text,
+          fetchedAt: Date.now(),
+          headings: parsed.headings,
+          links: parsed.links,
+          parserId: parsed.parserId,
+          parserVersion: parsed.parserVersion,
+        }
+        this.onNodeDataUpdate?.(node.id, { snapshot, url: capture.url, confirmedUrl: capture.url, observedUrl: capture.url, browserRuntime: 'desktop-native' })
+        return outputMode === 'text'
+          ? snapshot.text
+          : { url: capture.url, title: snapshot.title, text: snapshot.text }
+      } catch {
+        // A closed or unavailable native session can fall back to the configured scraper.
+      }
     }
 
     if (!this.scraperClient) {

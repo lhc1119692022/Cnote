@@ -1,0 +1,72 @@
+name: Verify Cnote runtimes
+
+on:
+  push:
+  pull_request:
+
+concurrency:
+  group: verify-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  web:
+    needs: desktop
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Install Web dependencies
+        working-directory: web
+        run: npm ci
+      - name: Build Web Preview
+        working-directory: web
+        run: npm run build
+
+  desktop:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+      - name: Install Desktop dependencies
+        working-directory: desktop
+        run: npm ci --ignore-scripts
+      - name: Typecheck Desktop
+        working-directory: desktop
+        run: npm run typecheck
+      - name: Build Desktop runtime
+        working-directory: desktop
+        run: npm run build
+      - name: Verify Desktop runtime contracts
+        working-directory: desktop
+        run: npm run test:runtime
+
+  workers:
+    needs: web
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: workers/package-lock.json
+      - name: Install Worker dependencies
+        working-directory: workers
+        run: npm ci
+      - name: Run Worker contract tests
+        working-directory: workers
+        run: npm run test:contract

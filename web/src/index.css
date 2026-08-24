@@ -105,6 +105,74 @@
   }
 }
 
+/* Windows desktop shell: a quiet, frameless title bar like the desktop-first
+   reference UI. The drag region is deliberately separate from the controls so
+   native window movement never steals a button click. */
+.cnote-window-titlebar {
+  display: flex;
+  flex: 0 0 44px;
+  height: 44px;
+  align-items: stretch;
+  background: var(--card);
+  border-bottom: 1px solid var(--border);
+  color: var(--foreground);
+  user-select: none;
+  -webkit-app-region: drag;
+}
+
+.cnote-window-drag-region {
+  min-width: 0;
+  flex: 1 1 auto;
+  -webkit-app-region: drag;
+}
+
+.cnote-window-controls {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: stretch;
+  -webkit-app-region: no-drag;
+}
+
+.cnote-window-control {
+  display: inline-flex;
+  width: 46px;
+  height: 44px;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  background: transparent;
+  color: var(--muted-foreground);
+  cursor: pointer;
+  -webkit-app-region: no-drag;
+}
+
+.cnote-window-control:hover {
+  background: var(--muted);
+  color: var(--foreground);
+}
+
+.cnote-window-control:focus-visible {
+  position: relative;
+  z-index: 1;
+  outline: 2px solid var(--ring);
+  outline-offset: -4px;
+}
+
+.cnote-window-control-close:hover {
+  background: #c42b1c;
+  color: white;
+}
+
+.cnote-window-content {
+  min-height: 0;
+  overflow: hidden;
+}
+
+.cnote-window-content .h-screen,
+.cnote-window-content .h-dvh {
+  height: 100%;
+}
+
 
 /* 自定义滚动条 */
 .custom-scrollbar {

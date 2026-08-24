@@ -1,6 +1,6 @@
 # Cnote
 
-**Web 优先的知识工作流应用 - 基于 Vite + React 19**
+**Desktop-first 的知识工作流应用 - 基于 Electron、Vite + React 19**
 
 ## 🎯 项目简介
 
@@ -11,7 +11,7 @@ Cnote 是一个开源的知识工作流应用，专为个人知识工作者和�
 - 🎨 **无限画布** - 基于 React Flow 的可视化工作流编辑器
 - 🤖 **AI 集成** - 支持 Anthropic Claude、OpenAI GPT、Google Gemini 等主流模型
 - 📝 **富文本编辑** - 完整的内容创作和编辑能力
-- 🌐 **Web 优先** - 可构建为静态站点，适合支持 SPA 路由回退的托管服务
+- 🌐 **Web Preview** - 可构建为静态站点，用于快速体验、分享和兼容访问
 - 💾 **本地存储** - 基于 IndexedDB，无需服务器
 - 🔐 **本地优先** - Flow、资源和 API Key 保存在当前浏览器；API Key 仅作本地混淆
 - 🇨🇳 **中文界面** - 当前版本以中文界面为准
@@ -27,6 +27,19 @@ Cnote 是一个开源的知识工作流应用，专为个人知识工作者和�
 - **UI 框架**: TailwindCSS 4 + shadcn/ui
 - **流程图**: React Flow
 - **国际化**: i18next
+
+## 🖥️ 桌面端方向
+
+Cnote 的长期主产品方向是 Desktop-First。桌面端不是把 Web 版简单打包成 Electron，而是以本地浏览器、内容处理、后台任务、文件系统和系统集成为核心能力的完整产品；所有新能力先在 Desktop 上设计、体验和验证，再同步为 Web 版的快速体验、分享和兼容入口。
+
+桌面端设计文档：
+
+- [Desktop 产品原则](./docs/desktop/PRODUCT_PRINCIPLES.md)
+- [Desktop 能力矩阵](./docs/desktop/CAPABILITY_MATRIX.md)
+- [领域模型与运行时架构](./docs/desktop/DOMAIN_AND_RUNTIME_ARCHITECTURE.md)
+- [会话与迁移默认规则](./docs/desktop/SESSION_AND_MIGRATION_DEFAULTS.md)
+
+这些文档用于冻结产品原则和架构边界。当前 Desktop 已接入原生浏览器会话、工作区嵌入、页面捕获、本地 HTML 解析、原生文件对话框、版本化备份以及带检查点的 Flow 任务恢复入口；后续继续把长任务执行器下沉到主进程/本地 worker。
 
 ## 🚀 快速开始
 
@@ -51,6 +64,19 @@ npm run build
 ```
 
 访问 http://localhost:5173 开始使用。
+
+### Desktop 应用开发（Windows 优先）
+
+桌面端代码位于 `desktop/`，与 Web 工程独立维护。首次安装依赖后，先构建 Web，再构建并启动桌面端：
+
+```powershell
+npm --prefix web install
+npm --prefix web run build
+npm --prefix desktop install
+npm --prefix desktop run dev
+```
+
+开发时如果希望桌面端直接连接 Vite，可先启动 `web` 的开发服务，再设置 `CNOTE_WEB_DEV_SERVER=http://localhost:5173`。桌面端浏览器节点默认嵌入工作区，Web Preview 中继续使用 iframe 降级实现。
 
 ### 可选：部署自己的 Cloudflare Worker
 

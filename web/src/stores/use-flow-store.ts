@@ -3,8 +3,8 @@ import { persist, type PersistStorage, type StorageValue } from 'zustand/middlew
 import { nanoid } from 'nanoid'
 import { applyNodeChanges, applyEdgeChanges } from 'reactflow'
 import type { Node, Edge, OnNodesChange, OnEdgesChange } from 'reactflow'
-import type { Flow, Folder } from '@/types/flow'
-import { FlowExecutor, type ExecutionContext } from '@/lib/flow'
+import type { Flow, Folder, GenerationTaskState, RequestNodeData } from '@/types/flow'
+import { FlowExecutor, type ExecutionContext, type ExecutionProgress } from '@/lib/flow'
 import { useAIStore } from '@/stores/use-ai-store'
 import { localForageStorage } from '@/lib/localforage-storage'
 import { deleteLocalResource, hasLocalResource, retainLocalResource } from '@/lib/resource-storage'
@@ -12,17 +12,130 @@ import { hasNodeConnections, reconcileDisabledNodes } from '@/lib/flow/disabled'
 import { cloneFlowValue } from '@/lib/flow/clone'
 import {
   AI_NODE_DEFAULT_SIZE,
+  REQUEST_NODE_DEFAULT_SIZE,
   BROWSER_NODE_DEFAULT_SIZE,
   CONTENT_NODE_DEFAULT_SIZE,
   GROUP_NODE_PADDING,
   STICKY_NODE_DEFAULT_SIZE,
 } from '@/lib/flow/node-dimensions'
 import { tryGetContentServiceClient } from '@/lib/content-service'
+import { createRequestNodeData } from '@/lib/generation/defaults'
 
 type FlowHistoryEntry = { nodes: Node[]; edges: Edge[] }
 
+type DesktopExecutionJobRecord = {
+  id: string
+  kind: string
+  status: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled'
+  createdAt: string
+  updatedAt: string
+  retryCount: number
+  checkpoint?: unknown
+  error?: string
+  startedAt?: string
+  completedAt?: string
+  resumeRequired?: boolean
+}
+
+type DesktopExecutionJobUpdate = {
+  status?: DesktopExecutionJobRecord['status']
+  checkpoint?: unknown
+  error?: string
+  retryCount?: number
+  resumeRequired?: boolean
+}
+
+interface FlowExecutionCheckpoint {
+  schemaVersion: 1
+  flowId?: string
+  flowUpdatedAt?: number
+  nodes: Node[]
+  edges: Edge[]
+  currentNodeId?: string
+  resumeAvailable: boolean
+  contexts: Array<{
+    nodeId: string
+    inputs?: Record<string, unknown>
+    output?: unknown
+    error?: string
+    status: ExecutionContext['status']
+    startTime?: number
+    endTime?: number
+  }>
+}
+
+const DESKTOP_JOB_KIND = 'flow-execution'
+const MAX_CHECKPOINT_VALUE_BYTES = 2 * 1024 * 1024
+
+function getDesktopBridge() {
+  return typeof window !== 'undefined' ? window.cnoteDesktop : undefined
+}
+
+function serializeCheckpointValue(value: unknown) {
+  try {
+    const json = JSON.stringify(value)
+    if (json === undefined || json.length > MAX_CHECKPOINT_VALUE_BYTES) return { ok: false as const }
+    return { ok: true as const, value: JSON.parse(json) as unknown }
+  } catch {
+    return { ok: false as const }
+  }
+}
+
+function checkpointFromProgress(
+  progress: ExecutionProgress,
+  flowId: string | undefined,
+  flowUpdatedAt: number | undefined,
+  nodes: Node[],
+  edges: Edge[],
+): FlowExecutionCheckpoint {
+  let resumeAvailable = true
+  const contexts = [...progress.contexts.values()].map((context) => {
+    const serializedOutput = context.output === undefined ? { ok: true as const, value: undefined } : serializeCheckpointValue(context.output)
+    if (context.status === 'completed' && !serializedOutput.ok) resumeAvailable = false
+    const serializedInputs = serializeCheckpointValue(context.inputs)
+    return {
+      nodeId: context.nodeId,
+      ...(serializedInputs.ok ? { inputs: serializedInputs.value as Record<string, unknown> } : {}),
+      ...(serializedOutput.ok ? { output: serializedOutput.value } : {}),
+      ...(context.error ? { error: context.error } : {}),
+      status: context.status,
+      ...(context.startTime ? { startTime: context.startTime } : {}),
+      ...(context.endTime ? { endTime: context.endTime } : {}),
+    }
+  })
+  const graph = serializeCheckpointValue({ nodes, edges })
+  if (!graph.ok) resumeAvailable = false
+  return {
+    schemaVersion: 1,
+    ...(flowId ? { flowId } : {}),
+    ...(flowUpdatedAt ? { flowUpdatedAt } : {}),
+    nodes: graph.ok ? (graph.value as { nodes: Node[]; edges: Edge[] }).nodes : [],
+    edges: graph.ok ? (graph.value as { nodes: Node[]; edges: Edge[] }).edges : [],
+    currentNodeId: progress.nodeId,
+    resumeAvailable,
+    contexts,
+  }
+}
+
+function parseFlowExecutionCheckpoint(value: unknown): FlowExecutionCheckpoint | null {
+  if (!value || typeof value !== 'object') return null
+  const checkpoint = value as Partial<FlowExecutionCheckpoint>
+  if (checkpoint.schemaVersion !== 1 || !Array.isArray(checkpoint.nodes) || !Array.isArray(checkpoint.edges) || !Array.isArray(checkpoint.contexts)) return null
+  return {
+    schemaVersion: 1,
+    flowId: typeof checkpoint.flowId === 'string' ? checkpoint.flowId : undefined,
+    flowUpdatedAt: typeof checkpoint.flowUpdatedAt === 'number' ? checkpoint.flowUpdatedAt : undefined,
+    nodes: checkpoint.nodes as Node[],
+    edges: checkpoint.edges as Edge[],
+    currentNodeId: typeof checkpoint.currentNodeId === 'string' ? checkpoint.currentNodeId : undefined,
+    resumeAvailable: checkpoint.resumeAvailable === true,
+    contexts: checkpoint.contexts.filter((context): context is FlowExecutionCheckpoint['contexts'][number] => Boolean(context && typeof context === 'object' && typeof context.nodeId === 'string' && typeof context.status === 'string')),
+  }
+}
+
 const nodeLabelDefaults: Record<string, string> = {
   ai: 'AI 节点',
+  request: '请求体',
   browser: '浏览器节点',
   sticky: '贴纸',
   content: '内容类型选择',
@@ -62,9 +175,11 @@ function ensureUniqueNodeLabels(nodes: Node[]) {
 function withDefaultNodeDimensions<T extends { type?: string; style?: Node['style'] }>(node: T): T {
   const defaults = node.type === 'browser'
     ? BROWSER_NODE_DEFAULT_SIZE
-    : node.type === 'ai'
-      ? AI_NODE_DEFAULT_SIZE
-      : node.type === 'content'
+      : node.type === 'ai'
+        ? AI_NODE_DEFAULT_SIZE
+        : node.type === 'request'
+          ? REQUEST_NODE_DEFAULT_SIZE
+        : node.type === 'content'
         ? CONTENT_NODE_DEFAULT_SIZE
         : node.type === 'sticky'
           ? STICKY_NODE_DEFAULT_SIZE
@@ -104,6 +219,42 @@ function recoverLegacyContentNodeDimensions(node: Node): Node {
     ...node,
     style: { ...(node.style || {}), height: CONTENT_NODE_DEFAULT_SIZE.height },
     data: { ...node.data, layoutRecoveryVersion: 1 },
+  }
+}
+
+function normalizeRequestNode(node: Node): Node {
+  if (node.type !== 'request') return node
+  const data = (node.data || {}) as Record<string, unknown>
+  const variant = (data.variant as 'body' | 'image' | 'video') || 'body'
+  const defaults = createRequestNodeData(variant)
+  const storedLabel = typeof data.label === 'string' ? data.label : ''
+  const label = new Set(['请求体', '图片生成', '视频生成']).has(storedLabel) ? '请求体' : storedLabel || defaults.label
+  const storedTasks = (data.tasks || {}) as Record<string, unknown>
+  const storedResultNodeIds = (data.resultNodeIds || {}) as Record<string, unknown>
+  const legacyTask = (data.task || {}) as Record<string, unknown>
+  const tasks = {
+    ...defaults.tasks,
+    ...storedTasks,
+    ...(variant === 'image' || variant === 'video') && !storedTasks[variant] && data.task ? { [variant]: { ...defaults.task, ...legacyTask } } : {},
+  }
+  const resultNodeIds = {
+    ...defaults.resultNodeIds,
+    ...storedResultNodeIds,
+    ...(variant === 'image' || variant === 'video') && !storedResultNodeIds[variant] && data.resultNodeId ? { [variant]: data.resultNodeId } : {},
+  }
+  return {
+    ...node,
+    data: {
+      ...defaults,
+      ...data,
+      label,
+      image: { ...defaults.image, ...((data.image || {}) as Record<string, unknown>) },
+      video: { ...defaults.video, ...((data.video || {}) as Record<string, unknown>) },
+      tasks,
+      resultNodeIds,
+      task: variant === 'image' || variant === 'video' ? tasks[variant] : defaults.task,
+      resultNodeId: variant === 'image' || variant === 'video' ? resultNodeIds[variant] : undefined,
+    },
   }
 }
 
@@ -158,29 +309,55 @@ function normalizeGroupBehavior(nodes: Node[]) {
 function normalizeNodes(nodes: Node[]) {
   return normalizeGroupBehavior(normalizeGroupPadding(nodes
     .map(withDefaultNodeDimensions)
-    .map(recoverLegacyContentNodeDimensions)))
+    .map(recoverLegacyContentNodeDimensions)
+    .map(normalizeRequestNode)))
 }
 
 function getPersistableNodes(nodes: Node[]) { return nodes }
 
-function nodeResourceId(node?: Node) {
-  if (!node) return undefined
+function nodeResourceIds(node?: Node) {
+  if (!node) return []
+  const ids = new Set<string>()
   const source = node.data?.source
-  return source?.kind === 'file' || source?.kind === 'clipboard-image' ? source.resourceId as string : undefined
+  if (source?.kind === 'file' || source?.kind === 'clipboard-image') ids.add(source.resourceId as string)
+  if (node.type === 'request') {
+    const requestData = node.data as Partial<RequestNodeData>
+    const references = [
+      ...(requestData.image?.references || []),
+      ...(requestData.video?.references || []),
+    ]
+    references.forEach((reference) => {
+      if (reference.resourceId) ids.add(reference.resourceId)
+    })
+  }
+  const payload = node.data?.payload
+  const media = payload?.kind === 'image' || payload?.kind === 'video'
+    ? payload.resources || []
+    : payload?.kind === 'social'
+      ? payload.contentBlocks.flatMap((block: any) => {
+          if (block.type === 'image') return [block.resource]
+          if (block.type === 'video') return [block.resource, block.poster]
+          if (block.type === 'live-photo') return [block.image, block.motionVideo]
+          return []
+        })
+      : []
+  media.forEach((item: any) => {
+    if (item?.resourceId) ids.add(item.resourceId)
+    if (item?.resource?.resourceId) ids.add(item.resource.resourceId)
+  })
+  return [...ids]
 }
 
 function isLocalMediaNode(node?: Node) {
   if (node?.type !== 'content') return false
   const category = node.data?.category
-  const sourceKind = node.data?.source?.kind
-  return (category === 'image' || category === 'video') && (sourceKind === 'file' || sourceKind === 'clipboard-image')
+  return (category === 'image' || category === 'video') && nodeResourceIds(node).length > 0
 }
 
 function resourceCounts(nodes: Node[]) {
   const counts = new Map<string, number>()
   nodes.forEach((node) => {
-    const resourceId = nodeResourceId(node)
-    if (resourceId) counts.set(resourceId, (counts.get(resourceId) || 0) + 1)
+    nodeResourceIds(node).forEach((resourceId) => counts.set(resourceId, (counts.get(resourceId) || 0) + 1))
   })
   return counts
 }
@@ -239,6 +416,8 @@ interface FlowState {
   // 执行状态
   isExecuting: boolean
   executionContexts: Map<string, ExecutionContext>
+  desktopJobs: DesktopExecutionJobRecord[]
+  activeDesktopJobId: string | null
   hasHydrated: boolean
 
   // 操作方法
@@ -296,8 +475,10 @@ interface FlowState {
   importFlowFromJSON: (json: string) => void
 
   // Flow 执行
-  executeFlow: (aiClient?: any, scraperClient?: any) => Promise<void>
+  executeFlow: (aiClient?: any, scraperClient?: any, options?: { resumeJobId?: string }) => Promise<void>
   stopExecution: () => void
+  refreshDesktopJobs: () => Promise<void>
+  resumeDesktopJob: (jobId: string, aiClient?: any, scraperClient?: any) => Promise<void>
 
   // 初始化
   initialize: () => Promise<void>
@@ -311,6 +492,8 @@ type PersistedFlowState = Pick<
 
 let pendingFlowSaveTimer: ReturnType<typeof setTimeout> | null = null
 let activeFlowExecutionController: AbortController | null = null
+let desktopJobsUnsubscribe: (() => void) | null = null
+let activeDesktopJobId: string | null = null
 
 function scheduleCurrentFlowSave(get: () => FlowState, delay = 450) {
   if (pendingFlowSaveTimer) clearTimeout(pendingFlowSaveTimer)
@@ -384,6 +567,8 @@ export const useFlowStore = create<FlowState>()(
       isLocked: false,
       isExecuting: false,
       executionContexts: new Map(),
+      desktopJobs: [],
+      activeDesktopJobId: null,
       hasHydrated: false,
       setHasHydrated: (value) => set({ hasHydrated: value }),
 
@@ -546,11 +731,27 @@ export const useFlowStore = create<FlowState>()(
         if (!flow) throw new Error('Flow not found')
 
         const nodeIdMap = new Map<string, string>()
-        const newNodes = flow.nodes.map((node) => {
+        const clonedNodes = flow.nodes.map((node) => {
           const id = nanoid()
           nodeIdMap.set(node.id, id)
           return { ...cloneFlowValue(node), id, selected: false }
         })
+        const newNodes = clonedNodes.map((node) => node.type === 'request'
+          ? {
+              ...node,
+              data: {
+                ...node.data,
+                resultNodeId: (node.data as RequestNodeData)?.resultNodeId ? nodeIdMap.get((node.data as RequestNodeData).resultNodeId as string) : undefined,
+                resultNodeIds: (node.data as RequestNodeData)?.resultNodeIds
+                  ? Object.fromEntries(Object.entries((node.data as RequestNodeData).resultNodeIds as Record<string, string | undefined>).map(([variant, resultNodeId]) => [variant, resultNodeId ? nodeIdMap.get(resultNodeId) : undefined]))
+                  : undefined,
+                task: (node.data as RequestNodeData)?.task?.status === 'completed' ? (node.data as RequestNodeData).task : { status: 'idle' },
+                tasks: (node.data as RequestNodeData)?.tasks
+                  ? Object.fromEntries(Object.entries((node.data as RequestNodeData).tasks as Record<string, GenerationTaskState | undefined>).map(([variant, task]) => [variant, task?.status === 'completed' ? task : { status: 'idle' }]))
+                  : undefined,
+              },
+            }
+          : node)
         const newFlow: Flow = {
           ...cloneFlowValue(flow),
           id: nanoid(),
@@ -615,7 +816,7 @@ export const useFlowStore = create<FlowState>()(
           get().saveCurrentFlow()
           return
         }
-        void deleteLocalResource(nodeResourceId(removed))
+        nodeResourceIds(removed).forEach((resourceId) => { void deleteLocalResource(resourceId) })
         set((state) => ({
           nodes: reconcileDisabledNodes(
             state.nodes.filter((n) => n.id !== id),
@@ -669,8 +870,8 @@ export const useFlowStore = create<FlowState>()(
         if (hasNodeConnections(id, get().edges)) return { ok: false, message: '请先断开节点连接，再恢复该节点。' }
 
         if (isLocalMediaNode(initial)) {
-          const resourceId = nodeResourceId(initial)
-          const exists = Boolean(resourceId && await hasLocalResource(resourceId))
+          const resourceIds = nodeResourceIds(initial)
+          const exists = resourceIds.length > 0 && (await Promise.all(resourceIds.map((resourceId) => hasLocalResource(resourceId)))).every(Boolean)
           if (!exists) {
             const current = get().nodes.find((node) => node.id === id)
             if (current) {
@@ -702,16 +903,20 @@ export const useFlowStore = create<FlowState>()(
       duplicateNode: (id) => {
         const node = get().nodes.find((n) => n.id === id)
         if (!node) return
-        void retainLocalResource(nodeResourceId(node))
+        nodeResourceIds(node).forEach((resourceId) => { void retainLocalResource(resourceId) })
 
         set((state) => {
           const usedLabels = new Set(state.nodes.map(getNodeLabel))
           const label = getUniqueNodeLabel(getNodeLabel(node), usedLabels)
+          const clonedData = cloneFlowValue(node.data)
+          const duplicateData = node.type === 'request'
+            ? { ...clonedData, label, sourceId: undefined, resultNodeId: undefined, resultNodeIds: {}, resultCreatedAt: undefined, task: { status: 'idle' }, tasks: { image: { status: 'idle' }, video: { status: 'idle' } } }
+            : { ...clonedData, label, sourceId: undefined }
           const newNode: Node = {
             ...cloneFlowValue(node),
             id: nanoid(),
             selected: false,
-            data: { ...cloneFlowValue(node.data), label, sourceId: undefined },
+            data: duplicateData,
             position: {
               x: node.position.x + 50,
               y: node.position.y + 50,
@@ -771,7 +976,7 @@ export const useFlowStore = create<FlowState>()(
           .filter((change) => change.type === 'remove')
           .map((change) => change.id)
           .filter((id) => currentNodes.some((node) => node.id === id))
-        removedIds.forEach((id) => { void deleteLocalResource(nodeResourceId(currentNodes.find((node) => node.id === id))) })
+        removedIds.forEach((id) => { nodeResourceIds(currentNodes.find((node) => node.id === id)).forEach((resourceId) => { void deleteLocalResource(resourceId) }) })
         set((state) => ({
           nodes: applyNodeChanges(changes, state.nodes),
         }))
@@ -954,6 +1159,39 @@ export const useFlowStore = create<FlowState>()(
         }
       },
 
+      refreshDesktopJobs: async () => {
+        const desktop = getDesktopBridge()
+        if (!desktop) {
+          set({ desktopJobs: [] })
+          return
+        }
+        const jobs = await desktop.jobs.list()
+        set({ desktopJobs: jobs })
+        if (!desktopJobsUnsubscribe) {
+          desktopJobsUnsubscribe = desktop.jobs.onUpdated((job) => {
+            set((state) => ({
+              desktopJobs: [job, ...state.desktopJobs.filter((item) => item.id !== job.id)].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)),
+            }))
+            if (job.id === activeDesktopJobId && job.status === 'cancelled') {
+              activeFlowExecutionController?.abort()
+            }
+          })
+        }
+      },
+
+      resumeDesktopJob: async (jobId, aiClient, scraperClient) => {
+        const desktop = getDesktopBridge()
+        if (!desktop) throw new Error('当前不是 Desktop 运行时，无法恢复后台任务。')
+        const jobs = await desktop.jobs.list()
+        const job = jobs.find((item) => item.id === jobId)
+        if (!job) throw new Error('找不到要恢复的 Desktop 任务。')
+        const checkpoint = parseFlowExecutionCheckpoint(job.checkpoint)
+        if (checkpoint?.flowId && get().currentFlowId !== checkpoint.flowId) {
+          get().loadFlow(checkpoint.flowId)
+        }
+        await get().executeFlow(aiClient, scraperClient, { resumeJobId: jobId })
+      },
+
       // 初始化
       initialize: async () => {
         if (!useFlowStore.persist.hasHydrated()) {
@@ -964,19 +1202,80 @@ export const useFlowStore = create<FlowState>()(
         if (flows.length === 0) {
           get().createFlow('我的第一个 Flow', '开始你的创作之旅')
         }
+        await get().refreshDesktopJobs()
       },
 
       // 执行 Flow
-      executeFlow: async (aiClient, scraperClient) => {
-        const { nodes, edges } = get()
+      executeFlow: async (aiClient, scraperClient, options) => {
         if (get().isExecuting) return
-        const executableNodes = nodes.filter((node) => node.type !== 'group' && !node.data?.disabled)
+
+        const desktop = getDesktopBridge()
+        let resumedJob: DesktopExecutionJobRecord | undefined
+        let resumeCheckpoint: FlowExecutionCheckpoint | null = null
+        if (options?.resumeJobId && desktop) {
+          const jobs = await desktop.jobs.list()
+          resumedJob = jobs.find((job) => job.id === options.resumeJobId)
+          resumeCheckpoint = parseFlowExecutionCheckpoint(resumedJob?.checkpoint)
+        }
+
+        const currentFlow = get().currentFlow
+        const graphNodes = resumeCheckpoint?.nodes?.length ? resumeCheckpoint.nodes : get().nodes
+        const graphEdges = resumeCheckpoint?.edges?.length ? resumeCheckpoint.edges : get().edges
+        const executableNodes = graphNodes.filter((node) => node.type !== 'group' && !node.data?.disabled)
         const executableIds = new Set(executableNodes.map((node) => node.id))
-        const executableEdges = edges.filter((edge) => executableIds.has(edge.source) && executableIds.has(edge.target))
+        const executableEdges = graphEdges.filter((edge) => executableIds.has(edge.source) && executableIds.has(edge.target))
 
         const resolvedScraperClient = scraperClient || tryGetContentServiceClient()
         const controller = new AbortController()
         activeFlowExecutionController = controller
+        let desktopJobId = resumedJob?.id || null
+        let lastProgressNodeId = resumeCheckpoint?.currentNodeId || ''
+        let pendingJobWrites = Promise.resolve()
+
+        const updateDesktopJob = (update: DesktopExecutionJobUpdate) => {
+          if (!desktop || !desktopJobId) return pendingJobWrites
+          pendingJobWrites = pendingJobWrites.then(async () => {
+            const updated = await desktop.jobs.update(desktopJobId as string, update)
+            set((state) => ({
+              desktopJobs: [updated, ...state.desktopJobs.filter((item) => item.id !== updated.id)].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)),
+            }))
+          })
+          return pendingJobWrites
+        }
+
+        if (desktop) {
+          try {
+            if (!desktopJobId) {
+              const initialProgress: ExecutionProgress = {
+                nodeId: '',
+                status: 'pending',
+                contexts: new Map(executableNodes.map((node) => [node.id, {
+                  nodeId: node.id,
+                  inputs: {},
+                  status: 'pending' as const,
+                }])),
+              }
+              const initialCheckpoint = checkpointFromProgress(
+                initialProgress,
+                currentFlow?.id,
+                currentFlow?.updatedAt,
+                executableNodes,
+                executableEdges,
+              )
+              const created = await desktop.jobs.create(DESKTOP_JOB_KIND, initialCheckpoint)
+              desktopJobId = created.id
+              set((state) => ({ desktopJobs: [created, ...state.desktopJobs.filter((item) => item.id !== created.id)] }))
+            }
+            activeDesktopJobId = desktopJobId
+            set({ activeDesktopJobId: desktopJobId })
+            await updateDesktopJob({ status: 'running', resumeRequired: false })
+          } catch (error) {
+            console.warn('Desktop 后台任务持久化不可用，继续使用前台执行：', error)
+            desktopJobId = null
+            activeDesktopJobId = null
+            set({ activeDesktopJobId: null })
+          }
+        }
 
         set({ isExecuting: true, executionContexts: new Map() })
 
@@ -991,13 +1290,40 @@ export const useFlowStore = create<FlowState>()(
               : undefined,
             (nodeId, data) => get().updateNode(nodeId, { data }),
             controller.signal,
+            (progress) => {
+              lastProgressNodeId = progress.nodeId
+              const checkpoint = checkpointFromProgress(
+                progress,
+                currentFlow?.id || resumeCheckpoint?.flowId,
+                currentFlow?.updatedAt || resumeCheckpoint?.flowUpdatedAt,
+                executableNodes,
+                executableEdges,
+              )
+              void updateDesktopJob({ checkpoint })
+            },
+            resumeCheckpoint?.resumeAvailable ? resumeCheckpoint.contexts : undefined,
           )
 
           const result = await executor.execute()
+          const finalCheckpoint = checkpointFromProgress(
+            { nodeId: lastProgressNodeId, status: result.success ? 'completed' : controller.signal.aborted ? 'cancelled' : 'failed', contexts: result.contexts },
+            currentFlow?.id || resumeCheckpoint?.flowId,
+            currentFlow?.updatedAt || resumeCheckpoint?.flowUpdatedAt,
+            executableNodes,
+            executableEdges,
+          )
+          await updateDesktopJob({
+            status: result.success ? 'completed' : controller.signal.aborted ? 'cancelled' : 'failed',
+            checkpoint: finalCheckpoint,
+            error: result.success ? undefined : result.error,
+            resumeRequired: false,
+          })
+          await pendingJobWrites
 
           set({
             executionContexts: result.contexts,
             isExecuting: false,
+            activeDesktopJobId: null,
           })
 
           if (!result.success && result.error !== '执行已停止') {
@@ -1008,18 +1334,25 @@ export const useFlowStore = create<FlowState>()(
           }
         } catch (error) {
           console.error('Flow execution error:', error)
-          set({ isExecuting: false })
+          const failureStatus = controller.signal.aborted ? 'cancelled' as const : 'failed' as const
+          await updateDesktopJob({ status: failureStatus, error: controller.signal.aborted ? '执行已停止' : error instanceof Error ? error.message : '未知错误', resumeRequired: false })
+          await pendingJobWrites
+          set({ isExecuting: false, activeDesktopJobId: null })
           if (!controller.signal.aborted) alert(`执行错误: ${error instanceof Error ? error.message : '未知错误'}`)
         } finally {
           if (activeFlowExecutionController === controller) activeFlowExecutionController = null
+          if (activeDesktopJobId === desktopJobId) activeDesktopJobId = null
         }
       },
 
       // 停止执行
       stopExecution: () => {
+        const desktop = getDesktopBridge()
+        const jobId = activeDesktopJobId
+        if (desktop && jobId) void desktop.jobs.cancel(jobId).catch((error) => console.warn('取消 Desktop 任务失败:', error))
         activeFlowExecutionController?.abort()
         activeFlowExecutionController = null
-        set({ isExecuting: false })
+        set({ isExecuting: false, activeDesktopJobId: null })
       },
 
       // 创建文件夹

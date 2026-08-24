@@ -131,6 +131,36 @@ assert.equal(blockedGeminiOperation.status, 404)
 
 await withMockedFetch(async (input, init) => {
   const forwarded = input instanceof Request ? input : new Request(input, init)
+  assert.equal(forwarded.url, 'https://api.openai.com/v1/videos/task-123/content')
+  assert.equal(forwarded.method, 'GET')
+  assert.equal(forwarded.headers.get('authorization'), 'Bearer provider-key')
+  return new Response(new Uint8Array([0, 1, 2]), { headers: { 'Content-Type': 'video/mp4' } })
+}, async () => {
+  const response = await request('/proxy/openai/v1/videos/task-123/content', {
+    method: 'GET',
+    headers: accessHeaders,
+  })
+  assert.equal(response.status, 200)
+  assert.equal(response.headers.get('content-type'), 'video/mp4')
+  assert.equal((await response.arrayBuffer()).byteLength, 3)
+})
+
+await withMockedFetch(async (input, init) => {
+  const forwarded = input instanceof Request ? input : new Request(input, init)
+  assert.equal(forwarded.url, 'https://api.openai.com/v1/tasks/image-task-123')
+  assert.equal(forwarded.method, 'GET')
+  return new Response(JSON.stringify({ task_id: 'image-task-123', status: 'processing' }), { headers: { 'Content-Type': 'application/json' } })
+}, async () => {
+  const response = await request('/proxy/openai/v1/tasks/image-task-123', {
+    method: 'GET',
+    headers: accessHeaders,
+  })
+  assert.equal(response.status, 200)
+  assert.equal((await response.json()).status, 'processing')
+})
+
+await withMockedFetch(async (input, init) => {
+  const forwarded = input instanceof Request ? input : new Request(input, init)
   assert.equal(forwarded.url, 'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions?alt=sse')
   assert.equal(init?.redirect, 'manual')
   assert.equal(forwarded.method, 'POST')

@@ -25,6 +25,18 @@ export async function saveBlobToFile(
   options?: { description?: string; extension?: string },
 ) {
   const fileName = safeFileName(suggestedName)
+  if (window.cnoteDesktop?.system) {
+    const extension = options?.extension || `.${fileName.split('.').pop() || 'bin'}`
+    await window.cnoteDesktop.system.saveFile({
+      suggestedName: fileName,
+      filters: [{
+        name: options?.description || 'Cnote 文件',
+        extensions: [extension.replace(/^\./, '')],
+      }],
+      data: new Uint8Array(await blob.arrayBuffer()),
+    })
+    return
+  }
   const picker = (window as Window & {
     showSaveFilePicker?: (options: {
       suggestedName: string
@@ -56,4 +68,34 @@ export async function saveBlobToFile(
   } finally {
     URL.revokeObjectURL(url)
   }
+}
+
+export async function openBlobFromFile(options?: {
+  title?: string
+  extensions?: string[]
+  mimeType?: string
+}): Promise<Blob | null> {
+  if (window.cnoteDesktop?.system) {
+    const result = await window.cnoteDesktop.system.openFile({
+      title: options?.title,
+      filters: options?.extensions?.length
+        ? [{ name: options.title || 'Cnote 文件', extensions: options.extensions }]
+        : undefined,
+    })
+    if (!result) return null
+    const bytes = new Uint8Array(result.data.byteLength)
+    bytes.set(result.data)
+    return new Blob([bytes.buffer], { type: options?.mimeType || 'application/octet-stream' })
+  }
+
+  return new Promise<Blob | null>((resolve) => {
+    const input = document.createElement('input')
+    input.type = 'file'
+    input.accept = options?.extensions?.map((extension) => extension.startsWith('.') ? extension : `.${extension}`).join(',') || '*/*'
+    input.onchange = () => {
+      const file = input.files?.[0]
+      resolve(file || null)
+    }
+    input.click()
+  })
 }

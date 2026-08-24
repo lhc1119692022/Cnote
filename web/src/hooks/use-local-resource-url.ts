@@ -2,11 +2,13 @@ import { useEffect, useState } from 'react'
 import { loadLocalResourceUrl, revokeManagedObjectUrl } from '@/lib/resource-storage'
 
 export function useLocalResourceUrl(resourceId?: string, currentUrl?: string) {
-  const [resolvedUrl, setResolvedUrl] = useState(currentUrl || '')
+  const initialUrl = currentUrl && !currentUrl.startsWith('blob:') ? currentUrl : ''
+  const [resolvedUrl, setResolvedUrl] = useState(initialUrl)
 
   useEffect(() => {
-    setResolvedUrl(currentUrl || '')
-    if (!resourceId || currentUrl) return
+    const stableUrl = currentUrl && !currentUrl.startsWith('blob:') ? currentUrl : ''
+    setResolvedUrl(stableUrl)
+    if (!resourceId || stableUrl) return
 
     let active = true
     let loadedUrl: string | null = null

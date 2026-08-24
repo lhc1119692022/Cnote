@@ -6,6 +6,7 @@ import { useTemplateStore } from '@/stores/use-template-store'
 import { AppShell } from '@/components/layout/AppShell'
 import { Button } from '@/components/ui/button'
 import { FlowBackupError, restoreFlowBackup, saveFlowBackup } from '@/lib/flow-backup'
+import { openBlobFromFile } from '@/lib/file-save'
 
 export function Dashboard() {
   const navigate = useNavigate()
@@ -134,13 +135,18 @@ export function Dashboard() {
     }
   }
 
-  const handleImportBackup = async (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0]
-    event.target.value = ''
+  const handleImportBackup = async (event?: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event?.target.files?.[0] || await openBlobFromFile({
+      title: '恢复 Cnote 备份',
+      extensions: ['zip', 'cnote.zip'],
+      mimeType: 'application/zip',
+    })
+    if (event) event.target.value = ''
     if (!file) return
     try {
-      const flowId = await restoreFlowBackup(file)
-      if (flowId) navigate(`/flows/${flowId}`)
+      const result = await restoreFlowBackup(file)
+      if (result.warnings.length) alert(`备份已恢复。\n\n${result.warnings.join('\n')}`)
+      if (result.flowId) navigate(`/flows/${result.flowId}`)
     } catch (error) {
       alert(error instanceof FlowBackupError ? error.message : '备份文件无效或无法读取。')
     }
@@ -176,7 +182,7 @@ export function Dashboard() {
               使用指南
             </Button>
             <input ref={backupInputRef} type="file" accept=".zip,.cnote.zip,application/zip" className="hidden" onChange={handleImportBackup} />
-            <Button variant="secondary" size="sm" className="gap-1.5" onClick={() => backupInputRef.current?.click()}>
+            <Button variant="secondary" size="sm" className="gap-1.5" onClick={() => void handleImportBackup()}>
               <Upload className="h-3.5 w-3.5" />
               恢复备份
             </Button>

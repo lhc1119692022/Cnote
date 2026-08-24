@@ -1,0 +1,39 @@
+appId: com.cnote.desktop
+productName: Cnote
+asar: true
+artifactName: Cnote-${version}-${os}-${arch}.${ext}
+directories:
+  output: release
+  buildResources: packaging/resources
+files:
+  - dist/**
+  - package.json
+  - '!**/*.map'
+  - '!**/node_modules/electron/dist/**'
+  - packaging/resources/icon.ico
+extraResources:
+  - from: ../web/dist
+    to: web/dist
+extraMetadata:
+  main: dist/main.js
+win:
+  icon: packaging/resources/icon.ico
+  target:
+    - target: nsis
+      arch:
+        - x64
+  executableName: Cnote
+  signAndEditExecutable: false
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+mac:
+  target:
+    - dmg
+  category: public.app-category.productivity
+  hardenedRuntime: true
+  gatekeeperAssess: false
+publish: null

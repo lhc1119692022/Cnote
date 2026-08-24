@@ -1,4 +1,5 @@
 import {
+  memo,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -15,6 +16,7 @@ import ReactFlow, {
   NodeToolbar,
   useReactFlow,
   useStore,
+  useStoreApi,
   ReactFlowProvider,
   ConnectionLineType,
   Position,
@@ -69,7 +71,8 @@ import {
 import { cloneFlowValue } from "@/lib/flow/clone";
 import { hasCycle } from "@/lib/flow/graph";
 import { hasNodeConnections } from "@/lib/flow/disabled";
-import { AI_NODE_DEFAULT_SIZE, GROUP_NODE_PADDING } from "@/lib/flow/node-dimensions";
+import { AI_NODE_DEFAULT_SIZE, GROUP_NODE_PADDING, REQUEST_NODE_DEFAULT_SIZE } from "@/lib/flow/node-dimensions";
+import { createRequestNodeData } from "@/lib/generation/defaults";
 import type { ContentNodeData } from "@/types/flow";
 import { useLocalResourceUrl } from "@/hooks/use-local-resource-url";
 import { NodeMenuIcon } from "./NodeMenuIcon";
@@ -80,6 +83,7 @@ import { NodeDetailsPanel } from "./NodeDetailsPanel";
 import {
   ContentNode,
   AINode,
+  RequestNode,
   BrowserNode,
   StickyNode,
   GroupNode,
@@ -87,6 +91,7 @@ import {
 
 const MINIMAP_WIDTH = 280;
 const MINIMAP_HEIGHT = 180;
+const MINIMAP_VIEWPORT_FRAME_MS = 1000 / 30;
 const FLOATING_MENU_MARGIN = 12;
 const MIN_EDITOR_WIDTH = 288;
 const MIN_EDITOR_HEIGHT = 256;
@@ -119,6 +124,7 @@ const panelFilterLabels: Record<string, string> = {
   "category:presentation": "演示文稿",
   "category:mindmap": "思维导图",
   "category:image": "图片",
+  request: "请求体",
 };
 
 function nodeDimension(node: Node, axis: "width" | "height") {
@@ -292,10 +298,57 @@ function withClipboardTimeout<T>(promise: Promise<T>): Promise<T> {
   });
 }
 
-function InteractiveMiniMap({ right }: { right: number }) {
+function sameMiniMapTransform(first: readonly number[], second: readonly number[]) {
+  return first[0] === second[0] && first[1] === second[1] && first[2] === second[2];
+}
+
+function useMiniMapTransform(isMoving: boolean) {
+  const store = useStoreApi();
+  const [transform, setTransform] = useState(() => store.getState().transform);
+
+  useEffect(() => {
+    let frameId: number | null = null;
+    let lastCommitAt = 0;
+    let latestTransform = store.getState().transform;
+
+    const commit = (timestamp: number) => {
+      if (timestamp - lastCommitAt < MINIMAP_VIEWPORT_FRAME_MS) {
+        frameId = window.requestAnimationFrame(commit);
+        return;
+      }
+      frameId = null;
+      lastCommitAt = timestamp;
+      setTransform((current) => sameMiniMapTransform(current, latestTransform) ? current : latestTransform);
+    };
+
+    const unsubscribe = store.subscribe((state) => {
+      const nextTransform = state.transform;
+      if (sameMiniMapTransform(latestTransform, nextTransform)) return;
+      latestTransform = nextTransform;
+      if (frameId === null) frameId = window.requestAnimationFrame(commit);
+    });
+
+    return () => {
+      unsubscribe();
+      if (frameId !== null) window.cancelAnimationFrame(frameId);
+    };
+  }, [store]);
+
+  // The throttled updates keep wheel work bounded. Once navigation ends, sync
+  // the final viewport immediately so the minimap never settles between frames.
+  useEffect(() => {
+    if (isMoving) return;
+    const latestTransform = store.getState().transform;
+    setTransform((current) => sameMiniMapTransform(current, latestTransform) ? current : latestTransform);
+  }, [isMoving, store]);
+
+  return transform;
+}
+
+const InteractiveMiniMap = memo(function InteractiveMiniMap({ right, isMoving }: { right: number; isMoving: boolean }) {
   const reactFlow = useReactFlow();
-  const flowNodes = useStore((state) => state.getNodes());
-  const transform = useStore((state) => state.transform);
+  const nodeInternals = useStore((state) => state.nodeInternals);
+  const transform = useMiniMapTransform(isMoving);
   const canvasWidth = useStore((state) => state.width);
   const canvasHeight = useStore((state) => state.height);
 
@@ -306,41 +359,81 @@ function InteractiveMiniMap({ right }: { right: number }) {
     width: canvasWidth / zoom,
     height: canvasHeight / zoom,
   };
-  const { visibleNodes, nodeBounds } = useMemo(() => {
-    const visible = flowNodes.filter((node) => !node.hidden);
-    if (!visible.length) return { visibleNodes: visible, nodeBounds: null };
+  const visibleNodes = useMemo(
+    () => Array.from(nodeInternals.values()).filter((node) => !node.hidden),
+    [nodeInternals],
+  );
+  const nodeLayout = useMemo(() => {
+    if (!visibleNodes.length) return null;
     let minX = Number.POSITIVE_INFINITY;
     let minY = Number.POSITIVE_INFINITY;
     let maxX = Number.NEGATIVE_INFINITY;
     let maxY = Number.NEGATIVE_INFINITY;
-    for (const node of visible) {
+    for (const node of visibleNodes) {
       minX = Math.min(minX, node.position.x);
       minY = Math.min(minY, node.position.y);
       maxX = Math.max(maxX, node.position.x + (node.width || 0));
       maxY = Math.max(maxY, node.position.y + (node.height || 0));
     }
-    return { visibleNodes: visible, nodeBounds: { minX, minY, maxX, maxY } };
-  }, [flowNodes]);
-  const minX = nodeBounds?.minX ?? viewBox.x;
-  const minY = nodeBounds?.minY ?? viewBox.y;
-  const maxX = nodeBounds?.maxX ?? viewBox.x + viewBox.width;
-  const maxY = nodeBounds?.maxY ?? viewBox.y + viewBox.height;
-  const nodeWidth = Math.max(1, maxX - minX);
-  const nodeHeight = Math.max(1, maxY - minY);
-  const worldWidth = Math.max(2400, nodeWidth + 640);
-  const worldHeight = Math.max(1600, nodeHeight + 480);
-  const bounds = {
-    x: (minX + maxX) / 2 - worldWidth / 2,
-    y: (minY + maxY) / 2 - worldHeight / 2,
-    width: worldWidth,
-    height: worldHeight,
-  };
+    const nodeWidth = Math.max(1, maxX - minX);
+    const nodeHeight = Math.max(1, maxY - minY);
+    const worldWidth = Math.max(2400, nodeWidth + 640);
+    const worldHeight = Math.max(1600, nodeHeight + 480);
+    const bounds = {
+      x: (minX + maxX) / 2 - worldWidth / 2,
+      y: (minY + maxY) / 2 - worldHeight / 2,
+      width: worldWidth,
+      height: worldHeight,
+    };
+    const mapInset = 2;
+    const scale =
+      Math.max(
+        bounds.width / (MINIMAP_WIDTH - mapInset * 2),
+        bounds.height / (MINIMAP_HEIGHT - mapInset * 2),
+      ) || 1;
+    const mapX = (worldX: number) => mapInset + (worldX - bounds.x) / scale;
+    const mapY = (worldY: number) => mapInset + (worldY - bounds.y) / scale;
+    return {
+      bounds,
+      scale,
+      rects: visibleNodes.map((node) => ({
+        id: node.id,
+        x: mapX(node.position.x),
+        y: mapY(node.position.y),
+        width: Math.max(4, (node.width || 160) / scale),
+        height: Math.max(4, (node.height || 100) / scale),
+        disabled: isNodeDisabled(node),
+      })),
+    };
+  }, [visibleNodes]);
   const mapInset = 2;
-  const scale =
+  const fallbackWorldWidth = Math.max(2400, viewBox.width + 640);
+  const fallbackWorldHeight = Math.max(1600, viewBox.height + 480);
+  const bounds = nodeLayout?.bounds || {
+    x: viewBox.x + viewBox.width / 2 - fallbackWorldWidth / 2,
+    y: viewBox.y + viewBox.height / 2 - fallbackWorldHeight / 2,
+    width: fallbackWorldWidth,
+    height: fallbackWorldHeight,
+  };
+  const scale = nodeLayout?.scale ||
     Math.max(
       bounds.width / (MINIMAP_WIDTH - mapInset * 2),
       bounds.height / (MINIMAP_HEIGHT - mapInset * 2),
     ) || 1;
+  const nodeRectElements = useMemo(
+    () => (nodeLayout?.rects || []).map((rect) => (
+      <rect
+        key={rect.id}
+        x={rect.x}
+        y={rect.y}
+        width={rect.width}
+        height={rect.height}
+        rx="2"
+        fill={rect.disabled ? "#fecaca" : "#f1f5f9"}
+      />
+    )),
+    [nodeLayout],
+  );
   const mapX = (worldX: number) => mapInset + (worldX - bounds.x) / scale;
   const mapY = (worldY: number) => mapInset + (worldY - bounds.y) / scale;
   const viewportRectX = mapX(viewBox.x);
@@ -383,7 +476,7 @@ function InteractiveMiniMap({ right }: { right: number }) {
   return (
     <div
       data-flow-minimap
-      className="pointer-events-auto absolute z-[5] overflow-hidden rounded-xl border border-border bg-white shadow-lg"
+      className={`${isMoving ? "pointer-events-none" : "pointer-events-auto"} absolute z-[5] overflow-hidden rounded-xl border border-border bg-white shadow-lg`}
       style={{
         width: MINIMAP_WIDTH,
         height: MINIMAP_HEIGHT,
@@ -420,17 +513,7 @@ function InteractiveMiniMap({ right }: { right: number }) {
           height={MINIMAP_HEIGHT - mapInset * 2}
           fill="#fff"
         />
-        {visibleNodes.map((node) => (
-          <rect
-            key={node.id}
-            x={mapX(node.position.x)}
-            y={mapY(node.position.y)}
-            width={Math.max(4, (node.width || 160) / scale)}
-            height={Math.max(4, (node.height || 100) / scale)}
-            rx="2"
-            fill={isNodeDisabled(node) ? "#fecaca" : "#f1f5f9"}
-          />
-        ))}
+        {nodeRectElements}
         <rect
           x={clippedRectX}
           y={clippedRectY}
@@ -443,12 +526,13 @@ function InteractiveMiniMap({ right }: { right: number }) {
       </svg>
     </div>
   );
-}
+});
 
 // 注册自定义节点类型
 const nodeTypes: NodeTypes = {
   content: ContentNode,
   ai: AINode,
+  request: RequestNode,
   browser: BrowserNode,
   sticky: StickyNode,
   group: GroupNode,
@@ -1344,11 +1428,16 @@ function FlowEditorInner() {
   const nodeSummary = (node: any) => {
     const category = getNodeContentCategory(node);
     if (category) return panelFilterLabels[`category:${category}`] || "内容";
+    if (node.type === "request") {
+      const variant = node.data?.variant;
+      return variant === "image" ? "请求体 · 图片生成" : variant === "video" ? "请求体 · 视频生成" : "请求体";
+    }
     return node.type === "ai" ? "AI" : node.type || "节点";
   };
 
   const nodeDisplayName = (node: any) => {
     if (node.type === "content") return node.data?.label || "内容类型选择";
+    if (node.type === "request") return node.data?.label || "请求体";
     return node.type === "content"
       ? "内容类型选择"
       : node.data?.label || (node.type === "ai" ? "AI 节点" : node.type);
@@ -1362,6 +1451,12 @@ function FlowEditorInner() {
         icon: Sparkles,
         iconClass: "text-violet-500",
         iconSurfaceClass: "bg-violet-50",
+      };
+    if (node.type === "request")
+      return {
+        icon: Sparkles,
+        iconClass: node.data?.variant === "video" ? "text-rose-500" : node.data?.variant === "image" ? "text-cyan-500" : "text-primary",
+        iconSurfaceClass: node.data?.variant === "video" ? "bg-rose-50" : node.data?.variant === "image" ? "bg-cyan-50" : "bg-blue-50",
       };
     if (node.type === "browser")
       return {
@@ -1412,6 +1507,13 @@ function FlowEditorInner() {
           messages: [],
           sessions: [],
         },
+      });
+    } else if (type === "request") {
+      addNode({
+        type: "request",
+        position,
+        style: REQUEST_NODE_DEFAULT_SIZE,
+        data: createRequestNodeData('body'),
       });
     } else if (type === "browser") {
       addNode({
@@ -1803,7 +1905,7 @@ function FlowEditorInner() {
     [onConnect, reactFlowInstance],
   );
 
-  const createConnectedNode = (type: "ai" | "content") => {
+  const createConnectedNode = (type: "ai" | "content" | "request") => {
     if (!connectionMenu) return;
     const position = connectionMenu.position;
     const store = useAIStore.getState();
@@ -1831,7 +1933,14 @@ function FlowEditorInner() {
               sessions: [],
             },
           }
-        : { type: "content", position, data: emptyContentData("内容") },
+        : type === "request"
+          ? {
+              type: "request",
+              position,
+              style: REQUEST_NODE_DEFAULT_SIZE,
+              data: createRequestNodeData('body'),
+            }
+          : { type: "content", position, data: emptyContentData("内容") },
     );
       if (created) {
       const edge =
@@ -2530,9 +2639,10 @@ function FlowEditorInner() {
         ) : (
           <div className="h-full w-full bg-background" aria-hidden="true" />
         )}
-        {isCurrentFlowReady && showMinimap && !isViewportMoving && (
+        {isCurrentFlowReady && showMinimap && (
           <InteractiveMiniMap
             right={showExtensionPanel ? extensionWidth + 24 : 24}
+            isMoving={isViewportMoving}
           />
         )}
       </div>
@@ -2588,6 +2698,14 @@ function FlowEditorInner() {
             <NodeMenuIcon kind="content" />
             内容节点
           </button>
+          <button
+            type="button"
+            className="flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left text-sm hover:bg-muted"
+            onClick={() => createConnectedNode("request")}
+          >
+            <NodeMenuIcon kind="request" />
+            请求体节点
+          </button>
         </div>
       )}
 
@@ -2617,6 +2735,21 @@ function FlowEditorInner() {
             >
               <NodeMenuIcon kind="ai" />
               添加 AI 节点
+            </button>
+            <button
+              className="flex w-full select-none items-center gap-3 rounded-lg px-3 py-2 text-left text-sm hover:bg-muted"
+              onClick={() =>
+                addNodeAt(
+                  "request",
+                  reactFlowInstance.screenToFlowPosition({
+                    x: addMenu.x + (reactFlowWrapper.current?.getBoundingClientRect().left || 0),
+                    y: addMenu.y + (reactFlowWrapper.current?.getBoundingClientRect().top || 0),
+                  }),
+                )
+              }
+            >
+              <NodeMenuIcon kind="request" />
+              添加请求体节点
             </button>
             <button
               className="flex w-full select-none items-center gap-3 rounded-lg px-3 py-2 text-left text-sm hover:bg-muted"

@@ -4,7 +4,7 @@ import path from 'path'
 
 // https://vite.dev/config/
 export default defineConfig(({ mode }) => ({
-  base: mode === 'github-pages' ? '/Cnote/' : '/',
+  base: mode === 'github-pages' ? '/Cnote/' : mode === 'desktop' ? './' : '/',
   plugins: [react()],
   resolve: {
     alias: {

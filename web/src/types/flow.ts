@@ -3,7 +3,7 @@ import type { Node, Edge } from 'reactflow'
 export type FlowNode = Node
 export type FlowEdge = Edge
 
-export type NodeType = 'content' | 'ai' | 'browser' | 'sticky' | 'group'
+export type NodeType = 'content' | 'ai' | 'request' | 'browser' | 'sticky' | 'group'
 
 export type ContentCategory =
   | 'text'
@@ -138,7 +138,7 @@ export interface DataPayload {
 export interface MindmapTreeNode { id: string; text: string; children: MindmapTreeNode[] }
 export interface MindmapPayload { kind: 'mindmap'; root: MindmapTreeNode; sourceMarkdown?: string }
 
-export interface RemoteMediaRef { url: string; mimeType?: string; width?: number; height?: number }
+export interface RemoteMediaRef { url: string; resourceId?: string; mimeType?: string; width?: number; height?: number }
 
 /** A media item kept by image/video nodes and passed through graph connections. */
 export interface ContentMediaItem {
@@ -262,6 +262,102 @@ export interface AINodeData extends BaseNodeData {
   output?: string
   disabled?: boolean
 }
+
+export type RequestVariant = 'body' | 'image' | 'video'
+export type GenerationCapability =
+  | 'text-to-image'
+  | 'image-to-image'
+  | 'text-to-video'
+  | 'image-to-video'
+  | 'reference-to-video'
+  | 'first-last-frame'
+  | 'video-reference'
+  | 'audio-reference'
+  | 'video-edit'
+  | 'generate-audio'
+
+export type GenerationReferenceType = 'image' | 'video' | 'audio'
+export type GenerationReferenceRole =
+  | 'reference_image'
+  | 'reference_video'
+  | 'first_frame'
+  | 'last_frame'
+  | 'reference_voice'
+  | 'reference_audio'
+
+export interface GenerationReference {
+  id: string
+  type: GenerationReferenceType
+  role?: GenerationReferenceRole
+  label?: string
+  source: 'local' | 'url' | 'uploaded'
+  url?: string
+  previewUrl?: string
+  resourceId?: string
+  fileName?: string
+  mimeType?: string
+  size?: number
+  duration?: number
+  order: number
+  status?: 'ready' | 'pending-upload' | 'unsupported' | 'error'
+  error?: string
+}
+
+export type GenerationTaskStatus =
+  | 'idle'
+  | 'validating'
+  | 'submitting'
+  | 'queued'
+  | 'in_progress'
+  | 'timeout'
+  | 'completed'
+  | 'failed'
+
+export interface GenerationTaskState {
+  taskId?: string
+  provider?: string
+  channelId?: string
+  model?: string
+  status: GenerationTaskStatus
+  progress?: number
+  submittedAt?: number
+  completedAt?: number
+  elapsedMs?: number
+  timeoutAt?: number
+  resultUrls?: string[]
+  resultResourceIds?: string[]
+  resultMimeTypes?: string[]
+  error?: string
+  lastPolledAt?: number
+}
+
+export interface GenerationVariantConfig {
+  channelId?: string
+  model?: string
+  capability?: GenerationCapability
+  prompt: string
+  negativePrompt?: string
+  references: GenerationReference[]
+  generateAudio?: boolean
+  seconds?: number
+  resolution?: string
+  aspectRatio?: string
+  quality?: string
+}
+
+export interface RequestNodeData extends BaseNodeData {
+  schemaVersion: 1
+  variant: RequestVariant
+  image: GenerationVariantConfig
+  video: GenerationVariantConfig
+  /** Per-variant task state. `task` remains as a backwards-compatible active alias. */
+  tasks?: Partial<Record<'image' | 'video', GenerationTaskState>>
+  task?: GenerationTaskState
+  /** Per-variant result node links. `resultNodeId` remains as a backwards-compatible active alias. */
+  resultNodeIds?: Partial<Record<'image' | 'video', string>>
+  resultNodeId?: string
+  resultCreatedAt?: number
+}
 export type WebPageOutputMode = 'url' | 'text' | 'both'
 export type WebPageSyncStatus = 'synced' | 'possibly_changed'
 export interface PageTextSnapshot {
@@ -269,11 +365,18 @@ export interface PageTextSnapshot {
   title?: string
   text: string
   fetchedAt: number
+  headings?: Array<{ level: number; text: string }>
+  links?: Array<{ text: string; url: string }>
+  parserId?: string
+  parserVersion?: string
 }
 export interface BrowserNodeData extends BaseNodeData {
   url: string
   /** The only URL used by Flow execution and content extraction. */
   confirmedUrl?: string
+  /** Desktop-only native browser session. Web Preview continues to use its iframe fallback. */
+  desktopSessionId?: string
+  browserRuntime?: 'desktop-native' | 'web-iframe'
   outputMode?: WebPageOutputMode
   syncStatus?: WebPageSyncStatus
   observedUrl?: string

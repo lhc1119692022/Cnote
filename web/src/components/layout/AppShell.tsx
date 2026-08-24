@@ -7,6 +7,7 @@ import {
   LayoutDashboard,
   Moon,
   Settings,
+  WandSparkles,
   Sun,
 } from 'lucide-react'
 import { useTheme } from '@/hooks/use-theme'
@@ -16,7 +17,8 @@ const navigation = [
   { to: '/dashboard', label: '控制台', icon: LayoutDashboard },
   { to: '/sources', label: '内容', icon: FileStack },
   { to: '/templates', label: '模板', icon: FolderKanban },
-  { to: '/settings/api-keys', label: '设置', icon: Settings },
+  { to: '/settings/api-keys', label: '文本渠道', icon: Settings },
+  { to: '/settings/generation-channels', label: '生成渠道', icon: WandSparkles },
 ]
 
 interface AppShellProps {

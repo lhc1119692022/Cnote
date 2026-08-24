@@ -2,6 +2,7 @@ import { nanoid } from 'nanoid'
 import { classifyContentUrl, detectAndParseContent, markdownPlainText, markdownToMindmap, resolveSourceBlob, type ContentImportInput } from '@/lib/content-import'
 import { checksumText, deleteLocalResource } from '@/lib/resource-storage'
 import { useFlowStore } from '@/stores/use-flow-store'
+import { runDesktopNativeJob } from '@/lib/desktop-native-jobs'
 import { getContentServiceClient } from '@/lib/content-service'
 import { ScraperClient, ScraperRequestError } from '@/lib/scraper'
 import type { BrowserNodeData, ContentCategory, ContentNodeData, ContentSource, ParseError } from '@/types/flow'
@@ -298,6 +299,33 @@ async function populateNodeTextOutput(nodeId: string) {
     if (data.snapshot?.url === url && data.snapshot.text.trim()) return true
 
     try {
+      if (data.desktopSessionId && window.cnoteDesktop) {
+        const capture = await window.cnoteDesktop.browser.capture(data.desktopSessionId)
+        const parsed = await runDesktopNativeJob<Awaited<ReturnType<typeof window.cnoteDesktop.content.parseHtml>>>({ kind: 'native:content-parse', input: { html: capture.html, url: capture.url, title: capture.title } })
+        const current = useFlowStore.getState().nodes.find((node) => node.id === nodeId)
+        if (!current || current.type !== 'browser') return false
+        useFlowStore.getState().updateNode(nodeId, {
+          data: {
+            ...current.data,
+            url: capture.url,
+            confirmedUrl: capture.url,
+            observedUrl: capture.url,
+            browserRuntime: 'desktop-native',
+            snapshot: {
+              url: capture.url,
+              title: parsed.title || capture.title,
+              text: parsed.text || capture.text,
+              fetchedAt: Date.now(),
+              headings: parsed.headings,
+              links: parsed.links,
+              parserId: parsed.parserId,
+              parserVersion: parsed.parserVersion,
+            },
+          },
+        })
+        useFlowStore.getState().saveCurrentFlow()
+        return Boolean(capture.text.trim())
+      }
       const page = await getContentServiceClient('webPage').scrapeWeb(url, { timeoutMs: 5_000 })
       const current = useFlowStore.getState().nodes.find((node) => node.id === nodeId)
       if (!current || current.type !== 'browser') return false

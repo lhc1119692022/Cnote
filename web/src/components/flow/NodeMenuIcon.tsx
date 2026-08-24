@@ -1,10 +1,11 @@
 import { FileUp, Globe, Layers3, Library, Sparkles, StickyNote, type LucideIcon } from 'lucide-react'
 
-type NodeMenuIconKind = 'ai' | 'content' | 'browser' | 'sticky' | 'library' | 'import'
+type NodeMenuIconKind = 'ai' | 'content' | 'request' | 'browser' | 'sticky' | 'library' | 'import'
 
 const menuIconVisuals: Record<NodeMenuIconKind, { icon: LucideIcon; iconClass: string }> = {
   ai: { icon: Sparkles, iconClass: 'text-violet-500' },
   content: { icon: Layers3, iconClass: 'text-blue-500' },
+  request: { icon: Sparkles, iconClass: 'text-primary' },
   browser: { icon: Globe, iconClass: 'text-cyan-600' },
   sticky: { icon: StickyNote, iconClass: 'text-amber-500' },
   library: { icon: Library, iconClass: 'text-emerald-500' },

@@ -13,7 +13,7 @@ import { useContentEditorStore } from '@/stores/use-content-editor-store'
 import { CONTENT_MEDIA_MAX_AUTO_HEIGHT, CONTENT_NODE_MIN_SIZE, ONLINE_VIDEO_MAX_AUTO_HEIGHT, ONLINE_VIDEO_PORTRAIT_MAX_AUTO_HEIGHT, ONLINE_VIDEO_TRANSCRIPT_MAX_HEIGHT } from '@/lib/flow/node-dimensions'
 import type { ContentCategory, ContentMediaItem, ContentNodeData, MindmapTreeNode } from '@/types/flow'
 import { getActiveMediaIndex, getMaxMediaAspectRatio, getNodeMediaItems } from '@/lib/content-media'
-import { NodeHandle, NodeHoverToolbar, NodeResizeArc, NodeResourceLostNotice } from './NodeChrome'
+import { NodeDragGutters, NodeHandle, NodeHoverToolbar, NodeResizeArc, NodeResourceLostNotice } from './NodeChrome'
 import { MarkdownPreview } from '../ContentEditorPanel'
 
 interface CategoryOption { id: ContentCategory; label: string; icon: typeof Video; iconClass: string }
@@ -105,15 +105,6 @@ function RemoteLinkPreview({ title, description, thumbnailUrl, url, label }: { t
   return <div className="space-y-3">{thumbnailUrl && <img src={thumbnailUrl} alt="" loading="lazy" className="h-36 w-full rounded-lg object-cover" />}<div className="space-y-1"><div className="line-clamp-2 text-lg font-medium leading-7 text-foreground">{title}</div>{description && <p className="line-clamp-3 text-base leading-7 text-muted-foreground">{description}</p>}</div>{url && <a href={url} target="_blank" rel="noreferrer" className="nodrag inline-flex items-center gap-1.5 text-xs text-muted-foreground underline-offset-4 hover:text-foreground hover:underline" onPointerDown={(event) => event.stopPropagation()}><ExternalLink className="h-3.5 w-3.5" />打开{label}</a>}</div>
 }
 
-function ContentNodeDragGutters() {
-  return <div className="content-node-drag-gutters" aria-hidden="true">
-    <span data-side="top" />
-    <span data-side="right" />
-    <span data-side="bottom" />
-    <span data-side="left" />
-  </div>
-}
-
 type SocialMediaEntry = { item: ContentMediaItem; type: 'image' | 'video' }
 
 function SocialMediaCarousel({ items, activeIndex, onActiveIndexChange, resolveMediaUrl, maxAspectRatio }: {
@@ -179,7 +170,7 @@ export const ContentNode = memo((props: NodeProps<ContentNodeData>) => {
 
   return <div className={`node-card node-panel-shadow group relative flex h-full min-h-[430px] w-full min-w-[540px] flex-col rounded-[24px] border bg-card ${selected ? 'node-selected' : 'border-border'}`}>
     <NodeHandle type="target" position={Position.Left} id="in" /><NodeHandle type="source" position={Position.Right} id="out" />
-    <ContentNodeDragGutters />
+    <NodeDragGutters />
     <NodeHoverToolbar nodeId={id} /><NodeResizeArc nodeId={id} minWidth={540} minHeight={430} />
     <div className="flex min-h-0 flex-1 items-center justify-center px-12 py-7"><div className="w-full">
       <h3 className="mb-4 text-center text-lg font-semibold text-foreground">选择内容类型</h3>
@@ -240,6 +231,8 @@ export const ContentLeafNode = memo(({ id, data, selected }: NodeProps<ContentNo
   const activeVideoIndex = getActiveMediaIndex(videoResources, video?.activeResourceIndex)
   const activeImage = imageResources[activeImageIndex]
   const activeVideo = videoResources[activeVideoIndex]
+  const activeImageLocalUrl = useLocalResourceUrl(activeImage?.resource.resourceId, activeImage?.resource.url)
+  const activeVideoLocalUrl = useLocalResourceUrl(activeVideo?.resource.resourceId, activeVideo?.resource.url)
   const socialMediaItems = useMemo<SocialMediaEntry[]>(() => social?.contentBlocks.flatMap<SocialMediaEntry>((block, index) => {
     if (block.type === 'image') return [{ item: { resource: block.resource, label: block.caption || `图片 ${index + 1}` }, type: 'image' as const }]
     if (block.type === 'video') return [{ item: { resource: block.resource, poster: block.poster, label: `视频 ${index + 1}` }, type: 'video' as const }]
@@ -254,8 +247,8 @@ export const ContentLeafNode = memo(({ id, data, selected }: NodeProps<ContentNo
     ? `https://www.youtube-nocookie.com/embed/${encodeURIComponent(youtubeVideoId)}?enablejsapi=1&playsinline=1&origin=${encodeURIComponent(window.location.origin)}`
     : ''
   const isDirectRemoteImage = data.source?.kind === 'url' && data.state === 'ready'
-  const rawImageUrl = localUrl || activeImage?.resource.url || data.preview?.thumbnailUrl || (isDirectRemoteImage ? sourceUrl : '')
-  const rawPlaybackUrl = localUrl || activeVideo?.resource.url || (videoPlayback !== 'preview' ? sourceUrl : '')
+  const rawImageUrl = localUrl || activeImageLocalUrl || activeImage?.resource.url || data.preview?.thumbnailUrl || (isDirectRemoteImage ? sourceUrl : '')
+  const rawPlaybackUrl = localUrl || activeVideoLocalUrl || activeVideo?.resource.url || (videoPlayback !== 'preview' ? sourceUrl : '')
   const editableText = textPayload?.value || (data.source?.kind === 'text' ? data.source.text : '')
   const parseWarning = data.state === 'partial' ? data.parse?.warnings?.[0] : undefined
   const resolveSocialMediaUrl = useCallback((url: string) => socialMediaUrls[url] || url, [socialMediaUrls])
@@ -704,7 +697,7 @@ export const ContentLeafNode = memo(({ id, data, selected }: NodeProps<ContentNo
     }}
     >
     <NodeHandle type="target" position={Position.Left} id="in" /><NodeHandle type="source" position={Position.Right} id="out" />
-    <ContentNodeDragGutters />
+    <NodeDragGutters />
     {category === 'social' && <div className="social-node-drag-handle" aria-label="拖动社媒节点" title="拖动节点"><span /></div>}
     {(category === 'image' || category === 'video') && mediaResources.length > 1 && <div className="media-resource-rail nodrag nowheel" onPointerDown={(event) => event.stopPropagation()}>
       {mediaResources.map((item, index) => <button key={`${item.resource.url}-${index}`} type="button" draggable onDragStart={(event) => { event.dataTransfer.effectAllowed = 'move'; event.dataTransfer.setData('application/x-cnote-media-resource', JSON.stringify({ kind: category, index })) }} onClick={() => setActiveMediaResource(category, index)} className={`media-resource-capsule ${index === activeMediaResourceIndex ? 'is-active' : ''}`} title={`拖入预览区或点击显示${item.label || `${category === 'image' ? '图片' : '视频'} ${index + 1}`}`}><span>{index + 1}</span><span className="truncate">{item.label || `${category === 'image' ? '图片' : '视频'} ${index + 1}`}</span></button>)}

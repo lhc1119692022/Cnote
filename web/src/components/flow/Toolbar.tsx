@@ -15,6 +15,7 @@ import {
   Download,
   Upload,
   FileText,
+  RotateCcw,
 } from "lucide-react";
 import { useFlowStore } from "@/stores/use-flow-store";
 import { useTemplateStore } from "@/stores/use-template-store";
@@ -22,7 +23,8 @@ import { useAIStore } from "@/stores/use-ai-store";
 import { useSourceStore } from "@/stores/use-source-store";
 import { retainLocalResource } from "@/lib/resource-storage";
 import { captureFlowThumbnail } from "@/lib/flow/thumbnail";
-import { AI_NODE_DEFAULT_SIZE, BROWSER_NODE_DEFAULT_SIZE } from "@/lib/flow/node-dimensions";
+import { AI_NODE_DEFAULT_SIZE, BROWSER_NODE_DEFAULT_SIZE, REQUEST_NODE_DEFAULT_SIZE } from "@/lib/flow/node-dimensions";
+import { createRequestNodeData } from "@/lib/generation/defaults";
 import { getContentCategoryVisual } from "@/lib/content-visuals";
 import { CONTENT_FILE_ACCEPT, emptyContentData } from "@/lib/content-import";
 import { importContentIntoNode } from "@/lib/content-import-controller";
@@ -96,6 +98,10 @@ export function Toolbar({
   const exportFlowAsJSON = useFlowStore((state) => state.exportFlowAsJSON);
   const importFlowFromJSON = useFlowStore((state) => state.importFlowFromJSON);
   const updateFlow = useFlowStore((state) => state.updateFlow);
+  const desktopJobs = useFlowStore((state) => state.desktopJobs);
+  const activeDesktopJobId = useFlowStore((state) => state.activeDesktopJobId);
+  const isExecuting = useFlowStore((state) => state.isExecuting);
+  const resumeDesktopJob = useFlowStore((state) => state.resumeDesktopJob);
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
   const [expandedGroupWidths, setExpandedGroupWidths] = useState({
@@ -114,6 +120,12 @@ export function Toolbar({
     () => sources.slice().sort((a, b) => b.updatedAt - a.updatedAt),
     [sources],
   );
+  const resumableDesktopJob = useMemo(() => desktopJobs.find((job) => {
+    if (job.kind !== "flow-execution" || job.id === activeDesktopJobId) return false;
+    if (job.status !== "queued" && job.status !== "failed") return false;
+    const checkpoint = job.checkpoint as { flowId?: unknown } | undefined;
+    return checkpoint?.flowId === currentFlow?.id;
+  }), [activeDesktopJobId, currentFlow?.id, desktopJobs]);
 
   useEffect(() => {
     if (!showAddMenu) return;
@@ -367,6 +379,17 @@ export function Toolbar({
     setShowAddMenu(false);
   };
 
+  const handleAddRequest = () => {
+    addNode({
+      type: "request",
+      position: getVisibleViewportCenter(REQUEST_NODE_DEFAULT_SIZE.width, REQUEST_NODE_DEFAULT_SIZE.height),
+      style: REQUEST_NODE_DEFAULT_SIZE,
+      data: createRequestNodeData('body'),
+    });
+    setShowLibrarySubmenu(false);
+    setShowAddMenu(false);
+  };
+
   // 保存
   const handleSave = async () => {
     if (onSave) {
@@ -375,6 +398,15 @@ export function Toolbar({
     }
     const thumbnail = await generateThumbnail();
     saveCurrentFlow(thumbnail);
+  };
+
+  const handleResumeDesktopJob = async () => {
+    if (!resumableDesktopJob) return;
+    try {
+      await resumeDesktopJob(resumableDesktopJob.id);
+    } catch (error) {
+      alert(error instanceof Error ? error.message : "后台任务恢复失败。");
+    }
   };
 
   // 保存为模板
@@ -602,6 +634,13 @@ export function Toolbar({
                   <NodeMenuIcon kind="browser" compact />
                   添加浏览器节点
                 </button>
+                <button
+                  className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-xs hover:bg-muted"
+                  onClick={handleAddRequest}
+                >
+                  <NodeMenuIcon kind="request" compact />
+                  添加请求体节点
+                </button>
                 <div className="my-1 h-px bg-border/60" />
                 <div
                   className="relative"
@@ -699,6 +738,18 @@ export function Toolbar({
         >
           {!compactActions && (
             <>
+              {resumableDesktopJob && (
+                <Button
+                  variant="ghost"
+                  disabled={isExecuting}
+                  className="group relative flex h-10 items-center gap-1.5 overflow-hidden rounded-full px-3 text-primary transition-all hover:bg-primary/10 disabled:opacity-40"
+                  onClick={() => void handleResumeDesktopJob()}
+                  title="继续上次中断的 Desktop 任务"
+                >
+                  <RotateCcw className="h-4 w-4 shrink-0" />
+                  <span className="text-xs">继续任务</span>
+                </Button>
+              )}
               {/* 保存 */}
               <Button
                 variant="ghost"

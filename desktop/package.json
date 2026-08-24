@@ -1,0 +1,31 @@
+{
+  "name": "cnote-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Cnote runtime (Windows first, macOS next)",
+  "main": "dist/main.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "build:web": "npm --prefix ../web run build:desktop",
+    "build:all": "npm run build:web && npm run build",
+    "package:win": "npm run build:all && electron-builder --config packaging/electron-builder.yml --win",
+    "package:mac": "npm run build:all && electron-builder --config packaging/electron-builder.yml --mac",
+    "start": "npm run build:all && electron .",
+    "dev": "npm run build:all && electron . --dev",
+    "dev:shortcut": "node scripts/launch-dev.mjs",
+    "sync:project-icon": "node scripts/sync-project-icon.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test:runtime": "npm run build && node scripts/verify-runtime.mjs && node scripts/verify-native-jobs.mjs",
+    "test:packaged-renderer": "node scripts/verify-packaged-renderer.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "@types/node": "^22.13.4",
+    "electron-builder": "^26.0.12",
+    "electron": "^43.4.1",
+    "typescript": "^5.7.3"
+  }
+}

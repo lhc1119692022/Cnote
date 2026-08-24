@@ -6,14 +6,15 @@ export type ContentMediaKind = 'image' | 'video'
 function uniqueMediaItems(items: ContentMediaItem[]) {
   const seen = new Set<string>()
   return items.filter((item) => {
-    if (!item.resource.url || seen.has(item.resource.url)) return false
-    seen.add(item.resource.url)
+    const key = item.resource.url || item.resource.resourceId
+    if (!key || seen.has(key)) return false
+    seen.add(key)
     return true
   })
 }
 
 function singleItem(resource?: RemoteMediaRef, label?: string): ContentMediaItem[] {
-  return resource?.url ? [{ resource, label }] : []
+  return resource && (resource.url || resource.resourceId) ? [{ resource, label }] : []
 }
 
 /** Returns a normalized media collection from social, image, or video content. */

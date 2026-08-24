@@ -351,7 +351,7 @@ export function APIKeysManager() {
     <AppShell>
       <main className="flex h-full min-w-0 flex-col overflow-hidden">
         <header className="flex h-[60px] shrink-0 items-center justify-between border-b border-border bg-card px-6">
-          <h1 className="text-[15px] font-semibold text-foreground">设置</h1>
+          <h1 className="text-[15px] font-semibold text-foreground">文本渠道</h1>
           <div className="flex items-center gap-2">
             {activeTab === 'channels' && (
               <>
@@ -366,7 +366,7 @@ export function APIKeysManager() {
 
         <div className="flex-1 overflow-auto p-6">
           <div className="mb-5 flex flex-wrap gap-2">
-            <button type="button" onClick={() => setActiveTab('channels')} className={activeTab === 'channels' ? 'rounded-lg bg-primary px-3 py-1.5 text-[13px] text-primary-foreground' : 'rounded-lg border border-border bg-background px-3 py-1.5 text-[13px] text-muted-foreground hover:bg-muted dark:border-0 dark:bg-secondary'}>渠道 ({apiKeys.length})</button>
+            <button type="button" onClick={() => setActiveTab('channels')} className={activeTab === 'channels' ? 'rounded-lg bg-primary px-3 py-1.5 text-[13px] text-primary-foreground' : 'rounded-lg border border-border bg-background px-3 py-1.5 text-[13px] text-muted-foreground hover:bg-muted dark:border-0 dark:bg-secondary'}>文本渠道 ({apiKeys.length})</button>
             <button type="button" onClick={() => setActiveTab('content-service')} className={activeTab === 'content-service' ? 'rounded-lg bg-primary px-3 py-1.5 text-[13px] text-primary-foreground' : 'rounded-lg border border-border bg-background px-3 py-1.5 text-[13px] text-muted-foreground hover:bg-muted dark:border-0 dark:bg-secondary'}>内容解析服务</button>
             <button type="button" onClick={() => setActiveTab('storage')} className={activeTab === 'storage' ? 'rounded-lg bg-primary px-3 py-1.5 text-[13px] text-primary-foreground' : 'rounded-lg border border-border bg-background px-3 py-1.5 text-[13px] text-muted-foreground hover:bg-muted dark:border-0 dark:bg-secondary'}>本地存储</button>
           </div>
@@ -375,14 +375,14 @@ export function APIKeysManager() {
             <section>
               <div className="mb-5 flex items-start gap-2.5 rounded-lg bg-muted/55 px-3.5 py-3 text-[12px] leading-relaxed text-muted-foreground">
                 <KeyRound className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-                <p>渠道配置仅保存在当前浏览器。导出的配置包含 API Key，请妥善保管；使用中转服务时，可直接填写自有 Worker 地址。</p>
+                <p>文本渠道仅供旧 AI 节点使用。配置保存在当前浏览器；生成节点请前往“生成渠道”单独配置。</p>
               </div>
 
               {apiKeys.length === 0 ? (
                 <div className="flex flex-col items-center justify-center py-24 text-center">
                   <KeyRound className="mb-4 h-10 w-10 text-muted-foreground/50" />
-                  <h2 className="text-sm font-medium">还没有渠道</h2>
-                  <p className="mt-2 text-[13px] text-muted-foreground">添加渠道后，即可在 AI 节点中选择对应模型</p>
+                  <h2 className="text-sm font-medium">还没有文本渠道</h2>
+                  <p className="mt-2 text-[13px] text-muted-foreground">添加文本渠道后，即可在旧 AI 节点中选择对应模型</p>
                   <Button size="sm" className="mt-6 gap-1.5" onClick={openNewChannelDialog}><Plus className="h-3.5 w-3.5" />新增渠道</Button>
                 </div>
               ) : (
