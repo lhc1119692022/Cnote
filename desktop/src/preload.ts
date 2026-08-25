@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import type { BrowserCapture, BrowserSessionSummary, BrowserViewBounds, ContentParseInput, FileDialogFilter, JobRecord, JobUpdate, NativeJobRequest, ParsedPageContent, RuntimeInfo } from './runtime/types'
+import type { BrowserCapture, BrowserSessionSummary, BrowserViewBounds, ContentParseInput, FileDialogFilter, JobRecord, JobUpdate, NativeJobRequest, NetworkRequest, NetworkResponse, ParsedPageContent, RuntimeInfo } from './runtime/types'
 
 const invoke = <T>(channel: string, ...args: unknown[]) => ipcRenderer.invoke(channel, ...args) as Promise<T>
 
@@ -9,6 +9,7 @@ const api = {
     minimize: () => invoke<void>('window:minimize'),
     toggleMaximize: () => invoke<boolean>('window:toggle-maximize'),
     close: () => invoke<void>('window:close'),
+    reload: () => invoke<void>('window:reload'),
     isMaximized: () => invoke<boolean>('window:is-maximized'),
     onStateChanged: (listener: (state: { maximized: boolean }) => void) => {
       const handler = (_event: Electron.IpcRendererEvent, state: { maximized: boolean }) => listener(state)
@@ -27,6 +28,7 @@ const api = {
     },
     mountSession: (id: string, bounds: BrowserViewBounds) => invoke<void>('browser:mount-session', id, bounds),
     unmountSession: (id: string) => invoke<void>('browser:unmount-session', id),
+    setVisible: (id: string, visible: boolean) => invoke<void>('browser:set-visible', id, visible),
     setBounds: (id: string, bounds: BrowserViewBounds) => invoke<void>('browser:set-bounds', id, bounds),
     showSession: (id: string) => invoke<void>('browser:show-session', id),
     popoutSession: (id: string) => invoke<void>('browser:popout-session', id),
@@ -37,6 +39,9 @@ const api = {
   },
   content: {
     parseHtml: (input: ContentParseInput) => invoke<ParsedPageContent>('content:parse-html', input),
+  },
+  network: {
+    request: (input: NetworkRequest & { secretRefs?: Record<string, string> }) => invoke<NetworkResponse>('network:request', input),
   },
   system: {
     openFile: (request?: { title?: string; filters?: FileDialogFilter[] }) =>

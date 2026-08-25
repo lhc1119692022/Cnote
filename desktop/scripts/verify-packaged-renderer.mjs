@@ -58,6 +58,14 @@ if (!bodyText.includes('创建 Flow') || !bodyText.includes('控制台')) {
   throw new Error(`Packaged renderer did not mount the Cnote workspace. Body text: ${bodyText.slice(0, 500)}`)
 }
 
+const windowControls = await evaluate(`Boolean(
+  document.querySelector('[data-testid="cnote-window-titlebar"]') &&
+  document.querySelector('[data-testid="cnote-window-close"]')
+)`)
+if (!windowControls) {
+  throw new Error('Cnote workspace did not mount its desktop window controls.')
+}
+
 const smokeId = `smoke-native-view-${Date.now()}`
 await evaluate(`window.cnoteDesktop.browser.createSession({id:${JSON.stringify(smokeId)},name:'Smoke',persistent:false,url:'about:blank'})`)
 await evaluate(`window.cnoteDesktop.browser.mountSession(${JSON.stringify(smokeId)},{x:0,y:0,width:320,height:240})`)
@@ -65,6 +73,13 @@ const mounted = await evaluate(`window.cnoteDesktop.browser.listSessions().then(
 if (!mounted || mounted.presentation !== 'embedded' || !mounted.visible) {
   throw new Error(`Native browser session was not embedded: ${JSON.stringify(mounted)}`)
 }
+
+await evaluate(`window.cnoteDesktop.browser.setVisible(${JSON.stringify(smokeId)},false)`)
+const hidden = await evaluate(`window.cnoteDesktop.browser.listSessions().then((items) => items.find((item) => item.id === ${JSON.stringify(smokeId)}))`)
+if (hidden?.visible) {
+  throw new Error(`Native browser visibility could not be disabled: ${JSON.stringify(hidden)}`)
+}
+await evaluate(`window.cnoteDesktop.browser.setVisible(${JSON.stringify(smokeId)},true)`)
 
 const capture = await evaluate(`window.cnoteDesktop.browser.capture(${JSON.stringify(smokeId)})`)
 if (capture?.url !== 'about:blank' || typeof capture?.html !== 'string') {

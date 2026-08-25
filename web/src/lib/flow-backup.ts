@@ -1,10 +1,10 @@
 import JSZip from 'jszip'
-import type { Node } from 'reactflow'
 import type { Flow } from '@/types/flow'
 import { cloneFlowValue } from '@/lib/flow/clone'
 import {
   checksumBlob,
   deleteLocalResource,
+  getLocalResourceMeta,
   loadLocalResourceBlob,
   storeLocalResource,
 } from '@/lib/resource-storage'
@@ -50,36 +50,28 @@ export class FlowBackupError extends Error {
   }
 }
 
-function localResource(node: Node) {
-  const source = node.data?.source
-  if (source?.kind === 'file') {
-    return {
-      resourceId: String(source.resourceId),
-      fileName: safeFileName(String(source.fileName || node.data?.label || 'file')),
-      mimeType: String(source.mimeType || 'application/octet-stream'),
-      size: Number(source.size || 0),
-      checksum: String(source.checksum || ''),
-    }
-  }
-  if (source?.kind === 'clipboard-image') {
-    return {
-      resourceId: String(source.resourceId),
-      fileName: safeFileName(`${node.data?.label || 'clipboard-image'}`),
-      mimeType: String(source.mimeType || 'image/png'),
-      size: Number(source.size || 0),
-      checksum: String(source.checksum || ''),
-    }
-  }
-  return undefined
-}
-
 function collectResources(flow: Flow) {
-  const resources = new Map<string, ReturnType<typeof localResource>>()
-  flow.nodes.forEach((node) => {
-    const resource = localResource(node)
-    if (resource && !resources.has(resource.resourceId)) resources.set(resource.resourceId, resource)
-  })
-  return [...resources.values()].filter((resource): resource is NonNullable<typeof resource> => Boolean(resource))
+  const resources = new Map<string, { resourceId: string; fileName: string; mimeType: string; size: number; checksum: string }>()
+  const visit = (value: unknown, fallbackName = 'resource') => {
+    if (!value || typeof value !== 'object') return
+    const record = value as Record<string, unknown>
+    const resourceId = typeof record.resourceId === 'string' && record.resourceId.startsWith('sha256-') ? record.resourceId : undefined
+    if (resourceId && !resources.has(resourceId)) {
+      const fileName = typeof record.fileName === 'string'
+        ? record.fileName
+        : typeof record.label === 'string' ? record.label : fallbackName
+      resources.set(resourceId, {
+        resourceId,
+        fileName: safeFileName(fileName),
+        mimeType: typeof record.mimeType === 'string' ? record.mimeType : 'application/octet-stream',
+        size: Number(record.size || 0),
+        checksum: typeof record.checksum === 'string' ? record.checksum : '',
+      })
+    }
+    Object.entries(record).forEach(([key, child]) => visit(child, key === 'references' ? 'reference' : fallbackName))
+  }
+  visit(flow.nodes, 'flow-resource')
+  return [...resources.values()]
 }
 
 export async function createFlowBackup(flow: Flow) {
@@ -89,7 +81,14 @@ export async function createFlowBackup(flow: Flow) {
 
   for (let index = 0; index < localResources.length; index += 1) {
     const resource = localResources[index]
-    if (resource.size > MAX_FLOW_BACKUP_FILE_BYTES) {
+    const meta = await getLocalResourceMeta(resource.resourceId)
+    const metadata = {
+      ...resource,
+      mimeType: resource.mimeType === 'application/octet-stream' ? (meta?.mimeType || resource.mimeType) : resource.mimeType,
+      size: resource.size || meta?.size || 0,
+      checksum: resource.checksum || meta?.checksum || '',
+    }
+    if (metadata.size > MAX_FLOW_BACKUP_FILE_BYTES) {
       throw new FlowBackupError('RESOURCE_TOO_LARGE', '画布中有文件超过 500 MiB，备份失败，请自行手动备份。')
     }
     const blob = await loadLocalResourceBlob(resource.resourceId)
@@ -97,10 +96,10 @@ export async function createFlowBackup(flow: Flow) {
     if (blob.size > MAX_FLOW_BACKUP_FILE_BYTES) {
       throw new FlowBackupError('RESOURCE_TOO_LARGE', '画布中有文件超过 500 MiB，备份失败，请自行手动备份。')
     }
-    const extension = resource.fileName.includes('.') ? '' : `.${resource.mimeType.split('/')[1]?.replace('jpeg', 'jpg') || 'bin'}`
-    const path = `resources/${String(index + 1).padStart(4, '0')}-${safeFileName(resource.fileName)}${extension}`
+    const extension = metadata.fileName.includes('.') ? '' : `.${metadata.mimeType.split('/')[1]?.replace('jpeg', 'jpg') || 'bin'}`
+    const path = `resources/${String(index + 1).padStart(4, '0')}-${safeFileName(metadata.fileName)}${extension}`
     zip.file(path, blob, { binary: true, compression: 'STORE' })
-    resources.push({ ...resource, path, size: blob.size, checksum: resource.checksum || await checksumBlob(blob) })
+    resources.push({ ...metadata, path, size: blob.size, checksum: metadata.checksum || await checksumBlob(blob) })
   }
 
   const manifest: FlowBackupManifest = {

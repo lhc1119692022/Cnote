@@ -592,8 +592,8 @@ export const AINode = memo(({ id, data, selected }: NodeProps<AINodeData>) => {
     if (target instanceof HTMLElement) target.closest('details')?.removeAttribute('open')
   }
 
-  const groupedModelMenu = (align: 'left' | 'right' = 'right') => (
-    <div className={`absolute ${align === 'right' ? 'right-0' : 'left-0'} top-[calc(100%+8px)] z-50 max-h-72 min-w-64 overflow-auto rounded-xl border border-border bg-card p-1.5 shadow-xl`}>
+  const groupedModelMenu = (align: 'left' | 'right' = 'right', placement: 'below' | 'above' = 'below') => (
+    <div className={`cnote-menu-surface absolute ${align === 'right' ? 'right-0' : 'left-0'} ${placement === 'above' ? 'bottom-[calc(100%+8px)]' : 'top-[calc(100%+8px)]'} z-50 max-h-72 min-w-64 overflow-auto`}>
       {modelGroups.length ? modelGroups.map((group, groupIndex) => <div key={group.channelId}>
         {groupIndex > 0 && <div className="my-1 h-px bg-border" />}
         <div className="px-3 pb-1 pt-2 text-left text-[10px] font-medium text-muted-foreground">{group.channelName}</div>
@@ -613,7 +613,7 @@ export const AINode = memo(({ id, data, selected }: NodeProps<AINodeData>) => {
       </div>}
 
       <div ref={toolbarRef} className="ai-node-toolbar nodrag nowheel" onPointerDown={(event) => event.stopPropagation()} onMouseLeave={() => closeOpenMenus(toolbarRef.current)}>
-        <div className="ai-node-toolbar-surface flex items-center gap-0.5 rounded-full border border-border bg-card px-1.5 py-1" role="toolbar" aria-label="AI 节点操作">
+        <div className="ai-node-toolbar-surface cnote-toolbar-surface flex items-center gap-0.5 px-1.5 py-1" role="toolbar" aria-label="AI 节点操作">
           <span className="flex h-8 w-8 items-center justify-center text-violet-600"><Sparkles className="h-4 w-4" /></span>
           <span className="max-w-[150px] truncate px-1.5 text-sm font-semibold text-foreground" title={data.label || 'AI 节点'}>{data.label || 'AI 节点'}</span>
           <span className="mx-0.5 h-5 w-px bg-border" />
@@ -626,7 +626,7 @@ export const AINode = memo(({ id, data, selected }: NodeProps<AINodeData>) => {
           <button type="button" className="flex h-8 w-8 items-center justify-center rounded-full text-muted-foreground hover:bg-muted hover:text-foreground" onClick={startNewSession} aria-label="新会话" title="新会话"><MessageSquarePlus className="h-4 w-4" /></button>
           <details className="group/menu relative">
             <summary className="flex h-8 w-8 cursor-pointer list-none items-center justify-center rounded-full text-muted-foreground hover:bg-muted hover:text-foreground" aria-label="历史会话" title="历史会话"><History className="h-4 w-4" /></summary>
-            <div className="absolute right-0 top-[calc(100%+8px)] z-50 w-72 rounded-xl border border-border bg-card p-1.5 shadow-xl">
+            <div className="cnote-menu-surface absolute right-0 top-[calc(100%+8px)] z-50 w-72">
               <div className="max-h-56 overflow-auto">
                 {sessions.length ? [...sessions].reverse().map((session) => <button key={session.id} type="button" className={`block w-full truncate rounded-lg px-3 py-2 text-left text-xs hover:bg-muted ${session.id === data.activeSessionId ? 'bg-muted font-semibold' : ''}`} onClick={(event) => { selectSession(session); closeMenu(event.currentTarget) }}>{session.title}</button>) : <p className="px-3 py-3 text-xs text-muted-foreground">还没有会话历史</p>}
               </div>
@@ -672,7 +672,7 @@ export const AINode = memo(({ id, data, selected }: NodeProps<AINodeData>) => {
           <button type="button" onClick={() => editReplyAsTextNode(hoveredReplyIndex)} title="编辑为文本节点" aria-label="编辑为文本节点"><SquarePen className="h-4 w-4" /></button>
           <button type="button" onClick={() => void copyReply(hoveredReplyIndex)} title="复制" aria-label="复制"><Copy className="h-4 w-4" />{copiedReplyIndex === hoveredReplyIndex && <span className="sr-only">已复制</span>}</button>
       </div>}
-      <div ref={composerAreaRef} className="relative p-3 pt-1">
+      <div ref={composerAreaRef} className="ai-composer-area relative z-30 p-3 pt-1">
         <div className="flex items-center gap-2 rounded-2xl border border-border bg-card p-2 shadow-sm focus-within:border-foreground/30 focus-within:ring-1 focus-within:ring-foreground/10">
           <div ref={composerRef} role="textbox" aria-multiline="true" aria-label="输入消息" contentEditable={!isSending} suppressContentEditableWarning data-placeholder="有问题，随便问" onInput={(event) => persistPrompt(promptValueFromEditor(event.currentTarget))} onDragOver={(event) => event.preventDefault()} onDrop={receiveVariableDrop} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void sendMessage() } }} className="ai-prompt-editor nodrag nowheel flex-1 px-3 text-base leading-7 text-foreground outline-none" />
           <button
@@ -694,7 +694,7 @@ export const AINode = memo(({ id, data, selected }: NodeProps<AINodeData>) => {
           </div>
           <details className="group/menu relative min-w-0">
             <summary className="flex h-8 min-w-40 max-w-56 cursor-pointer list-none items-center justify-between gap-3 rounded-lg border border-border px-3 text-xs text-foreground hover:bg-muted/50" aria-label="设置中的模型选择"><span className="flex-1 truncate text-right">{selectedModel?.model || '选择模型'}</span><ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" /></summary>
-            {groupedModelMenu('right')}
+            {groupedModelMenu('right', 'above')}
           </details>
         </div>}
       </div>

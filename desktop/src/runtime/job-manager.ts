@@ -35,8 +35,15 @@ export class JobManager implements JobPort {
         }
       }
       await this.persist()
-    } catch {
-      // A missing or corrupt task file should not prevent the desktop shell from starting.
+    } catch (error) {
+      // Keep the desktop shell usable, but preserve evidence for recovery
+      // instead of silently discarding a damaged task journal.
+      console.warn('Cnote runtime job journal could not be read:', error)
+      try {
+        await fs.copyFile(this.filePath, `${this.filePath}.corrupt-${Date.now()}`)
+      } catch {
+        // The file may simply not exist yet.
+      }
     }
   }
 

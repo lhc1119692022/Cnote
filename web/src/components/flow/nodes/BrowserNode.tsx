@@ -1,15 +1,14 @@
 import { memo, useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
 import { NodeProps, Position } from 'reactflow'
-import { ArrowLeft, ArrowRight, Camera, ExternalLink, Globe2, MonitorUp, RefreshCw } from 'lucide-react'
-import { Button } from '@/components/ui/button'
+import { ArrowLeft, ArrowRight, Camera, ExternalLink, Globe2, LoaderCircle, RefreshCw } from 'lucide-react'
 import { useFlowStore } from '@/stores/use-flow-store'
 import { runDesktopNativeJob } from '@/lib/desktop-native-jobs'
 import { BROWSER_NODE_DEFAULT_SIZE, BROWSER_NODE_MIN_SIZE } from '@/lib/flow/node-dimensions'
 import { refreshDownstreamTextNodes } from '@/lib/content-import-controller'
-import type { BrowserNodeData, WebPageOutputMode } from '@/types/flow'
-import { NodeHandle, NodeHoverToolbar, NodeResizeArc } from './NodeChrome'
+import type { BrowserNodeData } from '@/types/flow'
+import { NodeHandle, NodeResizeArc } from './NodeChrome'
 
-const DEFAULT_BROWSER_URL = 'https://www.baidu.com/'
+const DEFAULT_BROWSER_URL = 'https://www.google.com/'
 
 function normalizeUrl(value: string) {
   const trimmed = value.trim()
@@ -18,115 +17,215 @@ function normalizeUrl(value: string) {
   return 'https://' + trimmed
 }
 
-function getOutputMode(outputMode?: WebPageOutputMode, extractedContent?: string): WebPageOutputMode {
-  if (outputMode) return outputMode
-  return extractedContent ? 'text' : 'url'
-}
-
-const outputModeLabels: Record<WebPageOutputMode, string> = {
-  url: 'URL',
-  text: '文本',
-  both: 'ALL',
-}
-
-function getNextOutputMode(outputMode: WebPageOutputMode): WebPageOutputMode {
-  if (outputMode === 'url') return 'text'
-  if (outputMode === 'text') return 'both'
-  return 'url'
-}
-
 export const BrowserNode = memo(({ id, data, selected }: NodeProps<BrowserNodeData>) => {
   const updateNode = useFlowStore((state) => state.updateNode)
-  const outputMode = useFlowStore((state) => {
-    const node = state.nodes.find((item) => item.id === id)
-    return getOutputMode(node?.data?.outputMode as WebPageOutputMode | undefined, node?.data?.extractedContent as string | undefined)
-  })
   const initialUrl = normalizeUrl(data.confirmedUrl || data.url || DEFAULT_BROWSER_URL)
   const [address, setAddress] = useState(data.url || data.confirmedUrl || DEFAULT_BROWSER_URL)
   const [history, setHistory] = useState<string[]>(initialUrl ? [initialUrl] : [])
   const [historyIndex, setHistoryIndex] = useState(initialUrl ? 0 : -1)
   const [frameKey, setFrameKey] = useState(0)
-  const [isConfirmingAddress, setIsConfirmingAddress] = useState(false)
-  const [confirmedAddressDraft, setConfirmedAddressDraft] = useState('')
   const [nativeSessionId, setNativeSessionId] = useState(data.desktopSessionId)
-  const [nativeCapture, setNativeCapture] = useState<{ url: string; title: string; text: string }>()
   const [nativeError, setNativeError] = useState('')
-  const [isOpeningNative, setIsOpeningNative] = useState(false)
-  const [nativeSessionRevision, setNativeSessionRevision] = useState(0)
-  const addressConfirmationRef = useRef<HTMLDivElement>(null)
-  const addressConfirmationTriggerRef = useRef<HTMLButtonElement>(null)
+  const [isCapturingNative, setIsCapturingNative] = useState(false)
   const nativeViewportRef = useRef<HTMLDivElement>(null)
   const iframeRef = useRef<HTMLIFrameElement>(null)
   const loadedUrlRef = useRef('')
   const loadIntentRef = useRef(false)
+  const openingNativeRef = useRef(false)
   const currentUrl = historyIndex >= 0 ? history[historyIndex] : ''
   const syncStatus = data.syncStatus || 'synced'
   const desktopApi = typeof window !== 'undefined' ? window.cnoteDesktop : undefined
   const isDesktopRuntime = Boolean(desktopApi)
   const currentUrlRef = useRef(currentUrl)
   const labelRef = useRef(data.label)
+  const nativeErrorRef = useRef(nativeError)
 
   useEffect(() => {
     currentUrlRef.current = currentUrl
     labelRef.current = data.label
-  }, [currentUrl, data.label])
+    nativeErrorRef.current = nativeError
+  }, [currentUrl, data.label, nativeError])
+
+  const persist = useCallback((updates: Partial<BrowserNodeData>) => {
+    const current = useFlowStore.getState().nodes.find((node) => node.id === id)
+    if (!current) return
+    updateNode(id, { data: { ...current.data, ...updates } })
+  }, [id, updateNode])
+
+  const ensureNativeSession = useCallback(async () => {
+    if (!desktopApi || nativeSessionId || openingNativeRef.current) return
+    openingNativeRef.current = true
+    try {
+      const session = await desktopApi.browser.createSession({
+        id: data.desktopSessionId,
+        name: data.label || 'Cnote 浏览器会话',
+        persistent: true,
+        url: currentUrlRef.current || DEFAULT_BROWSER_URL,
+      })
+      setNativeSessionId(session.id)
+      setNativeError('')
+      persist({
+        desktopSessionId: session.id,
+        browserRuntime: 'desktop-native',
+        status: 'loading',
+        url: session.url || currentUrlRef.current || DEFAULT_BROWSER_URL,
+        confirmedUrl: session.url || currentUrlRef.current || DEFAULT_BROWSER_URL,
+      })
+    } catch (error) {
+      setNativeError(error instanceof Error ? error.message : '无法打开桌面浏览器视图')
+    } finally {
+      openingNativeRef.current = false
+    }
+  }, [data.desktopSessionId, data.label, desktopApi, nativeSessionId, persist])
+
+  useEffect(() => {
+    if (!desktopApi || nativeSessionId) return
+    void ensureNativeSession()
+  }, [desktopApi, ensureNativeSession, nativeSessionId])
 
   useEffect(() => {
     if (!desktopApi || !nativeSessionId || !nativeViewportRef.current) return
     let cancelled = false
     let frame = 0
-    let lastBoundsKey = ''
     let isMounted = false
-    let pendingMount: Promise<void> | null = null
+    let syncOperation: Promise<void> | null = null
+    let desiredRevision = 0
+    let completedRevision = 0
+    let desiredVisible = false
+    let desiredBounds = { x: 0, y: 0, width: 0, height: 0 }
+    let lastDesiredKey = ''
 
-    const mountOrRestoreSession = async (bounds: { x: number; y: number; width: number; height: number }) => {
-      if (cancelled) return
-      if (isMounted) {
-        await desktopApi.browser.setBounds(nativeSessionId, bounds)
-        return
-      }
+    const setNativeSessionVisible = async (visible: boolean) => {
+      if (!isMounted) return
       try {
-        await desktopApi.browser.mountSession(nativeSessionId, bounds)
-      } catch (error) {
-        if (cancelled) return
-        const sessions = await desktopApi.browser.listSessions()
-        if (sessions.some((session) => session.id === nativeSessionId)) throw error
-        await desktopApi.browser.createSession({
-          id: nativeSessionId,
-          name: labelRef.current || 'Cnote 浏览器会话',
-          persistent: true,
-          url: currentUrlRef.current || DEFAULT_BROWSER_URL,
-        })
-        await desktopApi.browser.mountSession(nativeSessionId, bounds)
+        await desktopApi.browser.setVisible(nativeSessionId, visible)
+      } catch {
+        // A destroyed session will be recreated by the next sync pass.
+        isMounted = false
       }
-      isMounted = true
     }
+
+    const releaseNativeSession = async () => {
+      if (!nativeSessionId) return
+      try {
+        // Remove the native view itself when the node leaves the tree. The
+        // persistent Chromium partition keeps cookies/cache for the next
+        // browser node, while closing the WebContentsView prevents it from
+        // lingering above the Dashboard after a Flow is deleted.
+        await desktopApi.browser.closeSession(nativeSessionId)
+      } catch {
+        // The desktop window may already be closing.
+      } finally {
+        isMounted = false
+      }
+    }
+
+    const syncNativeSession = async () => {
+      while (!cancelled) {
+        const revision = desiredRevision
+        const visible = desiredVisible
+        const bounds = desiredBounds
+
+        if (!visible) {
+          await setNativeSessionVisible(false)
+        } else {
+          if (!isMounted) {
+            const sessions = await desktopApi.browser.listSessions()
+            if (!sessions.some((session) => session.id === nativeSessionId)) {
+              await desktopApi.browser.createSession({
+                id: nativeSessionId,
+                name: labelRef.current || 'Cnote 浏览器会话',
+                persistent: true,
+                url: currentUrlRef.current || DEFAULT_BROWSER_URL,
+              })
+            }
+            if (cancelled || !desiredVisible) continue
+            await desktopApi.browser.mountSession(nativeSessionId, bounds)
+            isMounted = true
+          } else {
+            await desktopApi.browser.setBounds(nativeSessionId, bounds)
+          }
+          await setNativeSessionVisible(true)
+
+          // A bounds update can arrive while IPC is in flight. Apply the most
+          // recent rectangle before allowing the native view to remain visible.
+          if (cancelled || !desiredVisible) {
+            await setNativeSessionVisible(false)
+          } else if (revision !== desiredRevision) {
+            await desktopApi.browser.setBounds(nativeSessionId, desiredBounds)
+          }
+        }
+
+        completedRevision = revision
+        if (revision === desiredRevision) return
+      }
+    }
+
+    const requestSync = () => {
+      if (cancelled || syncOperation) return
+      syncOperation = syncNativeSession().catch((error) => {
+        if (cancelled) return
+        setNativeError(error instanceof Error ? error.message : '桌面浏览器视图挂载失败')
+      }).finally(() => {
+        syncOperation = null
+        if (!cancelled && completedRevision !== desiredRevision) requestSync()
+      })
+    }
+
+    const stopListening = desktopApi.browser.onSessionUpdated((session) => {
+      if (session.id !== nativeSessionId || cancelled) return
+      // A renderer reload, window restore, or native view teardown can leave
+      // the session record alive while its view is no longer mounted. Treat
+      // that state as recoverable instead of waiting for the next canvas zoom
+      // to change the rectangle and accidentally remount it.
+      if (session.presentation !== 'embedded') {
+        isMounted = false
+        if (desiredVisible) {
+          desiredRevision += 1
+          requestSync()
+        }
+      }
+    })
 
     const updateNativeBounds = () => {
       if (cancelled) return
       const element = nativeViewportRef.current
       if (!element) return
       const rect = element.getBoundingClientRect()
-      const left = Math.max(0, rect.left)
-      const top = Math.max(0, rect.top)
-      const right = Math.min(window.innerWidth, rect.right)
-      const bottom = Math.min(window.innerHeight, rect.bottom)
-      const bounds = {
-        x: left,
-        y: top,
-        width: Math.max(0, right - left),
-        height: Math.max(0, bottom - top),
+      const contentRect = element.closest<HTMLElement>('.cnote-window-content')?.getBoundingClientRect()
+      // Keep the native view at the node's real size. The desktop runtime
+      // hides it while it is not fully inside the content area, so panning to
+      // an edge never shrinks the page or lets it cover the title bar.
+      desiredBounds = {
+        x: Math.round(rect.left),
+        y: Math.round(rect.top),
+        width: Math.round(Math.max(0, rect.width)),
+        height: Math.round(Math.max(0, rect.height)),
       }
-      const boundsKey = [bounds.x, bounds.y, bounds.width, bounds.height].map((value) => Math.round(value)).join(':')
-      if (boundsKey !== lastBoundsKey && !pendingMount) {
-        lastBoundsKey = boundsKey
-        pendingMount = mountOrRestoreSession(bounds).catch((error) => {
-          if (cancelled) return
-          lastBoundsKey = ''
-          setNativeError(error instanceof Error ? error.message : '桌面浏览器视图挂载失败')
-        }).finally(() => {
-          pendingMount = null
-        })
+      const visibleIn = !contentRect || (rect.right > contentRect.left && rect.left < contentRect.right && rect.bottom > contentRect.top && rect.top < contentRect.bottom)
+      const canvasMoving = Boolean(element.closest<HTMLElement>('.canvas-viewport-moving'))
+      const nodeMoving = Boolean(element.closest<HTMLElement>('.react-flow__node.dragging'))
+      const rendererOverlayActive = Array.from(document.querySelectorAll<HTMLElement>(
+        '.cnote-menu-surface, [data-canvas-context-menu], [data-connection-menu], [data-canvas-add-menu], [data-toolbar-add-menu], [role="dialog"]',
+      )).some((overlay) => {
+        if (overlay === element || element.contains(overlay)) return false
+        const style = window.getComputedStyle(overlay)
+        if (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity) === 0) return false
+        const overlayRect = overlay.getBoundingClientRect()
+        return overlayRect.right > rect.left && overlayRect.left < rect.right && overlayRect.bottom > rect.top && overlayRect.top < rect.bottom
+      })
+      // WebContentsView is above the renderer. Hide it while the canvas is
+      // panning, dragging, or opening a renderer menu so those interactions
+      // remain usable despite Electron's native layer being composited above
+      // the renderer DOM.
+      desiredVisible = !nativeErrorRef.current && !canvasMoving && !nodeMoving && !rendererOverlayActive && visibleIn && desiredBounds.width >= 12 && desiredBounds.height >= 12
+      const boundsKey = desiredVisible
+        ? [desiredBounds.x, desiredBounds.y, desiredBounds.width, desiredBounds.height].join(':')
+        : 'hidden'
+      if (boundsKey !== lastDesiredKey) {
+        lastDesiredKey = boundsKey
+        desiredRevision += 1
+        requestSync()
       }
       frame = window.requestAnimationFrame(updateNativeBounds)
     }
@@ -135,10 +234,10 @@ export const BrowserNode = memo(({ id, data, selected }: NodeProps<BrowserNodeDa
     return () => {
       cancelled = true
       window.cancelAnimationFrame(frame)
-      pendingMount = null
-      void desktopApi.browser.unmountSession(nativeSessionId).catch(() => undefined)
+      stopListening()
+      void releaseNativeSession()
     }
-  }, [desktopApi, nativeSessionId, nativeSessionRevision])
+  }, [desktopApi, nativeSessionId])
 
   useEffect(() => {
     setAddress(data.url || data.confirmedUrl || DEFAULT_BROWSER_URL)
@@ -167,37 +266,6 @@ export const BrowserNode = memo(({ id, data, selected }: NodeProps<BrowserNodeDa
   }, [id, updateNode])
 
   useEffect(() => {
-    const markPossibleNavigation = () => {
-      if (document.activeElement !== iframeRef.current) return
-      setIsConfirmingAddress(false)
-      const current = useFlowStore.getState().nodes.find((node) => node.id === id)
-      if (!current || current.data?.syncStatus === 'possibly_changed') return
-      updateNode(id, { data: { ...current.data, syncStatus: 'possibly_changed' } })
-    }
-    window.addEventListener('blur', markPossibleNavigation)
-    return () => window.removeEventListener('blur', markPossibleNavigation)
-  }, [id, updateNode])
-
-  useEffect(() => {
-    if (!isConfirmingAddress) return
-    const closeOnOutsidePointer = (event: PointerEvent) => {
-      const target = event.target
-      if (!(target instanceof Element)) return
-      if (addressConfirmationRef.current?.contains(target)) return
-      if (addressConfirmationTriggerRef.current?.contains(target)) return
-      setIsConfirmingAddress(false)
-    }
-    document.addEventListener('pointerdown', closeOnOutsidePointer, true)
-    return () => document.removeEventListener('pointerdown', closeOnOutsidePointer, true)
-  }, [isConfirmingAddress])
-
-  const persist = useCallback((updates: Partial<BrowserNodeData>) => {
-    const current = useFlowStore.getState().nodes.find((node) => node.id === id)
-    if (!current) return
-    updateNode(id, { data: { ...current.data, ...updates } })
-  }, [id, updateNode])
-
-  useEffect(() => {
     if (!desktopApi || !nativeSessionId) return
     return desktopApi.browser.onSessionUpdated((session) => {
       if (session.id !== nativeSessionId) return
@@ -210,7 +278,7 @@ export const BrowserNode = memo(({ id, data, selected }: NodeProps<BrowserNodeDa
         return nextItems
       })
       setNativeError('')
-      persist({ url: nextUrl, observedUrl: nextUrl, browserRuntime: 'desktop-native', status: 'ready', syncStatus: 'possibly_changed' })
+      persist({ url: nextUrl, confirmedUrl: nextUrl, observedUrl: nextUrl, browserRuntime: 'desktop-native', status: 'ready', syncStatus: 'synced' })
     })
   }, [desktopApi, nativeSessionId, persist])
 
@@ -275,40 +343,15 @@ export const BrowserNode = memo(({ id, data, selected }: NodeProps<BrowserNodeDa
     setFrameKey((key) => key + 1)
   }
 
-  const openNativeSession = async () => {
-    if (!desktopApi || isOpeningNative) return
-    setIsOpeningNative(true)
-    setNativeError('')
-    try {
-      const existing = nativeSessionId
-        ? (await desktopApi.browser.listSessions()).find((session) => session.id === nativeSessionId)
-        : undefined
-      const session = existing || await desktopApi.browser.createSession({
-        id: nativeSessionId,
-        name: data.label || 'Cnote 浏览器会话',
-        persistent: true,
-        url: currentUrl || DEFAULT_BROWSER_URL,
-      })
-      setNativeSessionId(session.id)
-      setNativeSessionRevision((revision) => revision + 1)
-      await desktopApi.browser.showSession(session.id)
-      persist({ desktopSessionId: session.id, browserRuntime: 'desktop-native', status: 'ready', confirmedUrl: session.url || currentUrl })
-    } catch (error) {
-      setNativeError(error instanceof Error ? error.message : '无法打开桌面浏览器会话')
-    } finally {
-      setIsOpeningNative(false)
-    }
-  }
-
   const captureNativePage = async () => {
     if (!desktopApi || !nativeSessionId) return
+    setIsCapturingNative(true)
     setNativeError('')
     try {
       const capture = await desktopApi.browser.capture(nativeSessionId)
       const parsed = await runDesktopNativeJob<Awaited<ReturnType<typeof desktopApi.content.parseHtml>>>({ kind: 'native:content-parse', input: { html: capture.html, url: capture.url, title: capture.title } })
       const title = parsed.title || capture.title
       const text = parsed.text || capture.text
-      setNativeCapture({ url: capture.url, title, text })
       persist({
         url: capture.url,
         confirmedUrl: capture.url,
@@ -330,6 +373,8 @@ export const BrowserNode = memo(({ id, data, selected }: NodeProps<BrowserNodeDa
       void refreshDownstreamTextNodes(id)
     } catch (error) {
       setNativeError(error instanceof Error ? error.message : '页面捕获失败')
+    } finally {
+      setIsCapturingNative(false)
     }
   }
 
@@ -358,67 +403,13 @@ export const BrowserNode = memo(({ id, data, selected }: NodeProps<BrowserNodeDa
     persist({ status: 'ready', syncStatus: 'possibly_changed', observedUrl })
   }
 
-  const setMode = (nextMode: WebPageOutputMode) => {
-    persist({ outputMode: nextMode })
-    useFlowStore.getState().addToHistory()
-    useFlowStore.getState().saveCurrentFlow()
-    void refreshDownstreamTextNodes(id)
-  }
-
-  const openAddressConfirmation = () => {
-    if (isConfirmingAddress) {
-      setIsConfirmingAddress(false)
-      return
-    }
-    setConfirmedAddressDraft(data.observedUrl || address || data.confirmedUrl || currentUrl)
-    setIsConfirmingAddress(true)
-  }
-
-  const confirmCurrentUrl = () => {
-    void navigate(confirmedAddressDraft)
-    setIsConfirmingAddress(false)
-  }
-
   const cardClass = 'node-card node-panel-shadow group relative h-full w-full overflow-visible rounded-[22px] border bg-card ' + (syncStatus === 'possibly_changed' ? 'border-amber-400 shadow-amber-100' : selected ? 'node-selected' : 'border-border')
-  const emptyInputSelector = ".react-flow__node[data-id='" + id + "'] input[aria-label='网址']"
 
   return (
-    <div className={cardClass} style={{ minWidth: BROWSER_NODE_MIN_SIZE.width, minHeight: BROWSER_NODE_MIN_SIZE.height }} onMouseLeave={() => setIsConfirmingAddress(false)}>
+    <div className={`browser-node-card ${cardClass}`} style={{ minWidth: BROWSER_NODE_MIN_SIZE.width, minHeight: BROWSER_NODE_MIN_SIZE.height }}>
       <NodeHandle type="target" position={Position.Left} id="in" />
       <NodeHandle type="source" position={Position.Right} id="out" />
-      <NodeHoverToolbar nodeId={id}>
-        <Button
-          ref={addressConfirmationTriggerRef}
-          type="button"
-          variant={isConfirmingAddress ? 'secondary' : 'ghost'}
-          size="sm"
-          className={`nodrag nopan nowheel h-8 shrink-0 rounded-full px-3 ${syncStatus === 'possibly_changed' ? 'text-amber-700' : 'text-muted-foreground hover:text-foreground'}`}
-          aria-label="更新信息传递地址"
-          title="更新信息传递地址"
-          aria-expanded={isConfirmingAddress}
-          onClick={(event) => { event.stopPropagation(); openAddressConfirmation() }}
-        >
-          更新
-        </Button>
-        <Button
-          type="button"
-          variant="secondary"
-          size="sm"
-          className="nodrag nopan nowheel h-8 min-w-12 shrink-0 rounded-full px-3 text-foreground"
-          aria-label={`信息传递模式：${outputModeLabels[outputMode]}，点击切换`}
-          title={`当前传递 ${outputModeLabels[outputMode]}，点击切换`}
-          onClick={(event) => { event.stopPropagation(); setMode(getNextOutputMode(outputMode)) }}
-        >
-          {outputModeLabels[outputMode]}
-        </Button>
-      </NodeHoverToolbar>
       <NodeResizeArc nodeId={id} minWidth={BROWSER_NODE_MIN_SIZE.width} minHeight={BROWSER_NODE_MIN_SIZE.height} />
-
-      {isConfirmingAddress && <div ref={addressConfirmationRef} className="nodrag nopan nowheel absolute right-3 top-3 z-40 flex items-center gap-2 rounded-xl border border-border bg-card p-2 shadow-lg" onPointerDown={(event) => event.stopPropagation()}>
-        <input autoFocus value={confirmedAddressDraft} onChange={(event) => setConfirmedAddressDraft(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') confirmCurrentUrl(); if (event.key === 'Escape') setIsConfirmingAddress(false) }} className="h-8 w-[360px] rounded-lg border border-border bg-background px-3 text-xs text-foreground outline-none focus:border-foreground/30" aria-label="信息传递地址" />
-        <Button type="button" variant="secondary" size="sm" onClick={() => setIsConfirmingAddress(false)}>取消</Button>
-        <Button type="button" size="sm" onClick={confirmCurrentUrl}>确认</Button>
-      </div>}
 
       <div className="flex h-full flex-col overflow-hidden rounded-[21px]" style={{ minHeight: BROWSER_NODE_MIN_SIZE.height }}>
         <form className="flex h-12 shrink-0 cursor-grab items-center gap-1.5 border-b border-border bg-muted/25 px-3 active:cursor-grabbing" onSubmit={submitAddress}>
@@ -432,31 +423,15 @@ export const BrowserNode = memo(({ id, data, selected }: NodeProps<BrowserNodeDa
           <button type="button" className="nodrag flex h-8 w-8 items-center justify-center rounded-full text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-30" disabled={!currentUrl} onClick={() => {
             if (desktopApi && nativeSessionId) void desktopApi.browser.popoutSession(nativeSessionId)
             else window.open(currentUrl, '_blank', 'noopener,noreferrer')
-          }} aria-label="弹出浏览器窗口" title="弹出浏览器窗口"><ExternalLink className="h-4 w-4" /></button>
-          {isDesktopRuntime && <button type="button" className={`nodrag flex h-8 w-8 items-center justify-center rounded-full hover:bg-muted hover:text-foreground ${nativeSessionId ? 'text-primary' : 'text-muted-foreground'}`} onClick={() => void openNativeSession()} disabled={isOpeningNative} aria-label="打开桌面浏览器会话" title={nativeSessionId ? '显示桌面浏览器会话' : '打开桌面浏览器会话'}><MonitorUp className="h-4 w-4" /></button>}
+          }} aria-label="在独立窗口打开" title="在独立窗口打开"><ExternalLink className="h-4 w-4" /></button>
+          {isDesktopRuntime && <button type="button" className="nodrag flex h-8 w-8 items-center justify-center rounded-full text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-30" disabled={!nativeSessionId || isCapturingNative} onClick={() => void captureNativePage()} aria-label="提取当前页面内容" title="提取当前页面内容"><Camera className="h-4 w-4" /></button>}
         </form>
 
         <div className="relative min-h-0 flex-1 bg-background">
           {isDesktopRuntime ? (
             <div ref={nativeViewportRef} className="absolute inset-0 bg-background">
-              <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-muted/20 p-6 text-center">
-              <MonitorUp className="h-12 w-12 stroke-[1.25] text-primary/60" />
-              <div>
-                <p className="text-sm font-medium text-foreground">桌面原生浏览器视图</p>
-                <p className="mt-1 max-w-[320px] text-xs leading-5 text-muted-foreground">页面会直接嵌入当前节点，不受 iframe 和 CORS 限制。</p>
-              </div>
-              <div className="flex items-center gap-2">
-                <Button type="button" size="sm" className="nodrag nopan nowheel rounded-full" onClick={() => void openNativeSession()} disabled={isOpeningNative}>
-                  <MonitorUp className="mr-1.5 h-3.5 w-3.5" />
-                  {nativeSessionId ? '显示浏览器' : '打开浏览器'}
-                </Button>
-                {nativeSessionId && <Button type="button" variant="secondary" size="sm" className="nodrag nopan nowheel rounded-full" onClick={() => void captureNativePage()}>
-                  <Camera className="mr-1.5 h-3.5 w-3.5" />捕获页面
-                </Button>}
-              </div>
-              {nativeError && <p className="max-w-[360px] text-xs text-destructive">{nativeError}</p>}
-              {nativeCapture && <div className="max-h-32 w-full max-w-[420px] overflow-auto rounded-xl border border-border bg-card p-3 text-left text-xs text-muted-foreground"><p className="mb-1 font-medium text-foreground">{nativeCapture.title || nativeCapture.url}</p><p className="whitespace-pre-wrap">{nativeCapture.text || '当前页面没有可提取的正文。'}</p></div>}
-              </div>
+              {!nativeSessionId && <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center gap-2 bg-muted/15 text-xs text-muted-foreground"><LoaderCircle className="h-4 w-4 animate-spin" />正在打开 Google</div>}
+              {nativeError && <div className="absolute inset-x-3 top-3 z-10 rounded-lg border border-destructive/25 bg-card/95 px-3 py-2 text-xs text-destructive shadow-sm">{nativeError}</div>}
             </div>
           ) : currentUrl ? (
             <iframe
@@ -470,12 +445,7 @@ export const BrowserNode = memo(({ id, data, selected }: NodeProps<BrowserNodeDa
               referrerPolicy="no-referrer"
               onLoad={handleFrameLoad}
             />
-          ) : (
-            <button type="button" className="nodrag absolute inset-0 flex h-full w-full flex-col items-center justify-center gap-3 text-muted-foreground" onClick={() => document.querySelector<HTMLInputElement>(emptyInputSelector)?.focus()}>
-              <Globe2 className="h-12 w-12 stroke-[1.25] opacity-30" />
-              <span className="text-sm">在地址栏输入网址开始浏览</span>
-            </button>
-          )}
+          ) : <div className="absolute inset-0 flex items-center justify-center text-xs text-muted-foreground">在地址栏输入网址开始浏览</div>}
         </div>
 
       </div>

@@ -373,7 +373,8 @@ export function Toolbar({
         BROWSER_NODE_DEFAULT_SIZE.width,
         BROWSER_NODE_DEFAULT_SIZE.height,
       ),
-      data: { label: "浏览器节点", url: "https://www.baidu.com/", confirmedUrl: "https://www.baidu.com/", outputMode: "url", syncStatus: "synced", status: "loading" },
+      style: BROWSER_NODE_DEFAULT_SIZE,
+      data: { label: "浏览器节点", url: "https://www.google.com/", confirmedUrl: "https://www.google.com/", outputMode: "url", syncStatus: "synced", status: "loading" },
     });
     setShowLibrarySubmenu(false);
     setShowAddMenu(false);
@@ -614,7 +615,7 @@ export function Toolbar({
             {showAddMenu && (
               <div
                 data-toolbar-add-menu
-                className="absolute left-0 top-12 w-48 rounded-xl border border-border bg-card p-1.5 shadow-xl"
+                className="cnote-menu-surface absolute left-0 top-12 w-48"
               >
                 <button
                   className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-xs hover:bg-muted"

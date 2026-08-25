@@ -36,6 +36,9 @@ function compactConversation(messages: ChatMessage[], maxTokens = 258000, thresh
 import { topologicalSort, getPredecessors } from './graph'
 import { AIClient } from '@/lib/api'
 import { ScraperClient } from '@/lib/scraper'
+import { cancelGenerationTask, runGenerationTask } from '@/lib/generation/client'
+import { generationChannelSupportsVariant, useGenerationStore, type GenerationChannel } from '@/stores/use-generation-store'
+import type { GenerationReference, GenerationTaskState } from '@/types/flow'
 
 function extractInputTexts(value: unknown): string[] {
   if (typeof value === 'string') return value.trim() ? [value] : []
@@ -53,6 +56,73 @@ function isUnsupportedLocalVideoNode(node?: FlowNode) {
   if (node?.type !== 'content') return false
   const data = node.data as ContentNodeData
   return data.category === 'video' && data.source?.kind === 'file'
+}
+
+function mediaTypeFromValue(value: Record<string, unknown>): GenerationReference['type'] | undefined {
+  const kind = value.type || value.kind || value.category || value.mediaType
+  if (kind === 'image' || kind === 'video' || kind === 'audio') return kind
+  const mime = typeof value.mimeType === 'string'
+    ? value.mimeType
+    : typeof value.contentType === 'string'
+      ? value.contentType
+      : ''
+  if (mime.startsWith('image/')) return 'image'
+  if (mime.startsWith('video/')) return 'video'
+  if (mime.startsWith('audio/')) return 'audio'
+  return undefined
+}
+
+function collectGenerationReferences(value: unknown, references: GenerationReference[] = [], hintedType?: GenerationReference['type']) {
+  if (!value || typeof value !== 'object') return references
+  if (Array.isArray(value)) {
+    value.forEach((child) => collectGenerationReferences(child, references, hintedType))
+    return references
+  }
+  const record = value as Record<string, unknown>
+  const resource = record.resource && typeof record.resource === 'object' ? record.resource as Record<string, unknown> : undefined
+  const source = record.source && typeof record.source === 'object' ? record.source as Record<string, unknown> : undefined
+  const payload = record.payload && typeof record.payload === 'object' ? record.payload as Record<string, unknown> : undefined
+  const merged = { ...record, ...(source || {}), ...(payload || {}), ...(resource || {}) }
+  const type = mediaTypeFromValue(merged) || hintedType
+  const urlCandidate = [
+    resource?.url,
+    resource?.src,
+    resource?.file_url,
+    resource?.download_url,
+    record.url,
+    record.src,
+    record.file_url,
+    record.download_url,
+    source?.normalizedUrl,
+    source?.originalUrl,
+  ].find((candidate): candidate is string => typeof candidate === 'string' && candidate.trim().length > 0)
+  const url = urlCandidate?.trim()
+  const resourceId = typeof resource?.resourceId === 'string'
+    ? resource.resourceId
+    : typeof source?.resourceId === 'string'
+      ? source.resourceId
+      : typeof record.resourceId === 'string'
+        ? record.resourceId
+        : undefined
+  if (type && (url || resourceId)) {
+    const duplicate = references.some((reference) => reference.type === type && ((url && reference.url === url) || (resourceId && reference.resourceId === resourceId)))
+    if (!duplicate) references.push({
+      id: `${type}-${references.length + 1}`,
+      type,
+      source: url && /^https?:\/\//i.test(url) ? 'url' : 'local',
+      url,
+      previewUrl: typeof resource?.previewUrl === 'string' ? resource.previewUrl : typeof record.previewUrl === 'string' ? record.previewUrl : undefined,
+      resourceId,
+      fileName: typeof resource?.fileName === 'string' ? resource.fileName : typeof record.label === 'string' ? record.label : undefined,
+      mimeType: typeof resource?.mimeType === 'string' ? resource.mimeType : typeof source?.mimeType === 'string' ? source.mimeType : typeof record.mimeType === 'string' ? record.mimeType : undefined,
+      order: references.length,
+      status: 'ready',
+    })
+  }
+  Object.values(record).forEach((child) => {
+    if (child !== resource && child !== source && child !== value) collectGenerationReferences(child, references, type)
+  })
+  return references
 }
 
 /**
@@ -361,16 +431,11 @@ export class FlowExecutor {
     }, this.signal)
   }
 
-  /**
-   * Generation request nodes currently normalize their inputs into a stable
-   * request envelope. Provider submission and polling are intentionally kept
-   * behind the generation adapter layer so the Flow engine can already carry
-   * the new node type without exposing provider credentials in the canvas.
-   */
+  /** Execute image/video requests as part of the Flow, including submission and polling. */
   private async executeRequestNode(
     node: FlowNode,
     inputs: Record<string, any>,
-  ): Promise<Record<string, unknown>> {
+  ): Promise<Record<string, unknown> | GenerationTaskState> {
     const data = node.data as RequestNodeData
     const variant = data.variant || 'body'
     if (variant === 'body') {
@@ -382,17 +447,69 @@ export class FlowExecutor {
       throw new Error(`${variant === 'image' ? '图片' : '视频'}生成节点需要提示词、参考文件或上游输入`)
     }
 
-    return {
-      kind: 'generation-request',
-      variant,
-      channelId: config.channelId,
-      model: config.model,
-      capability: config.capability,
-      prompt: config.prompt,
-      references: config.references,
-      inputs,
-      status: 'ready-to-submit',
+    const generationStore = useGenerationStore.getState()
+    const existingTask = (data.tasks?.[variant] || data.task) as GenerationTaskState | undefined
+    const persisted = existingTask?.requestSnapshot && existingTask.taskId && (existingTask.status === 'queued' || existingTask.status === 'in_progress')
+      ? existingTask.requestSnapshot
+      : undefined
+    const liveChannel = config.channelId
+      ? generationStore.getChannel(config.channelId)
+      : generationStore.channels.find((item) => item.enabled && generationChannelSupportsVariant(item, variant))
+    const channel: GenerationChannel | undefined = persisted
+      ? {
+          id: persisted.channelId,
+          providerId: persisted.providerId as GenerationChannel['providerId'],
+          name: liveChannel?.name || '已提交渠道',
+          baseURL: persisted.baseURL,
+          secretName: persisted.secretName || liveChannel?.secretName,
+          modelIds: liveChannel?.modelIds || [persisted.model],
+          enabled: true,
+          protocol: persisted.protocol as GenerationChannel['protocol'],
+          adapters: liveChannel?.adapters,
+        }
+      : liveChannel
+    const baseConfig = persisted?.config || config
+    const model = channel
+      ? generationStore.getModels(channel.id).find((item) => item.id === (persisted?.model || config.model)) || { id: persisted?.model || config.model || '', name: persisted?.model || config.model || '', capabilities: [] }
+      : undefined
+    if (!channel || !model?.id) throw new Error('请先配置生成渠道和模型')
+
+    const upstreamText = Object.values(inputs).flatMap(extractInputTexts).join('\n\n').trim()
+    const upstreamReferences = Object.values(inputs).flatMap((value) => collectGenerationReferences(value))
+    const mergedReferences = [...(config.references || []), ...upstreamReferences].map((reference, index) => ({ ...reference, order: index }))
+    const runConfig = persisted ? baseConfig : { ...config, prompt: [config.prompt, upstreamText].filter(Boolean).join('\n\n'), references: mergedReferences }
+    const snapshot = { ...runConfig, references: runConfig.references.map((reference) => ({ ...reference })) }
+    const task = await runGenerationTask(
+      { channel, model, config: runConfig, variant },
+      {
+        taskId: persisted ? existingTask?.taskId : undefined,
+        submittedAt: persisted ? existingTask?.submittedAt : undefined,
+        timeoutMs: variant === 'image' ? 15 * 60 * 1000 : 60 * 60 * 1000,
+        signal: this.signal,
+        onCancel: async (taskId) => { await cancelGenerationTask({ channel, model, config: runConfig, variant }, taskId) },
+        onTaskUpdate: (nextTask) => {
+          const current = this.nodes.find((item) => item.id === node.id)?.data as RequestNodeData | undefined
+          const previous = current?.tasks?.[variant] || current?.task || { status: 'idle' as const }
+          this.onNodeDataUpdate?.(node.id, {
+            tasks: { ...(current?.tasks || {}), [variant]: { ...previous, ...nextTask, requestSnapshot: {
+              variant,
+              channelId: channel.id,
+              providerId: channel.providerId,
+              protocol: channel.protocol,
+              baseURL: channel.baseURL,
+              secretName: channel.secretName,
+              model: model.id,
+              config: snapshot,
+            } } },
+            task: { ...previous, ...nextTask },
+          })
+        },
+      },
+    )
+    if (task.status === 'completed' && !task.resultUrls?.length && !task.resultResourceIds?.length) {
+      throw new Error('生成任务已完成，但服务端没有返回可预览的结果')
     }
+    return { kind: 'generation-result', variant, task }
   }
 
   /**

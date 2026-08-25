@@ -1,4 +1,4 @@
-import { app, BrowserWindow, session, WebContentsView, type View } from 'electron'
+import { app, BrowserView, BrowserWindow, session } from 'electron'
 import path from 'node:path'
 import { mkdirSync } from 'node:fs'
 import { randomUUID } from 'node:crypto'
@@ -12,14 +12,23 @@ interface BrowserSessionRecord {
   partition: string
   persistent: boolean
   createdAt: string
-  view: WebContentsView
-  parentView: View | null
+  view: BrowserView
+  parentWindow: BrowserWindow | null
   parentKind: ViewParentKind
   popupWindow?: BrowserWindow
   lastBounds?: BrowserViewBounds
+  /** Last renderer visibility intent. Bounds updates must not resurrect a view
+   * after the renderer has hidden it while a canvas/menu interaction is active. */
+  visibleRequested: boolean
+  renderedVisible: boolean
+  loadedOnce: boolean
+  initialMountReloaded: boolean
 }
 
 const ALLOWED_PROTOCOLS = new Set(['http:', 'https:', 'file:', 'about:'])
+// DesktopWindowChrome uses a 44px frameless title bar. The native browser
+// layer starts below it so a browser node can never cover window controls.
+const EMBEDDED_LAYER_TOP = 44
 
 function assertNavigableUrl(value: string) {
   let parsed: URL
@@ -47,7 +56,7 @@ function normalizeBounds(input: BrowserViewBounds): BrowserViewBounds {
   }
 }
 
-function getWebContents(view: WebContentsView | undefined) {
+function getWebContents(view: BrowserView | undefined) {
   try {
     return view?.webContents ?? null
   } catch {
@@ -64,17 +73,53 @@ function isDestroyed(webContents: ReturnType<typeof getWebContents>) {
   }
 }
 
+function setViewVisible(record: BrowserSessionRecord, visible: boolean) {
+  record.renderedVisible = visible
+}
+
+function setViewBounds(record: BrowserSessionRecord, bounds: BrowserViewBounds) {
+  if (isDestroyed(getWebContents(record.view))) return
+  try {
+    record.view.setBounds(bounds)
+  } catch {
+    // A closing BrowserWindow may invalidate the view between the checks above
+    // and the native call.
+  }
+}
+
+function requestViewRepaint(record: BrowserSessionRecord) {
+  const webContents = getWebContents(record.view)
+  if (!webContents || isDestroyed(webContents)) return
+  try {
+    // A BrowserView that finished loading while detached can keep its first
+    // compositor frame pending on Windows. Keep the native page live while it
+    // is used as an embedded node and explicitly invalidate after attachment.
+    webContents.setBackgroundThrottling(false)
+    webContents.invalidate()
+  } catch {
+    // The page may be tearing down during Flow/window navigation.
+  }
+}
+
+function normalizeBrowserZoom(webContents: Electron.WebContents) {
+  try {
+    // Embedded pages must start from the same readable baseline regardless of
+    // a zoom level left behind by a persistent Chromium partition.
+    webContents.setZoomFactor(1)
+    // The page zoom is an explicit browser setting, not a consequence of the
+    // React Flow viewport transform. Until Cnote exposes a page-zoom control,
+    // keep Chromium at a fixed 100% baseline and disable pinch/ctrl-wheel
+    // visual zoom from changing the persistent session behind the user's back.
+    void webContents.setVisualZoomLevelLimits(0, 0)
+  } catch {
+    // A page can be tearing down while the view is being remounted.
+  }
+}
+
 function summary(record: BrowserSessionRecord): BrowserSessionSummary {
   const webContents = getWebContents(record.view)
   const destroyed = isDestroyed(webContents)
-  let visible = false
-  if (!destroyed) {
-    try {
-      visible = record.view.getVisible()
-    } catch {
-      visible = false
-    }
-  }
+  const visible = !destroyed && record.renderedVisible
   return {
     id: record.id,
     name: record.name,
@@ -92,6 +137,7 @@ export class BrowserSessionManager implements BrowserPort {
   private readonly sessions = new Map<string, BrowserSessionRecord>()
   private readonly updateListeners = new Set<(session: BrowserSessionSummary) => void>()
   private hostWindow: BrowserWindow | null = null
+  private readonly handleHostResize = () => this.updateEmbeddedViewBounds()
 
   onSessionUpdated(listener: (session: BrowserSessionSummary) => void) {
     this.updateListeners.add(listener)
@@ -102,17 +148,30 @@ export class BrowserSessionManager implements BrowserPort {
     if (this.hostWindow === window) return
     this.clearHostWindow()
     this.hostWindow = window
+    window.on('resize', this.handleHostResize)
   }
 
   clearHostWindow() {
+    const hostWindow = this.hostWindow
     for (const record of this.sessions.values()) {
       if (record.parentKind !== 'embedded') continue
       this.detachRecord(record)
-      record.view.setVisible(false)
+      setViewVisible(record, false)
       record.parentKind = 'hidden'
+      record.visibleRequested = false
       this.emitUpdated(record)
     }
+    hostWindow?.removeListener('resize', this.handleHostResize)
     this.hostWindow = null
+  }
+
+  private updateEmbeddedViewBounds() {
+    const hostWindow = this.hostWindow
+    if (!hostWindow || hostWindow.isDestroyed()) return
+    for (const record of this.sessions.values()) {
+      if (record.parentKind !== 'embedded' || !record.lastBounds) continue
+      this.setEmbeddedViewBounds(record, record.lastBounds)
+    }
   }
 
   private emitUpdated(record: BrowserSessionRecord) {
@@ -121,14 +180,15 @@ export class BrowserSessionManager implements BrowserPort {
   }
 
   private detachRecord(record: BrowserSessionRecord) {
-    if (record.parentView) {
+    if (record.parentWindow) {
       try {
-        record.parentView.removeChildView(record.view)
+        record.parentWindow.removeBrowserView(record.view)
       } catch {
-        // The parent view may already be tearing down with the browser session.
+        // The parent window may already be tearing down with the browser session.
       }
     }
-    record.parentView = null
+    record.parentWindow = null
+    record.renderedVisible = false
   }
 
   private attachToHost(record: BrowserSessionRecord, bounds: BrowserViewBounds) {
@@ -140,22 +200,60 @@ export class BrowserSessionManager implements BrowserPort {
       const popup = record.popupWindow
       record.popupWindow = undefined
       if (!popup.isDestroyed()) {
-        popup.contentView.removeChildView(record.view)
-        popup.close()
+        try {
+          popup.removeBrowserView(record.view)
+        } catch {
+          // The popup may already be in its destruction phase.
+        }
+        try {
+          popup.close()
+        } catch {
+          // Closing an already-closing popup is harmless.
+        }
       }
     }
 
-    if (record.parentView !== this.hostWindow.contentView) {
+    if (record.parentWindow !== this.hostWindow) {
       this.detachRecord(record)
-      this.hostWindow.contentView.addChildView(record.view)
-      record.parentView = this.hostWindow.contentView
+      this.hostWindow.addBrowserView(record.view)
+      record.parentWindow = this.hostWindow
     }
 
     record.parentKind = 'embedded'
+    record.visibleRequested = true
     record.lastBounds = bounds
-    record.view.setBounds(bounds)
-    record.view.setVisible(bounds.width > 0 && bounds.height > 0)
+    const webContents = getWebContents(record.view)
+    if (webContents) normalizeBrowserZoom(webContents)
+    this.setEmbeddedViewBounds(record, bounds)
+    requestViewRepaint(record)
+    if (record.loadedOnce && !record.initialMountReloaded && webContents && !isDestroyed(webContents)) {
+      record.initialMountReloaded = true
+      void webContents.reload()
+    }
     this.emitUpdated(record)
+  }
+
+  private setEmbeddedViewBounds(record: BrowserSessionRecord, bounds: BrowserViewBounds) {
+    const hostWindow = this.hostWindow
+    if (!hostWindow || hostWindow.isDestroyed() || isDestroyed(getWebContents(record.view))) return
+    const [windowWidth, windowHeight] = hostWindow.getContentSize()
+    // A native BrowserView is always composited above the renderer. Keep its
+    // logical size intact and only show it when the whole viewport is inside
+    // the renderer content area. This prevents edge panning from shrinking the
+    // page or letting it cover the frameless title bar and canvas menus.
+    const fullyVisible = bounds.width >= 12
+      && bounds.height >= 12
+      && bounds.x >= 0
+      && bounds.y >= EMBEDDED_LAYER_TOP
+      && bounds.x + bounds.width <= windowWidth
+      && bounds.y + bounds.height <= windowHeight
+    try {
+      const visible = Boolean(record.visibleRequested && fullyVisible)
+      record.view.setBounds(visible ? bounds : { x: 0, y: 0, width: 0, height: 0 })
+      setViewVisible(record, visible)
+    } catch {
+      // The window or native view may be tearing down between bounds updates.
+    }
   }
 
   async createSession(options: { id?: string; name?: string; persistent?: boolean; url?: string } = {}) {
@@ -163,7 +261,10 @@ export class BrowserSessionManager implements BrowserPort {
     if (this.sessions.has(id)) throw new Error(`Browser session already exists: ${id}`)
 
     const persistent = options.persistent ?? true
-    const partition = persistent ? `persist:cnote-workspace-${id}` : `cnote-memory-${id}`
+    // Login state is intentionally global across browser nodes. Removing a
+    // node only releases its view; the persistent Chromium partition remains
+    // available to the next node so cookies, cache and sessions survive.
+    const partition = persistent ? 'persist:cnote-browser' : `cnote-memory-${id}`
     const browserSession = session.fromPartition(partition)
     browserSession.setPermissionRequestHandler((_webContents, _permission, callback) => {
       // Remote pages do not receive OS-level permissions implicitly. A future
@@ -177,7 +278,7 @@ export class BrowserSessionManager implements BrowserPort {
       item.setSavePath(path.join(downloadsDirectory, fileName))
     })
 
-    const view = new WebContentsView({
+    const view = new BrowserView({
       webPreferences: {
         session: browserSession,
         nodeIntegration: false,
@@ -187,7 +288,6 @@ export class BrowserSessionManager implements BrowserPort {
       },
     })
     view.setBackgroundColor('#ffffff')
-    view.setVisible(false)
 
     const record: BrowserSessionRecord = {
       id,
@@ -196,8 +296,12 @@ export class BrowserSessionManager implements BrowserPort {
       persistent,
       createdAt: new Date().toISOString(),
       view,
-      parentView: null,
+      parentWindow: null,
       parentKind: 'hidden',
+      visibleRequested: false,
+      renderedVisible: false,
+      loadedOnce: false,
+      initialMountReloaded: false,
     }
     this.sessions.set(id, record)
 
@@ -219,14 +323,27 @@ export class BrowserSessionManager implements BrowserPort {
     view.webContents.on('did-navigate', () => this.emitUpdated(record))
     view.webContents.on('did-navigate-in-page', () => this.emitUpdated(record))
     view.webContents.on('page-title-updated', () => this.emitUpdated(record))
-    view.webContents.on('did-finish-load', () => this.emitUpdated(record))
+    view.webContents.on('did-finish-load', () => {
+      record.loadedOnce = true
+      this.emitUpdated(record)
+      if (record.parentWindow && !record.initialMountReloaded) {
+        record.initialMountReloaded = true
+        void view.webContents.reload()
+      } else if (record.parentWindow) {
+        requestViewRepaint(record)
+        setTimeout(() => requestViewRepaint(record), 80)
+      }
+    })
+    view.webContents.on('zoom-changed', () => normalizeBrowserZoom(view.webContents))
     view.webContents.on('destroyed', () => {
-      record.parentView = null
+      this.detachRecord(record)
       record.parentKind = 'hidden'
+      record.visibleRequested = false
       if (this.sessions.get(record.id) === record) this.emitUpdated(record)
     })
 
     await view.webContents.loadURL(assertNavigableUrl(options.url ?? 'about:blank'))
+    normalizeBrowserZoom(view.webContents)
     this.emitUpdated(record)
     return summary(record)
   }
@@ -245,7 +362,20 @@ export class BrowserSessionManager implements BrowserPort {
     if (record.parentKind !== 'embedded') return
     this.detachRecord(record)
     record.parentKind = 'hidden'
-    record.view.setVisible(false)
+    record.visibleRequested = false
+    setViewVisible(record, false)
+    this.emitUpdated(record)
+  }
+
+  setSessionVisible(id: string, visible: boolean) {
+    const record = this.require(id)
+    record.visibleRequested = visible
+    if (record.parentKind === 'hidden') return
+    if (record.parentKind === 'embedded' && record.lastBounds) {
+      this.setEmbeddedViewBounds(record, record.lastBounds)
+    } else {
+      setViewVisible(record, visible)
+    }
     this.emitUpdated(record)
   }
 
@@ -254,8 +384,7 @@ export class BrowserSessionManager implements BrowserPort {
     const bounds = normalizeBounds(inputBounds)
     record.lastBounds = bounds
     if (record.parentKind !== 'embedded') return
-    record.view.setBounds(bounds)
-    record.view.setVisible(bounds.width > 0 && bounds.height > 0)
+    this.setEmbeddedViewBounds(record, bounds)
   }
 
   showSession(id: string) {
@@ -263,7 +392,9 @@ export class BrowserSessionManager implements BrowserPort {
     if (record.parentKind === 'embedded' && this.hostWindow && !this.hostWindow.isDestroyed()) {
       this.hostWindow.show()
       this.hostWindow.focus()
-      record.view.setVisible(true)
+      record.visibleRequested = true
+      if (record.lastBounds) this.setEmbeddedViewBounds(record, record.lastBounds)
+      else setViewVisible(record, true)
       this.emitUpdated(record)
       return
     }
@@ -310,30 +441,41 @@ export class BrowserSessionManager implements BrowserPort {
       },
     })
     this.detachRecord(record)
-    popup.contentView.addChildView(record.view)
-    record.parentView = popup.contentView
+    popup.addBrowserView(record.view)
+    record.parentWindow = popup
     record.parentKind = 'popup'
+    record.visibleRequested = true
     record.popupWindow = popup
     const resize = () => {
       if (popup.isDestroyed() || record.parentKind !== 'popup') return
       const [width, height] = popup.getContentSize()
-      record.view.setBounds({ x: 0, y: 0, width, height })
+      setViewBounds(record, { x: 0, y: 0, width, height })
+      setViewVisible(record, true)
     }
     popup.on('resize', resize)
     popup.on('closed', () => {
       if (record.popupWindow !== popup) return
       record.popupWindow = undefined
       if (this.hostWindow && !this.hostWindow.isDestroyed() && record.lastBounds) {
-        this.attachToHost(record, record.lastBounds)
+        try {
+          this.attachToHost(record, record.lastBounds)
+        } catch {
+          record.parentWindow = null
+          record.parentKind = 'hidden'
+          record.visibleRequested = false
+          setViewVisible(record, false)
+          this.emitUpdated(record)
+        }
       } else {
-        if (record.parentView === popup.contentView) record.parentView = null
+        if (record.parentWindow === popup) record.parentWindow = null
         record.parentKind = 'hidden'
-        record.view.setVisible(false)
+        record.visibleRequested = false
+        setViewVisible(record, false)
         this.emitUpdated(record)
       }
     })
     resize()
-    record.view.setVisible(true)
+    setViewVisible(record, true)
     popup.show()
     popup.focus()
     this.emitUpdated(record)
@@ -376,14 +518,11 @@ export class BrowserSessionManager implements BrowserPort {
     const record = this.require(id)
     this.detachRecord(record)
     if (record.popupWindow && !record.popupWindow.isDestroyed()) record.popupWindow.close()
-    try {
-      record.view.setVisible(false)
-    } catch {
-      // A destroyed view is already hidden from the host window.
-    }
+    setViewVisible(record, false)
+    record.visibleRequested = false
     this.sessions.delete(id)
 
-    // Do not synchronously close a WebContentsView while handling the renderer's
+    // Do not synchronously close a BrowserView while handling the renderer's
     // IPC request. Chromium can wait for the view's renderer teardown before
     // returning from close(), which would leave the invoking renderer waiting
     // forever for its own IPC response. Remove the view from the workspace and

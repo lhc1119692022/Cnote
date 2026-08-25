@@ -10,6 +10,7 @@ function normalizeHeaders(headers: Headers) {
 
 export class NativeNetworkPort implements NetworkPort {
   async request(input: NetworkRequest): Promise<NetworkResponse> {
+    const maxResponseBytes = 256 * 1024 * 1024
     const controller = new AbortController()
     const abortFromCaller = () => controller.abort()
     input.signal?.addEventListener('abort', abortFromCaller, { once: true })
@@ -24,11 +25,13 @@ export class NativeNetworkPort implements NetworkPort {
         redirect: 'follow',
       })
 
+      const body = new Uint8Array(await response.arrayBuffer())
+      if (body.byteLength > maxResponseBytes) throw new Error('Native network response 超过 256 MiB。')
       return {
         status: response.status,
         statusText: response.statusText,
         headers: normalizeHeaders(response.headers),
-        body: new Uint8Array(await response.arrayBuffer()),
+        body,
         url: response.url,
       }
     } finally {

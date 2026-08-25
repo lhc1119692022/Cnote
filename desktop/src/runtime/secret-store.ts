@@ -14,13 +14,23 @@ export class SafeStorageSecretStore implements SecretPort {
   }
 
   private async read(): Promise<EncryptedSecrets> {
-    if (this.loaded) return this.loaded
+    const cached = this.loaded
+    if (cached) return cached
     try {
       const raw = await fs.readFile(this.filePath, 'utf8')
       const parsed: unknown = JSON.parse(raw)
-      this.loaded = parsed && typeof parsed === 'object' ? parsed as EncryptedSecrets : {}
-    } catch {
+      const entries = parsed && typeof parsed === 'object'
+        ? Object.entries(parsed as Record<string, unknown>).filter((entry): entry is [string, string] => typeof entry[1] === 'string')
+        : []
+      this.loaded = Object.fromEntries(entries) as EncryptedSecrets
+    } catch (error) {
+      console.warn('Cnote SafeStorage journal could not be read:', error)
       this.loaded = {}
+      try {
+        await fs.copyFile(this.filePath, `${this.filePath}.corrupt-${Date.now()}`)
+      } catch {
+        // The file may simply not exist yet.
+      }
     }
     return this.loaded
   }

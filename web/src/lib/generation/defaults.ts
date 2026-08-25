@@ -7,9 +7,12 @@ export function createGenerationVariantConfig(variant: 'image' | 'video'): Gener
     references: [],
     capability: variant === 'image' ? 'text-to-image' : 'text-to-video',
     seconds: variant === 'video' ? 30 : undefined,
-    resolution: variant === 'video' ? '720p' : undefined,
+    resolution: variant === 'video' ? '720p' : 'auto',
     aspectRatio: '16:9',
-    quality: 'standard',
+    quality: variant === 'video' ? 'standard' : 'medium',
+    background: variant === 'image' ? 'auto' : undefined,
+    outputFormat: variant === 'image' ? 'png' : undefined,
+    thinkingLevel: variant === 'image' ? 'minimal' : undefined,
     generateAudio: variant === 'video',
   }
 }

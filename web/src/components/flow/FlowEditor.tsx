@@ -71,7 +71,7 @@ import {
 import { cloneFlowValue } from "@/lib/flow/clone";
 import { hasCycle } from "@/lib/flow/graph";
 import { hasNodeConnections } from "@/lib/flow/disabled";
-import { AI_NODE_DEFAULT_SIZE, GROUP_NODE_PADDING, REQUEST_NODE_DEFAULT_SIZE } from "@/lib/flow/node-dimensions";
+import { AI_NODE_DEFAULT_SIZE, BROWSER_NODE_DEFAULT_SIZE, GROUP_NODE_PADDING, REQUEST_NODE_DEFAULT_SIZE } from "@/lib/flow/node-dimensions";
 import { createRequestNodeData } from "@/lib/generation/defaults";
 import type { ContentNodeData } from "@/types/flow";
 import { useLocalResourceUrl } from "@/hooks/use-local-resource-url";
@@ -1519,7 +1519,8 @@ function FlowEditorInner() {
       addNode({
         type: "browser",
         position,
-        data: { label: "浏览器节点", url: "https://www.baidu.com/", confirmedUrl: "https://www.baidu.com/", outputMode: "url", syncStatus: "synced", status: "loading" },
+        style: BROWSER_NODE_DEFAULT_SIZE,
+        data: { label: "浏览器节点", url: "https://www.google.com/", confirmedUrl: "https://www.google.com/", outputMode: "url", syncStatus: "synced", status: "loading" },
       });
     } else if (type === "sticky") {
       addNode({ type: "sticky", position, data: { label: "贴纸", text: "" } });
@@ -2237,7 +2238,7 @@ function FlowEditorInner() {
               {filterMenuOpen && (
                 <div
                   role="menu"
-                  className="absolute right-0 top-full z-50 mt-1.5 w-max min-w-[116px] space-y-1 rounded-xl border border-border bg-card p-1.5 text-left shadow-xl"
+                  className="cnote-menu-surface absolute right-0 top-full z-50 mt-1.5 w-max min-w-[116px] space-y-1 text-left"
                 >
                   {panelFilterOptions.map(([value, label]) => (
                     <button
@@ -2249,7 +2250,8 @@ function FlowEditorInner() {
                         setPanelFilter(value);
                         setFilterMenuOpen(false);
                       }}
-                      className={`flex w-full items-center rounded-lg px-2.5 py-2.5 text-left text-xs transition-colors ${panelFilter === value ? "bg-muted font-medium text-foreground" : "text-foreground hover:bg-muted"}`}
+                      data-active={panelFilter === value}
+                      className="cnote-menu-item"
                     >
                       <span className="whitespace-nowrap text-left">
                         {label}
@@ -2650,7 +2652,7 @@ function FlowEditorInner() {
       {canvasContextMenu && (
         <div
           data-canvas-context-menu
-          className="absolute z-[59] w-44 rounded-xl border border-border bg-card p-1.5 shadow-lg"
+          className="cnote-menu-surface absolute z-[59] w-44"
           style={{ left: canvasContextMenu.x, top: canvasContextMenu.y }}
           onPointerDown={(event) => event.stopPropagation()}
         >
@@ -2675,7 +2677,7 @@ function FlowEditorInner() {
       {connectionMenu && (
         <div
           data-connection-menu
-          className="absolute z-[58] w-48 rounded-xl border border-border bg-card p-1.5 shadow-xl"
+          className="cnote-menu-surface absolute z-[58] w-48"
           style={{ left: connectionMenu.x, top: connectionMenu.y }}
           onClick={(event) => event.stopPropagation()}
         >
@@ -2713,7 +2715,7 @@ function FlowEditorInner() {
         <div
           ref={addMenuRef}
           data-canvas-add-menu
-          className="absolute z-[55] w-60 select-none rounded-xl border border-border bg-card p-1.5 shadow-xl"
+          className="cnote-menu-surface absolute z-[55] w-60 select-none"
           style={{
             left: addMenuLayout?.left ?? addMenu.x,
             top: addMenuLayout?.top ?? addMenu.y,

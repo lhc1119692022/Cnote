@@ -1,5 +1,8 @@
-export const BROWSER_NODE_DEFAULT_SIZE = { width: 1280, height: 720 } as const
-export const BROWSER_NODE_MIN_SIZE = { width: 720, height: 480 } as const
+// The browser is a working node inside a flow, not a full-window preview.
+// Keep its default footprint comparable to the other node types so native
+// browser content cannot cover neighboring nodes and their menus.
+export const BROWSER_NODE_DEFAULT_SIZE = { width: 920, height: 620 } as const
+export const BROWSER_NODE_MIN_SIZE = { width: 680, height: 460 } as const
 export const AI_NODE_DEFAULT_SIZE = { width: 460, height: 510 } as const
 export const AI_NODE_MIN_SIZE = { width: 460, height: 340 } as const
 export const AI_NODE_MAX_AUTO_HEIGHT = 960

@@ -20,6 +20,7 @@ import {
 } from '@/lib/flow/node-dimensions'
 import { tryGetContentServiceClient } from '@/lib/content-service'
 import { createRequestNodeData } from '@/lib/generation/defaults'
+import { createGenerationResultContentData } from '@/lib/generation/results'
 
 type FlowHistoryEntry = { nodes: Node[]; edges: Edge[] }
 
@@ -185,19 +186,110 @@ function withDefaultNodeDimensions<T extends { type?: string; style?: Node['styl
           ? STICKY_NODE_DEFAULT_SIZE
           : undefined
   if (!defaults) return node
-  const style = node.style || {}
+  const nodeData = (node as T & { data?: unknown }).data
+  const browserData = node.type === 'browser' && nodeData && typeof nodeData === 'object'
+    ? nodeData as Record<string, unknown>
+    : undefined
+  const isLegacyBaiduDefault = node.type === 'browser'
+    && browserData?.browserUrlMigrationVersion === undefined
+    && browserData?.url === 'https://www.baidu.com/'
+    && browserData?.confirmedUrl === 'https://www.baidu.com/'
+  const normalizedNode = isLegacyBaiduDefault
+    ? {
+        ...node,
+        data: {
+          ...browserData,
+          url: 'https://www.google.com/',
+          confirmedUrl: 'https://www.google.com/',
+          browserUrlMigrationVersion: 1,
+        },
+      }
+    : node
+  const style = normalizedNode.style || {}
+  const isLegacyBrowserDefault = node.type === 'browser'
+    && browserData?.browserLayoutVersion === undefined
+    && Number(style.width) === 1280
+    && Number(style.height) === 720
+  if (isLegacyBrowserDefault) {
+    return {
+      ...normalizedNode,
+      style: { ...style, ...BROWSER_NODE_DEFAULT_SIZE },
+      data: { ...(normalizedNode as T & { data?: Record<string, unknown> }).data, browserLayoutVersion: 1 },
+    } as T
+  }
   const hasWidth = style.width !== undefined
   const hasHeight = style.height !== undefined
-  if (hasWidth && hasHeight) return node
+  if (hasWidth && hasHeight) return normalizedNode as T
 
   return {
-    ...node,
+    ...normalizedNode,
     style: {
       ...style,
       ...(hasWidth ? {} : { width: defaults.width }),
       ...(hasHeight ? {} : { height: defaults.height }),
     },
   } as T
+}
+
+function flowNodeDimension(node: Node, axis: 'width' | 'height') {
+  const value = node.style?.[axis] ?? node[axis]
+  const numeric = Number(value)
+  if (Number.isFinite(numeric) && numeric > 0) return numeric
+  if (node.type === 'browser') return axis === 'width' ? BROWSER_NODE_DEFAULT_SIZE.width : BROWSER_NODE_DEFAULT_SIZE.height
+  if (node.type === 'ai') return axis === 'width' ? AI_NODE_DEFAULT_SIZE.width : AI_NODE_DEFAULT_SIZE.height
+  if (node.type === 'request') return axis === 'width' ? REQUEST_NODE_DEFAULT_SIZE.width : REQUEST_NODE_DEFAULT_SIZE.height
+  if (node.type === 'content') return axis === 'width' ? CONTENT_NODE_DEFAULT_SIZE.width : CONTENT_NODE_DEFAULT_SIZE.height
+  if (node.type === 'sticky') return axis === 'width' ? STICKY_NODE_DEFAULT_SIZE.width : STICKY_NODE_DEFAULT_SIZE.height
+  return axis === 'width' ? 240 : 160
+}
+
+function browserOverlapsNode(browser: Node, other: Node, position = browser.position) {
+  const gap = 24
+  const browserRight = position.x + flowNodeDimension(browser, 'width') + gap
+  const browserBottom = position.y + flowNodeDimension(browser, 'height') + gap
+  const otherRight = other.position.x + flowNodeDimension(other, 'width') + gap
+  const otherBottom = other.position.y + flowNodeDimension(other, 'height') + gap
+  return position.x - gap < otherRight
+    && browserRight > other.position.x - gap
+    && position.y - gap < otherBottom
+    && browserBottom > other.position.y - gap
+}
+
+function findOpenBrowserPosition(browser: Node, nodes: Node[]) {
+  const start = browser.position
+  const width = flowNodeDimension(browser, 'width')
+  const height = flowNodeDimension(browser, 'height')
+  const candidates = [{ x: start.x, y: start.y }]
+  for (let ring = 1; ring <= 8; ring += 1) {
+    const horizontal = ring * (width + 48)
+    const vertical = ring * (height + 48)
+    candidates.push(
+      { x: start.x + horizontal, y: start.y },
+      { x: start.x - horizontal, y: start.y },
+      { x: start.x, y: start.y + vertical },
+      { x: start.x, y: start.y - vertical },
+    )
+  }
+  return candidates.find((candidate) => nodes.every((node) => node.id === browser.id || !browserOverlapsNode(browser, node, candidate))) || start
+}
+
+function normalizeBrowserPositions(nodes: Node[]) {
+  const positioned = nodes.map((node) => node)
+  return positioned.map((node, index) => {
+    const browserData = node.type === 'browser' && node.data && typeof node.data === 'object'
+      ? node.data as Record<string, unknown>
+      : undefined
+    const shouldFindOpenPosition = node.type === 'browser' && browserData?.browserLayoutVersion === 1
+    const blockers = positioned.filter((_candidate, candidateIndex) => candidateIndex !== index)
+    const position = shouldFindOpenPosition ? findOpenBrowserPosition(node, blockers) : node.position
+    const next = shouldFindOpenPosition && (position.x !== node.position.x || position.y !== node.position.y)
+      ? { ...node, position, data: { ...node.data, browserLayoutVersion: 2 } }
+      : shouldFindOpenPosition
+        ? { ...node, data: { ...node.data, browserLayoutVersion: 2 } }
+        : node
+    positioned[index] = next
+    return next
+  })
 }
 
 function recoverLegacyContentNodeDimensions(node: Node): Node {
@@ -307,10 +399,10 @@ function normalizeGroupBehavior(nodes: Node[]) {
 }
 
 function normalizeNodes(nodes: Node[]) {
-  return normalizeGroupBehavior(normalizeGroupPadding(nodes
+  return normalizeGroupBehavior(normalizeGroupPadding(normalizeBrowserPositions(nodes
     .map(withDefaultNodeDimensions)
     .map(recoverLegacyContentNodeDimensions)
-    .map(normalizeRequestNode)))
+    .map(normalizeRequestNode))))
 }
 
 function getPersistableNodes(nodes: Node[]) { return nodes }
@@ -667,7 +759,15 @@ export const useFlowStore = create<FlowState>()(
         const edges = cloneFlowValue(flow.edges || [])
         const normalizedNodes = ensureUniqueNodeLabels(normalizeNodes(cloneFlowValue(flow.nodes || [])))
         const nodes = reconcileDisabledNodes(normalizedNodes, edges)
-        const normalizedFlow = { ...flow, nodes: cloneFlowValue(nodes), edges: cloneFlowValue(edges) }
+        const layoutChanged = nodes.some((node, index) => {
+          const previous = flow.nodes?.[index]
+          return !previous
+            || node.position.x !== previous.position.x
+            || node.position.y !== previous.position.y
+            || node.style?.width !== previous.style?.width
+            || node.style?.height !== previous.style?.height
+        })
+        const normalizedFlow = { ...flow, ...(layoutChanged ? { viewport: undefined } : {}), nodes: cloneFlowValue(nodes), edges: cloneFlowValue(edges) }
         const initialHistory = cloneHistoryEntry(nodes, edges)
 
         set((state) => ({
@@ -776,12 +876,19 @@ export const useFlowStore = create<FlowState>()(
         let createdNode!: Node
         set((state) => {
           const clonedNode = withDefaultNodeDimensions(cloneFlowValue(node))
+          const positionedNode = clonedNode.type === 'browser'
+            ? {
+                ...clonedNode,
+                position: findOpenBrowserPosition({ ...clonedNode, id: '__new-browser__' } as Node, state.nodes),
+                data: { ...clonedNode.data, browserLayoutVersion: 2 },
+              }
+            : clonedNode
           const usedLabels = new Set(state.nodes.map(getNodeLabel))
-          const label = getUniqueNodeLabel(getNodeLabel(clonedNode), usedLabels)
+          const label = getUniqueNodeLabel(getNodeLabel(positionedNode), usedLabels)
           const newNode: Node = {
-            ...clonedNode,
+            ...positionedNode,
             id: nanoid(),
-            data: { ...clonedNode.data, label },
+            data: { ...positionedNode.data, label },
           }
           createdNode = newNode
           const newNodes = reconcileDisabledNodes([...state.nodes, newNode], state.edges)
@@ -1279,6 +1386,60 @@ export const useFlowStore = create<FlowState>()(
 
         set({ isExecuting: true, executionContexts: new Map() })
 
+        const materializeGenerationResults = (contexts: Map<string, ExecutionContext>) => {
+          contexts.forEach((context, nodeId) => {
+            const output = context.output as {
+              kind?: unknown
+              variant?: unknown
+              task?: GenerationTaskState
+            } | undefined
+            if (output?.kind !== 'generation-result' || (output.variant !== 'image' && output.variant !== 'video')) return
+
+            const task = output.task
+            const urls = Array.isArray(task?.resultUrls)
+              ? task.resultUrls.filter((url): url is string => typeof url === 'string' && url.trim().length > 0)
+              : []
+            if (!urls.length) return
+
+            const state = get()
+            const requestNode = state.nodes.find((node) => node.id === nodeId)
+            if (!requestNode || requestNode.type !== 'request') return
+            const requestData = requestNode.data as RequestNodeData
+            const variant = output.variant
+            const resultData = createGenerationResultContentData(
+              variant,
+              urls,
+              `${requestData.label || (variant === 'image' ? '图片' : '视频')}结果`,
+              task?.resultResourceIds,
+              task?.resultMimeTypes,
+            )
+            const storedResultId = requestData.resultNodeIds?.[variant]
+            let resultNode = storedResultId ? state.nodes.find((node) => node.id === storedResultId) : undefined
+
+            if (resultNode?.type === 'content') {
+              state.updateNode(resultNode.id, { data: resultData })
+            } else {
+              const width = Number(requestNode.style?.width || requestNode.width || 520)
+              resultNode = state.addNode({
+                type: 'content',
+                position: { x: requestNode.position.x + width + 90, y: requestNode.position.y },
+                data: resultData,
+              })
+            }
+
+            if (!state.edges.some((edge) => edge.source === nodeId && edge.target === resultNode?.id)) {
+              state.addEdge({ source: nodeId, target: resultNode.id, sourceHandle: 'out', targetHandle: 'in', type: 'interactive' })
+            }
+            state.updateNode(nodeId, {
+              data: {
+                resultNodeIds: { ...(requestData.resultNodeIds || {}), [variant]: resultNode.id },
+                resultNodeId: resultNode.id,
+                resultCreatedAt: Date.now(),
+              },
+            })
+          })
+        }
+
         try {
           const executor = new FlowExecutor(
             executableNodes.map((n) => ({ ...n, data: n.data || {} })),
@@ -1319,6 +1480,8 @@ export const useFlowStore = create<FlowState>()(
             resumeRequired: false,
           })
           await pendingJobWrites
+
+          if (result.success) materializeGenerationResults(result.contexts)
 
           set({
             executionContexts: result.contexts,

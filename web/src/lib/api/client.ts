@@ -10,6 +10,7 @@ import type {
   APIError,
 } from './types'
 import { adaptReasoningLevel, getAIModelCapabilities } from './capabilities'
+import { desktopFetch } from '@/lib/desktop-fetch'
 
 /**
  * AI API 客户端
@@ -18,10 +19,12 @@ import { adaptReasoningLevel, getAIModelCapabilities } from './capabilities'
 export class AIClient {
   private provider: ProviderConfig
   private apiKey: string
+  private secretName?: string
 
-  constructor(provider: ProviderConfig, apiKey: string) {
+  constructor(provider: ProviderConfig, apiKey: string, secretName?: string) {
     this.provider = provider
     this.apiKey = apiKey
+    this.secretName = secretName
   }
 
   /**
@@ -44,22 +47,36 @@ export class AIClient {
       return {
         ...this.provider.extraHeaders,
         'Content-Type': 'application/json',
-        'x-goog-api-key': this.apiKey,
+        ...(this.secretName ? {} : { 'x-goog-api-key': this.apiKey }),
       }
     }
     if (this.provider.protocol === 'messages') {
       return {
         ...this.provider.extraHeaders,
         'Content-Type': 'application/json',
-        'x-api-key': this.apiKey,
+        ...(this.secretName ? {} : { 'x-api-key': this.apiKey }),
         'anthropic-version': '2023-06-01',
       }
     }
     return {
       ...this.provider.extraHeaders,
       'Content-Type': 'application/json',
-      Authorization: `Bearer ${this.apiKey}`,
+      ...(this.secretName ? {} : { Authorization: `Bearer ${this.apiKey}` }),
     }
+  }
+
+  private getSecretRefs() {
+    if (!this.secretName) return undefined
+    const header = this.provider.protocol === 'gemini'
+      ? 'x-goog-api-key'
+      : this.provider.protocol === 'messages'
+        ? 'x-api-key'
+        : 'Authorization'
+    return { [header]: this.secretName }
+  }
+
+  private request(input: RequestInfo | URL, init: RequestInit = {}) {
+    return desktopFetch(input, { ...init, headers: init.headers || this.getHeaders() }, { secretRefs: this.getSecretRefs() })
   }
 
   private messageText(content: ChatMessage['content']) {
@@ -231,7 +248,7 @@ export class AIClient {
 
   async listModels(): Promise<string[]> {
     const endpoint = this.provider.protocol === 'gemini' ? '/v1beta/models?pageSize=1000' : '/v1/models'
-    const response = await fetch(this.getRequestURL(endpoint), {
+    const response = await this.request(this.getRequestURL(endpoint), {
       method: 'GET',
       headers: this.getHeaders(),
     })
@@ -255,7 +272,7 @@ export class AIClient {
 
   async complete(request: ChatCompletionRequest, signal?: AbortSignal): Promise<string> {
     if (this.provider.protocol === 'gemini') {
-      const response = await fetch(this.getRequestURL(`/v1beta/models/${encodeURIComponent(request.model)}:generateContent`), {
+      const response = await this.request(this.getRequestURL(`/v1beta/models/${encodeURIComponent(request.model)}:generateContent`), {
         method: 'POST',
         headers: this.getHeaders(),
         body: JSON.stringify(this.geminiBody(request)),
@@ -269,7 +286,7 @@ export class AIClient {
     }
 
     if (this.provider.protocol === 'responses' || this.shouldUseXAIResponses(request)) {
-      const response = await fetch(this.getRequestURL('/v1/responses'), {
+      const response = await this.request(this.getRequestURL('/v1/responses'), {
         method: 'POST',
         headers: this.getHeaders(),
         body: JSON.stringify(this.responsesBody(request, false)),
@@ -291,7 +308,7 @@ export class AIClient {
       return typeof content === 'string' ? content : this.messageText(content || '')
     }
 
-    const response = await fetch(this.getRequestURL('/v1/messages'), {
+    const response = await this.request(this.getRequestURL('/v1/messages'), {
       method: 'POST',
       headers: this.getHeaders(),
       body: JSON.stringify(this.messagesBody(request, false)),
@@ -327,7 +344,7 @@ export class AIClient {
       body = this.chatCompletionsBody(request, true)
     }
 
-    const response = await fetch(this.getRequestURL(endpoint), {
+    const response = await this.request(this.getRequestURL(endpoint), {
       method: 'POST',
       headers: this.getHeaders(),
       body: JSON.stringify(body),
@@ -394,7 +411,7 @@ export class AIClient {
 
     const url = this.getRequestURL('/v1/chat/completions')
 
-    const response = await fetch(url, {
+    const response = await this.request(url, {
       method: 'POST',
       headers: this.getHeaders(),
       body: JSON.stringify(this.chatCompletionsBody(request, Boolean(request.stream))),
@@ -427,7 +444,7 @@ export class AIClient {
 
     const url = this.getRequestURL('/v1/responses')
 
-    const response = await fetch(url, {
+    const response = await this.request(url, {
       method: 'POST',
       headers: this.getHeaders(),
       body: JSON.stringify(request),

@@ -127,6 +127,7 @@ export interface BrowserPort {
   onSessionUpdated(listener: (session: BrowserSessionSummary) => void): () => void
   mountSession(id: string, bounds: BrowserViewBounds): void
   unmountSession(id: string): void
+  setSessionVisible(id: string, visible: boolean): void
   setSessionBounds(id: string, bounds: BrowserViewBounds): void
   showSession(id: string): void
   popoutSession(id: string): void

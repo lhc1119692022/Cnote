@@ -11,6 +11,7 @@ interface CnoteDesktopApi {
     minimize: () => Promise<void>
     toggleMaximize: () => Promise<boolean>
     close: () => Promise<void>
+    reload: () => Promise<void>
     isMaximized: () => Promise<boolean>
     onStateChanged: (listener: (state: { maximized: boolean }) => void) => () => void
   }
@@ -40,6 +41,7 @@ interface CnoteDesktopApi {
     onSessionUpdated: (listener: (session: { id: string; name: string; partition: string; persistent: boolean; url: string; title: string; visible: boolean; presentation: 'embedded' | 'popup' | 'hidden'; createdAt: string }) => void) => () => void
     mountSession: (id: string, bounds: { x: number; y: number; width: number; height: number }) => Promise<void>
     unmountSession: (id: string) => Promise<void>
+    setVisible: (id: string, visible: boolean) => Promise<void>
     setBounds: (id: string, bounds: { x: number; y: number; width: number; height: number }) => Promise<void>
     popoutSession: (id: string) => Promise<void>
     showSession: (id: string) => Promise<void>
@@ -66,6 +68,22 @@ interface CnoteDesktopApi {
       parserId: string
       parserVersion: string
       warnings: string[]
+    }>
+  }
+  network: {
+    request: (input: {
+      url: string
+      method?: string
+      headers?: Record<string, string>
+      secretRefs?: Record<string, string>
+      body?: string | Uint8Array
+      timeoutMs?: number
+    }) => Promise<{
+      status: number
+      statusText: string
+      headers: Record<string, string>
+      body: Uint8Array
+      url: string
     }>
   }
   system: {

@@ -2,11 +2,13 @@ import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
 import path from 'node:path'
 import { existsSync } from 'node:fs'
 import { DesktopRuntime } from './runtime/desktop-runtime'
-import type { NativeJobRequest, RuntimeInfo } from './runtime/types'
+import type { NativeJobRequest, NativeNetworkJobRequest, RuntimeInfo } from './runtime/types'
 
 const currentDir = __dirname
 let runtime: DesktopRuntime | null = null
 let mainWindow: BrowserWindow | null = null
+let rendererHealthTimer: NodeJS.Timeout | null = null
+let emergencyRendererShown = false
 
 function getRuntime() {
   if (!runtime) throw new Error('Desktop runtime is not ready')
@@ -45,15 +47,124 @@ function getAppIconPath() {
 
 function sendWindowState() {
   if (!mainWindow || mainWindow.isDestroyed()) return
-  mainWindow.webContents.send('window:state-changed', { maximized: mainWindow.isMaximized() })
+  try {
+    if (mainWindow.webContents.isDestroyed()) return
+    mainWindow.webContents.send('window:state-changed', { maximized: mainWindow.isMaximized() })
+  } catch {
+    // Window state notifications are best-effort during teardown.
+  }
+}
+
+function sendToMainWindow(channel: string, ...args: unknown[]) {
+  if (!mainWindow || mainWindow.isDestroyed()) return
+  try {
+    if (mainWindow.webContents.isDestroyed()) return
+    mainWindow.webContents.send(channel, ...args)
+  } catch {
+    // The renderer can disappear between an event and its IPC delivery.
+  }
+}
+
+function clearRendererHealthTimer() {
+  if (!rendererHealthTimer) return
+  clearTimeout(rendererHealthTimer)
+  rendererHealthTimer = null
+}
+
+function escapeHtml(value: string) {
+  return value.replace(/[&<>"']/g, (character) => ({
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#39;',
+  })[character] || character)
+}
+
+async function showEmergencyRenderer(window: BrowserWindow, reason: string) {
+  if (window.isDestroyed() || emergencyRendererShown) return
+  emergencyRendererShown = true
+  clearRendererHealthTimer()
+  const message = escapeHtml(reason || 'Cnote 页面资源加载失败。')
+  await window.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(`
+    <!doctype html>
+    <html lang="zh-CN">
+      <head>
+        <meta charset="utf-8" />
+        <title>Cnote</title>
+        <style>
+          :root { color-scheme: light; font-family: system-ui, -apple-system, "Segoe UI", sans-serif; }
+          * { box-sizing: border-box; }
+          html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; background: #f7f7f8; color: #18181b; }
+          body { display: flex; flex-direction: column; }
+          .titlebar { display: flex; height: 44px; flex: 0 0 44px; border-bottom: 1px solid #e4e4e7; background: #fff; -webkit-app-region: drag; }
+          .title { display: flex; flex: 1; align-items: center; padding: 0 16px; font-size: 13px; font-weight: 650; }
+          .controls { display: flex; -webkit-app-region: no-drag; }
+          button { width: 46px; height: 44px; border: 0; background: transparent; color: #71717a; cursor: pointer; font: inherit; }
+          button:hover { background: #f4f4f5; color: #18181b; }
+          button.close:hover { background: #c42b1c; color: #fff; }
+          .content { display: flex; flex: 1; min-height: 0; align-items: center; justify-content: center; padding: 24px; }
+          .panel { width: min(520px, 100%); padding: 32px; border: 1px solid #e4e4e7; border-radius: 14px; background: #fff; text-align: center; box-shadow: 0 10px 30px rgb(24 24 27 / 0.06); }
+          h1 { margin: 0; font-size: 18px; }
+          p { margin: 10px 0 0; color: #71717a; font-size: 13px; line-height: 1.7; }
+          code { display: block; margin-top: 12px; color: #a16207; font-size: 11px; overflow-wrap: anywhere; }
+          .actions { display: flex; justify-content: center; gap: 8px; margin-top: 22px; }
+          .action { width: auto; height: auto; padding: 9px 14px; border: 1px solid #d4d4d8; border-radius: 8px; background: #fff; color: #18181b; }
+          .action.primary { border-color: #18181b; background: #18181b; color: #fff; }
+          .action:hover { background: #f4f4f5; }
+          .action.primary:hover { background: #27272a; color: #fff; }
+        </style>
+      </head>
+      <body>
+        <header class="titlebar">
+          <div class="title">Cnote</div>
+          <div class="controls">
+            <button aria-label="最小化 Cnote" onclick="window.cnoteDesktop?.window.minimize()">&#8722;</button>
+            <button aria-label="最大化 Cnote" onclick="window.cnoteDesktop?.window.toggleMaximize()">&#9633;</button>
+            <button class="close" aria-label="关闭 Cnote" onclick="window.cnoteDesktop?.window.close()">&#10005;</button>
+          </div>
+        </header>
+        <main class="content">
+          <section class="panel">
+            <h1>Cnote 暂时无法显示</h1>
+            <p>桌面界面加载失败。可以重新加载一次，或直接关闭 Cnote。</p>
+            <code>${message}</code>
+            <div class="actions">
+              <button class="action primary" onclick="window.cnoteDesktop?.window.reload()">重新加载</button>
+              <button class="action" onclick="window.cnoteDesktop?.window.close()">关闭 Cnote</button>
+            </div>
+          </section>
+        </main>
+      </body>
+    </html>
+  `)}`)
+}
+
+function scheduleRendererHealthCheck(window: BrowserWindow) {
+  clearRendererHealthTimer()
+  rendererHealthTimer = setTimeout(() => {
+    rendererHealthTimer = null
+    if (window.isDestroyed() || emergencyRendererShown) return
+    void window.webContents.executeJavaScript(`({
+      rootChildren: document.getElementById('root')?.childElementCount || 0,
+      hasWindowChrome: Boolean(document.querySelector('[data-testid="cnote-window-titlebar"]')),
+    })`, true).then((state) => {
+      if (window.isDestroyed() || emergencyRendererShown) return
+      if (!state?.rootChildren || !state.hasWindowChrome) {
+        void showEmergencyRenderer(window, '桌面界面入口资源未能完成加载。')
+      }
+    }).catch((error) => {
+      void showEmergencyRenderer(window, error instanceof Error ? error.message : '桌面界面检查失败。')
+    })
+  }, 5_000)
 }
 
 function registerIpcHandlers() {
   getRuntime().ports.browser.onSessionUpdated((session) => {
-    mainWindow?.webContents.send('browser:session-updated', session)
+    sendToMainWindow('browser:session-updated', session)
   })
   getRuntime().ports.jobs.onUpdated((job) => {
-    mainWindow?.webContents.send('jobs:updated', job)
+    sendToMainWindow('jobs:updated', job)
   })
   ipcMain.handle('runtime:get-info', () => getRuntimeInfo())
   ipcMain.handle('window:minimize', () => {
@@ -69,6 +180,12 @@ function registerIpcHandlers() {
   ipcMain.handle('window:close', () => {
     mainWindow?.close()
   })
+  ipcMain.handle('window:reload', async () => {
+    if (!mainWindow || mainWindow.isDestroyed()) return
+    emergencyRendererShown = false
+    clearRendererHealthTimer()
+    await loadRenderer(mainWindow)
+  })
   ipcMain.handle('window:is-maximized', () => Boolean(mainWindow?.isMaximized()))
 
   ipcMain.handle('browser:create-session', (_event, options) => getRuntime().ports.browser.createSession(options))
@@ -77,6 +194,8 @@ function registerIpcHandlers() {
     getRuntime().ports.browser.mountSession(assertString(id, 'session id'), assertBounds(bounds)))
   ipcMain.handle('browser:unmount-session', (_event, id: unknown) =>
     getRuntime().ports.browser.unmountSession(assertString(id, 'session id')))
+  ipcMain.handle('browser:set-visible', (_event, id: unknown, visible: unknown) =>
+    getRuntime().ports.browser.setSessionVisible(assertString(id, 'session id'), assertBoolean(visible, 'visible')))
   ipcMain.handle('browser:set-bounds', (_event, id: unknown, bounds: unknown) =>
     getRuntime().ports.browser.setSessionBounds(assertString(id, 'session id'), assertBounds(bounds)))
   ipcMain.handle('browser:show-session', (_event, id: unknown) => getRuntime().ports.browser.showSession(assertString(id, 'session id')))
@@ -87,6 +206,22 @@ function registerIpcHandlers() {
   ipcMain.handle('browser:capture', (_event, id: unknown) => getRuntime().ports.browser.capture(assertString(id, 'session id')))
   ipcMain.handle('browser:close-session', (_event, id: unknown) => getRuntime().ports.browser.closeSession(assertString(id, 'session id')))
   ipcMain.handle('content:parse-html', (_event, input: unknown) => getRuntime().ports.content.parseHtml(assertContentParseInput(input)))
+  ipcMain.handle('network:request', async (_event, input: unknown) => {
+    const request = assertNativeNetworkRequest(input)
+    const secretValues: Record<string, string> = {}
+    for (const secretName of Object.values(request.secretRefs || {})) {
+      const value = await getRuntime().ports.secrets.get(secretName)
+      if (value) secretValues[secretName] = value
+    }
+    const headers = { ...(request.headers || {}) }
+    Object.entries(request.secretRefs || {}).forEach(([header, secretName]) => {
+      const value = secretValues[secretName]
+      if (!value) throw new Error(`SecretStore 中未找到请求头密钥：${secretName}`)
+      Object.keys(headers).filter((name) => name.toLowerCase() === header.toLowerCase()).forEach((name) => delete headers[name])
+      headers[header] = value
+    })
+    return getRuntime().ports.network.request({ ...request, headers })
+  })
   ipcMain.handle('system:open-file', (_event, request: unknown) => getRuntime().ports.system.openFile(assertOpenFileRequest(request)))
   ipcMain.handle('system:save-file', (_event, request: unknown) => getRuntime().ports.system.saveFile(assertSaveFileRequest(request)))
 
@@ -121,6 +256,11 @@ function registerIpcHandlers() {
 function assertString(value: unknown, field: string) {
   if (typeof value !== 'string' || !value.trim()) throw new Error(`${field} is required`)
   return value.trim()
+}
+
+function assertBoolean(value: unknown, field: string) {
+  if (typeof value !== 'boolean') throw new Error(`${field} must be a boolean`)
+  return value
 }
 
 function assertBounds(value: unknown) {
@@ -168,8 +308,8 @@ function assertNativeJobRequest(value: unknown): NativeJobRequest {
   if (request.body !== undefined && typeof request.body !== 'string' && !(request.body instanceof Uint8Array)) {
     throw new Error('Native network body is invalid')
   }
-  if (request.body !== undefined && (typeof request.body === 'string' ? Buffer.byteLength(request.body, 'utf8') : request.body.byteLength) > 12 * 1024 * 1024) {
-    throw new Error('Native network body 超过 12 MiB。')
+  if (request.body !== undefined && (typeof request.body === 'string' ? Buffer.byteLength(request.body, 'utf8') : request.body.byteLength) > 256 * 1024 * 1024) {
+    throw new Error('Native network body 超过 256 MiB。')
   }
   if (request.timeoutMs !== undefined && (typeof request.timeoutMs !== 'number' || !Number.isFinite(request.timeoutMs))) {
     throw new Error('Native network timeout is invalid')
@@ -267,30 +407,32 @@ function assertJobUpdate(value: unknown) {
 }
 
 async function loadRenderer(window: BrowserWindow) {
+  emergencyRendererShown = false
+  clearRendererHealthTimer()
   const devServer = process.env.CNOTE_WEB_DEV_SERVER
-  if (isDevelopmentMode() && devServer) {
-    await window.loadURL(devServer)
-    return
-  }
+  try {
+    if (isDevelopmentMode() && devServer) {
+      await window.loadURL(devServer)
+      return
+    }
 
-  const builtIndexes = [
-    path.join(currentDir, '../../web/dist/index.html'),
-    path.join(process.resourcesPath, 'web/dist/index.html'),
-  ]
-  const builtIndex = builtIndexes.find((candidate) => existsSync(candidate))
-  if (builtIndex) {
+    const builtIndexes = [
+      path.join(currentDir, '../../web/dist/index.html'),
+      path.join(process.resourcesPath, 'web/dist/index.html'),
+    ]
+    const builtIndex = builtIndexes.find((candidate) => existsSync(candidate))
+    if (!builtIndex) {
+      await showEmergencyRenderer(window, '没有找到 Web 构建产物，请先构建 Cnote。')
+      return
+    }
     await window.loadFile(builtIndex)
-    return
+  } catch (error) {
+    await showEmergencyRenderer(window, error instanceof Error ? error.message : String(error))
   }
+}
 
-  await window.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(`
-    <!doctype html>
-    <meta charset="utf-8" />
-    <title>Cnote</title>
-    <style>body{font-family:system-ui;padding:32px;line-height:1.6;background:#111;color:#eee}code{color:#9cdcfe}</style>
-    <h1>Cnote is ready</h1>
-    <p>请先构建 <code>web</code> 目录，或设置 <code>CNOTE_WEB_DEV_SERVER</code> 后再启动桌面端。</p>
-  `)}`)
+function assertNativeNetworkRequest(value: unknown): NativeNetworkJobRequest {
+  return (assertNativeJobRequest({ kind: 'native:network-request', input: value }) as Extract<NativeJobRequest, { kind: 'native:network-request' }>).input
 }
 
 async function createMainWindow() {
@@ -311,10 +453,21 @@ async function createMainWindow() {
       devTools: true,
     },
   })
+  const window = mainWindow
+  if (!window) return
   mainWindow.setMenuBarVisibility(false)
   mainWindow.on('maximize', sendWindowState)
   mainWindow.on('unmaximize', sendWindowState)
   mainWindow.on('restore', sendWindowState)
+  mainWindow.webContents.on('did-finish-load', () => scheduleRendererHealthCheck(mainWindow!))
+  mainWindow.webContents.on('did-fail-load', (_event, errorCode, errorDescription, _validatedURL, isMainFrame) => {
+    if (!isMainFrame || window.isDestroyed()) return
+    void showEmergencyRenderer(window, `${errorDescription} (${errorCode})`)
+  })
+  mainWindow.webContents.on('render-process-gone', (_event, details) => {
+    if (window.isDestroyed()) return
+    void showEmergencyRenderer(window, `渲染进程已退出：${details.reason}`)
+  })
   getRuntime().attachHostWindow(mainWindow)
 
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
@@ -328,8 +481,13 @@ async function createMainWindow() {
     return { action: 'deny' }
   })
   await loadRenderer(mainWindow)
-  mainWindow.on('closed', () => {
+  mainWindow.on('close', () => {
+    // Detach native browser views before Chromium destroys the host content
+    // view. Waiting for `closed` can make removeChildView/setVisible throw.
     getRuntime().detachHostWindow()
+  })
+  mainWindow.on('closed', () => {
+    clearRendererHealthTimer()
     mainWindow = null
   })
 }
@@ -351,9 +509,20 @@ app.on('window-all-closed', () => {
 })
 
 app.on('before-quit', () => {
+  runtime?.detachHostWindow()
   mainWindow = null
 })
 
 process.on('uncaughtException', (error) => {
-  dialog.showErrorBox('Cnote error', error instanceof Error ? error.message : String(error))
+  const message = error instanceof Error ? error.message : String(error)
+  if (mainWindow && !mainWindow.isDestroyed()) void showEmergencyRenderer(mainWindow, message)
+  else dialog.showErrorBox('Cnote error', message)
+})
+
+process.on('unhandledRejection', (reason) => {
+  const message = reason instanceof Error ? reason.message : String(reason)
+  // A rejected provider request or background job must not replace the whole
+  // workspace with the emergency renderer. Keep the shell alive and leave the
+  // owning feature responsible for presenting its own error state.
+  console.error('Unhandled Cnote promise rejection:', message)
 })

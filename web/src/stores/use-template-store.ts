@@ -7,7 +7,7 @@ import type { Template } from '@/types/flow'
 import { emptyContentData } from '@/lib/content-import'
 import { deleteLocalResource, retainLocalResource } from '@/lib/resource-storage'
 import { cloneFlowValue } from '@/lib/flow/clone'
-import { AI_NODE_DEFAULT_SIZE } from '@/lib/flow/node-dimensions'
+import { AI_NODE_DEFAULT_SIZE, BROWSER_NODE_DEFAULT_SIZE } from '@/lib/flow/node-dimensions'
 
 function nodeResourceId(node?: Node) {
   const source = node?.data?.source
@@ -242,10 +242,11 @@ export const useTemplateStore = create<TemplateState>()(
                 id: 'browser-1',
                 type: 'browser',
                 position: { x: 100, y: 100 },
+                style: BROWSER_NODE_DEFAULT_SIZE,
                 data: {
                   label: '网页抓取',
-                  url: 'https://www.baidu.com/',
-                  confirmedUrl: 'https://www.baidu.com/',
+                  url: 'https://www.google.com/',
+                  confirmedUrl: 'https://www.google.com/',
                   outputMode: 'text',
                   syncStatus: 'synced',
                   status: 'loading',
@@ -254,14 +255,14 @@ export const useTemplateStore = create<TemplateState>()(
               {
                 id: 'ai-1',
                 type: 'ai',
-                position: { x: 400, y: 100 },
+                position: { x: 1080, y: 100 },
                 style: AI_NODE_DEFAULT_SIZE,
                 data: { label: 'AI 分析' },
               },
               {
                 id: 'text-output-1',
                 type: 'content',
-                position: { x: 700, y: 100 },
+                position: { x: 1600, y: 100 },
                 data: emptyContentData('分析报告'),
               },
             ],

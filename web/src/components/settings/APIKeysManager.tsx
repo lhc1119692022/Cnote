@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type ChangeEvent } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import {
   Check,
   ChevronDown,
@@ -19,6 +20,7 @@ import { AppShell } from '@/components/layout/AppShell'
 import { Button, buttonVariants } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { ContentServiceSettings } from '@/components/settings/ContentServiceSettings'
+import { GenerationChannelsManager } from '@/components/settings/GenerationChannelsManager'
 import { AI_PROXY_WORKER_GUIDE_URL } from '@/config/links'
 import { AIClient, PROVIDERS, getProvider, inferProviderId, validateAPIKey, type ProtocolType } from '@/lib/api'
 import { localForageStorage } from '@/lib/localforage-storage'
@@ -27,7 +29,9 @@ import { useFlowStore } from '@/stores/use-flow-store'
 import { useSourceStore } from '@/stores/use-source-store'
 import { useTemplateStore } from '@/stores/use-template-store'
 
-type SettingsTab = 'channels' | 'content-service' | 'storage'
+type SettingsTab = 'channels' | 'generation' | 'content-service' | 'storage'
+
+const isSettingsTab = (value: string | null): value is SettingsTab => value === 'channels' || value === 'generation' || value === 'content-service' || value === 'storage'
 
 interface StorageEstimate {
   usage: number
@@ -81,8 +85,12 @@ export function APIKeysManager() {
   const flowCount = useFlowStore((state) => state.flows.length)
   const sourceCount = useSourceStore((state) => state.sources.length)
   const templateCount = useTemplateStore((state) => state.templates.length)
+  const isDesktopRuntime = typeof window !== 'undefined' && Boolean(window.cnoteDesktop)
 
-  const [activeTab, setActiveTab] = useState<SettingsTab>('channels')
+  const [searchParams, setSearchParams] = useSearchParams()
+  const requestedTab = searchParams.get('tab')
+  const [activeTab, setActiveTab] = useState<SettingsTab>(() => isSettingsTab(requestedTab) ? requestedTab : 'channels')
+  const [generationDialogRequest, setGenerationDialogRequest] = useState(0)
   const [showChannelDialog, setShowChannelDialog] = useState(false)
   const [editingChannelId, setEditingChannelId] = useState<string | null>(null)
   const [channelName, setChannelName] = useState('')
@@ -140,6 +148,16 @@ export function APIKeysManager() {
     if (activeTab === 'storage') void refreshStorageEstimate()
   }, [activeTab, refreshStorageEstimate])
 
+  useEffect(() => {
+    const nextTab = isSettingsTab(requestedTab) ? requestedTab : 'channels'
+    setActiveTab((current) => current === nextTab ? current : nextTab)
+  }, [requestedTab])
+
+  const selectTab = (tab: SettingsTab) => {
+    setActiveTab(tab)
+    setSearchParams(tab === 'channels' ? {} : { tab })
+  }
+
   const resetChannelDialog = () => {
     setShowChannelDialog(false)
     setShowProtocolMenu(false)
@@ -194,9 +212,10 @@ export function APIKeysManager() {
 
   const requestModels = async () => {
     const key = apiKey.trim() || (editingChannelId ? getAPIKey(editingChannelId) || '' : '')
+    const existingChannel = editingChannelId ? useAIStore.getState().apiKeys.find((item) => item.id === editingChannelId) : undefined
     const endpoint = baseURL.trim().replace(/\/$/, '')
     if (!endpoint) throw new Error('请输入接口地址')
-    if (!key) throw new Error('请先输入 API Key')
+    if (!key && !existingChannel?.secretName) throw new Error('请先输入 API Key')
 
     const inferredProviderId = inferProviderId(providerId, endpoint, modelIds, protocol)
     const inferredProvider = getProvider(inferredProviderId) || selectedProvider
@@ -209,7 +228,7 @@ export function APIKeysManager() {
       extraHeaders: proxyHeaderName.trim() && (proxyHeaderValue || (editingChannelId ? getProxyHeaderValue(editingChannelId) : ''))
         ? { [proxyHeaderName.trim()]: proxyHeaderValue || getProxyHeaderValue(editingChannelId || '') || '' }
         : undefined,
-    }, key)
+    }, key, existingChannel?.secretName)
     return client.listModels()
   }
 
@@ -351,7 +370,7 @@ export function APIKeysManager() {
     <AppShell>
       <main className="flex h-full min-w-0 flex-col overflow-hidden">
         <header className="flex h-[60px] shrink-0 items-center justify-between border-b border-border bg-card px-6">
-          <h1 className="text-[15px] font-semibold text-foreground">文本渠道</h1>
+          <h1 className="text-[15px] font-semibold text-foreground">渠道</h1>
           <div className="flex items-center gap-2">
             {activeTab === 'channels' && (
               <>
@@ -361,23 +380,20 @@ export function APIKeysManager() {
                 <Button size="sm" className="gap-1.5" onClick={openNewChannelDialog}><Plus className="h-3.5 w-3.5" />新增渠道</Button>
               </>
             )}
+            {activeTab === 'generation' && <Button size="sm" className="gap-1.5" onClick={() => setGenerationDialogRequest((request) => request + 1)}><Plus className="h-3.5 w-3.5" />新增生成渠道</Button>}
           </div>
         </header>
 
         <div className="flex-1 overflow-auto p-6">
           <div className="mb-5 flex flex-wrap gap-2">
-            <button type="button" onClick={() => setActiveTab('channels')} className={activeTab === 'channels' ? 'rounded-lg bg-primary px-3 py-1.5 text-[13px] text-primary-foreground' : 'rounded-lg border border-border bg-background px-3 py-1.5 text-[13px] text-muted-foreground hover:bg-muted dark:border-0 dark:bg-secondary'}>文本渠道 ({apiKeys.length})</button>
-            <button type="button" onClick={() => setActiveTab('content-service')} className={activeTab === 'content-service' ? 'rounded-lg bg-primary px-3 py-1.5 text-[13px] text-primary-foreground' : 'rounded-lg border border-border bg-background px-3 py-1.5 text-[13px] text-muted-foreground hover:bg-muted dark:border-0 dark:bg-secondary'}>内容解析服务</button>
-            <button type="button" onClick={() => setActiveTab('storage')} className={activeTab === 'storage' ? 'rounded-lg bg-primary px-3 py-1.5 text-[13px] text-primary-foreground' : 'rounded-lg border border-border bg-background px-3 py-1.5 text-[13px] text-muted-foreground hover:bg-muted dark:border-0 dark:bg-secondary'}>本地存储</button>
+            <button type="button" onClick={() => selectTab('channels')} className={activeTab === 'channels' ? 'rounded-lg bg-primary px-3 py-1.5 text-[13px] text-primary-foreground' : 'rounded-lg border border-border bg-background px-3 py-1.5 text-[13px] text-muted-foreground hover:bg-muted dark:border-0 dark:bg-secondary'}>文本渠道</button>
+            <button type="button" onClick={() => selectTab('generation')} className={activeTab === 'generation' ? 'rounded-lg bg-primary px-3 py-1.5 text-[13px] text-primary-foreground' : 'rounded-lg border border-border bg-background px-3 py-1.5 text-[13px] text-muted-foreground hover:bg-muted dark:border-0 dark:bg-secondary'}>生成渠道</button>
+            <button type="button" onClick={() => selectTab('content-service')} className={activeTab === 'content-service' ? 'rounded-lg bg-primary px-3 py-1.5 text-[13px] text-primary-foreground' : 'rounded-lg border border-border bg-background px-3 py-1.5 text-[13px] text-muted-foreground hover:bg-muted dark:border-0 dark:bg-secondary'}>内容解析服务</button>
+            <button type="button" onClick={() => selectTab('storage')} className={activeTab === 'storage' ? 'rounded-lg bg-primary px-3 py-1.5 text-[13px] text-primary-foreground' : 'rounded-lg border border-border bg-background px-3 py-1.5 text-[13px] text-muted-foreground hover:bg-muted dark:border-0 dark:bg-secondary'}>本地存储</button>
           </div>
 
           {activeTab === 'channels' ? (
             <section>
-              <div className="mb-5 flex items-start gap-2.5 rounded-lg bg-muted/55 px-3.5 py-3 text-[12px] leading-relaxed text-muted-foreground">
-                <KeyRound className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-                <p>文本渠道仅供旧 AI 节点使用。配置保存在当前浏览器；生成节点请前往“生成渠道”单独配置。</p>
-              </div>
-
               {apiKeys.length === 0 ? (
                 <div className="flex flex-col items-center justify-center py-24 text-center">
                   <KeyRound className="mb-4 h-10 w-10 text-muted-foreground/50" />
@@ -414,6 +430,8 @@ export function APIKeysManager() {
                 </div>
               )}
             </section>
+          ) : activeTab === 'generation' ? (
+            <GenerationChannelsManager embedded openNewRequest={generationDialogRequest} />
           ) : activeTab === 'content-service' ? (
             <ContentServiceSettings />
           ) : (
@@ -489,7 +507,7 @@ export function APIKeysManager() {
             <input type="password" value={apiKey} onChange={(event) => setAPIKey(event.target.value)} placeholder={editingChannelId ? '留空保持现有密钥' : '输入 API Key'} className="h-10 w-full rounded-lg border border-border bg-background px-3 text-foreground outline-none focus:border-primary focus:ring-2 focus:ring-ring/20" />
           </div>
 
-          <details className="group mt-4 rounded-lg border border-border bg-muted/30 p-3.5">
+          {!isDesktopRuntime && <details className="group mt-4 rounded-lg border border-border bg-muted/30 p-3.5">
             <summary className="flex cursor-pointer list-none items-center justify-between gap-3 text-[13px] font-medium">
               <span className="flex items-center gap-2"><ShieldCheck className="h-4 w-4 text-muted-foreground" />第三方 API 跨域错误！</span>
               <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground transition-transform group-open:rotate-180" />
@@ -510,7 +528,7 @@ export function APIKeysManager() {
                 <label className="block text-[12px] text-muted-foreground"><span className="mb-1.5 block">请求头值 {editingChannelId && <span>（留空保持不变）</span>}</span><input type="password" value={proxyHeaderValue} onChange={(event) => setProxyHeaderValue(event.target.value)} placeholder={editingChannelId ? '留空保持现有值' : '输入随机请求头值'} className="h-9 w-full rounded-lg border border-border bg-background px-3 text-foreground outline-none focus:border-primary focus:ring-2 focus:ring-ring/20" /></label>
               </div>
             </div>
-          </details>
+          </details>}
 
           <div className="mt-5">
             <div className="flex items-center justify-between gap-3">

@@ -8,6 +8,11 @@ export interface APIChannel {
   id: string
   providerId: string
   encryptedKey: string
+  /** Desktop-only SafeStorage reference. */
+  secretName?: string
+  proxySecretName?: string
+  /** Kept in memory for the current renderer session; never persisted. */
+  apiKey?: string
   proxyHeaderName?: string
   encryptedProxyHeaderValue?: string
   name: string
@@ -63,6 +68,19 @@ interface AIState {
   testConnection: () => Promise<boolean>
 }
 
+function desktopSecretName(channelId: string) {
+  return `cnote:ai:${channelId}`
+}
+
+function desktopProxySecretName(channelId: string) {
+  return `cnote:ai-proxy:${channelId}`
+}
+
+function saveDesktopSecret(name: string, value: string | undefined) {
+  if (!value || typeof window === 'undefined') return
+  void window.cnoteDesktop?.secrets.set(name, value).catch(() => undefined)
+}
+
 export const useAIStore = create<AIState>()(
   persist(
     (set, get) => ({
@@ -78,6 +96,10 @@ export const useAIStore = create<AIState>()(
       addAPIKey: (providerId, apiKey, name, options) => {
         const id = `key-${Date.now()}`
         const encryptedKey = encryptAPIKey(apiKey)
+        const secretName = desktopSecretName(id)
+        const proxySecretName = options?.proxyHeaderValue ? desktopProxySecretName(id) : undefined
+        saveDesktopSecret(secretName, apiKey)
+        saveDesktopSecret(proxySecretName || '', options?.proxyHeaderValue)
 
         set((state) => ({
           apiKeys: [
@@ -86,6 +108,9 @@ export const useAIStore = create<AIState>()(
               id,
               providerId,
               encryptedKey,
+              secretName,
+              apiKey,
+              proxySecretName,
               name: name || `${providerId} 渠道`,
               baseURL: options?.baseURL,
               modelIds: options?.modelIds,
@@ -101,6 +126,11 @@ export const useAIStore = create<AIState>()(
 
       // 删除 API Key
       removeAPIKey: (id) => {
+        const channel = get().apiKeys.find((item) => item.id === id)
+        if (typeof window !== 'undefined') {
+          if (channel?.secretName) void window.cnoteDesktop?.secrets.delete(channel.secretName).catch(() => undefined)
+          if (channel?.proxySecretName) void window.cnoteDesktop?.secrets.delete(channel.proxySecretName).catch(() => undefined)
+        }
         set((state) => ({
           apiKeys: state.apiKeys.filter((k) => k.id !== id),
           currentAPIKeyId: state.currentAPIKeyId === id ? null : state.currentAPIKeyId,
@@ -109,12 +139,19 @@ export const useAIStore = create<AIState>()(
 
       // 更新 API Key
       updateAPIKey: (id, updates) => {
+        const channel = get().apiKeys.find((item) => item.id === id)
+        const secretName = channel?.secretName || desktopSecretName(id)
+        const proxySecretName = channel?.proxySecretName || desktopProxySecretName(id)
+        if (updates.apiKey) saveDesktopSecret(secretName, updates.apiKey)
+        if (updates.proxyHeaderValue) saveDesktopSecret(proxySecretName, updates.proxyHeaderValue)
         set((state) => ({
           apiKeys: state.apiKeys.map((k) =>
             k.id === id
               ? {
                   ...k,
                   ...updates,
+                  ...(updates.apiKey ? { apiKey: updates.apiKey, secretName } : {}),
+                  ...(updates.proxyHeaderValue ? { proxySecretName } : {}),
                   encryptedKey: updates.apiKey ? encryptAPIKey(updates.apiKey) : k.encryptedKey,
                   encryptedProxyHeaderValue: updates.proxyHeaderValue !== undefined
                     ? (updates.proxyHeaderValue ? encryptAPIKey(updates.proxyHeaderValue) : undefined)
@@ -126,17 +163,27 @@ export const useAIStore = create<AIState>()(
       },
 
       replaceAPIKeys: (channels) => {
-        const apiKeys = channels.map((channel, index) => ({
-          id: channel.id || `key-${Date.now()}-${index}`,
-          providerId: channel.providerId,
-          encryptedKey: encryptAPIKey(channel.apiKey),
-          name: channel.name,
-          baseURL: channel.baseURL,
-          modelIds: channel.modelIds,
-          protocol: channel.protocol,
-          proxyHeaderName: channel.proxyHeaderName,
-          encryptedProxyHeaderValue: channel.proxyHeaderValue ? encryptAPIKey(channel.proxyHeaderValue) : undefined,
-        }))
+        const apiKeys = channels.map((channel, index) => {
+          const id = channel.id || `key-${Date.now()}-${index}`
+          const secretName = desktopSecretName(id)
+          const proxySecretName = channel.proxyHeaderValue ? desktopProxySecretName(id) : undefined
+          saveDesktopSecret(secretName, channel.apiKey)
+          saveDesktopSecret(proxySecretName || '', channel.proxyHeaderValue)
+          return {
+            id,
+            providerId: channel.providerId,
+            encryptedKey: encryptAPIKey(channel.apiKey),
+            apiKey: channel.apiKey,
+            secretName,
+            proxySecretName,
+            name: channel.name,
+            baseURL: channel.baseURL,
+            modelIds: channel.modelIds,
+            protocol: channel.protocol,
+            proxyHeaderName: channel.proxyHeaderName,
+            encryptedProxyHeaderValue: channel.proxyHeaderValue ? encryptAPIKey(channel.proxyHeaderValue) : undefined,
+          }
+        })
         set({ apiKeys, currentAPIKeyId: apiKeys[0]?.id || null, client: null })
       },
 
@@ -243,11 +290,11 @@ export const useAIStore = create<AIState>()(
         }
 
         const apiKey = get().getAPIKey(currentAPIKeyId)
-        if (!apiKey) {
+        const channel = get().apiKeys.find((item) => item.id === currentAPIKeyId)
+        if (!apiKey && !channel?.secretName) {
           throw new Error('API key not found')
         }
 
-        const channel = get().apiKeys.find((item) => item.id === currentAPIKeyId)
         const proxyHeaderValue = get().getProxyHeaderValue(currentAPIKeyId)
         const selectedModels = channel?.modelIds?.length
           ? channel.modelIds.map((modelId) => provider.models.find((model) => model.id === modelId) || {
@@ -270,7 +317,7 @@ export const useAIStore = create<AIState>()(
           extraHeaders: channel?.proxyHeaderName && proxyHeaderValue
             ? { [channel.proxyHeaderName]: proxyHeaderValue }
             : undefined,
-        }, apiKey)
+        }, apiKey || '', channel?.secretName)
         set({ client })
       },
 
@@ -278,7 +325,7 @@ export const useAIStore = create<AIState>()(
         const channel = get().apiKeys.find((item) => item.id === channelId)
         if (!channel || !channel.modelIds?.length) return null
         const apiKey = get().getAPIKey(channelId)
-        if (!apiKey) return null
+        if (!apiKey && !channel.secretName) return null
         const proxyHeaderValue = get().getProxyHeaderValue(channelId)
         if (!channel.baseURL || !channel.protocol) return null
         const inferredProviderId = inferProviderId(channel.providerId, channel.baseURL, channel.modelIds, channel.protocol)
@@ -302,7 +349,7 @@ export const useAIStore = create<AIState>()(
           extraHeaders: channel.proxyHeaderName && proxyHeaderValue
             ? { [channel.proxyHeaderName]: proxyHeaderValue }
             : undefined,
-        }, apiKey)
+        }, apiKey || '', channel.secretName)
       },
 
       // 测试连接
@@ -319,7 +366,7 @@ export const useAIStore = create<AIState>()(
       name: 'cnote-ai',
       storage: createJSONStorage(() => localForageStorage),
       partialize: (state) => ({
-        apiKeys: state.apiKeys,
+        apiKeys: state.apiKeys.map((channel) => ({ ...channel, apiKey: undefined })),
         currentProviderId: state.currentProviderId,
         currentModelId: state.currentModelId,
         currentAPIKeyId: state.currentAPIKeyId,

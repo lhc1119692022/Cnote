@@ -329,11 +329,26 @@ export interface GenerationTaskState {
   resultMimeTypes?: string[]
   error?: string
   lastPolledAt?: number
+  /** Immutable request data used to resume polling after the channel is edited. */
+  requestSnapshot?: GenerationTaskRequestSnapshot
+}
+
+export interface GenerationTaskRequestSnapshot {
+  variant: 'image' | 'video'
+  channelId: string
+  providerId: string
+  protocol?: string
+  baseURL: string
+  secretName?: string
+  model: string
+  config: GenerationVariantConfig
 }
 
 export interface GenerationVariantConfig {
   channelId?: string
   model?: string
+  /** Selected protocol adapter when one connection exposes several contracts. */
+  adapterId?: string
   capability?: GenerationCapability
   prompt: string
   negativePrompt?: string
@@ -342,7 +357,10 @@ export interface GenerationVariantConfig {
   seconds?: number
   resolution?: string
   aspectRatio?: string
-  quality?: string
+  quality?: 'auto' | 'low' | 'medium' | 'high' | 'standard' | string
+  background?: 'auto' | 'opaque' | 'transparent'
+  outputFormat?: 'png' | 'jpeg' | 'webp'
+  thinkingLevel?: 'minimal' | 'high'
 }
 
 export interface RequestNodeData extends BaseNodeData {

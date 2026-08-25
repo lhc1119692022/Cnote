@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { ChevronRight, Download, FileText, Folder, FolderOpen, MoreVertical, Plus, Search, Trash2, Upload } from 'lucide-react'
 import { useFlowStore } from '@/stores/use-flow-store'
@@ -33,11 +33,57 @@ export function Dashboard() {
   const [groupMenuDirection, setGroupMenuDirection] = useState<'left' | 'right'>('right')
   const [pendingFolderFlowId, setPendingFolderFlowId] = useState<string | null>(null)
   const backupInputRef = useRef<HTMLInputElement>(null)
+  const newFlowNameInputRef = useRef<HTMLInputElement>(null)
+  const desktopApi = typeof window !== 'undefined' ? window.cnoteDesktop : undefined
+  const browserCleanupPromiseRef = useRef<Promise<void> | null>(null)
 
   useEffect(() => {
     initialize()
     initializeTemplates()
   }, [initialize, initializeTemplates])
+
+  // A Flow route can be left while a native browser IPC call is still in
+  // flight. Remove any embedded views before the Dashboard becomes
+  // interactive, while leaving the persistent browser partition untouched.
+  useLayoutEffect(() => {
+    if (!desktopApi) {
+      browserCleanupPromiseRef.current = Promise.resolve()
+      return
+    }
+
+    let cancelled = false
+    const cleanup = desktopApi.browser.listSessions().then((sessions) => {
+      if (cancelled) return
+      // A native BrowserView is composited above the renderer and cannot be
+      // covered by the Dashboard dialog's z-index. Release embedded browser
+      // views before the Dashboard becomes interactive; the persistent
+      // Chromium partition keeps cookies, cache and login state intact.
+      return Promise.allSettled(
+        sessions
+          .filter((session) => session.presentation === 'embedded')
+          .map((session) => desktopApi.browser.closeSession(session.id)),
+      ).then(() => undefined)
+    }).catch(() => undefined)
+    browserCleanupPromiseRef.current = cleanup
+    return () => {
+      cancelled = true
+    }
+  }, [desktopApi])
+
+  useLayoutEffect(() => {
+    if (!showNewFlowDialog) return
+    const frame = window.requestAnimationFrame(() => {
+      newFlowNameInputRef.current?.focus()
+      newFlowNameInputRef.current?.select()
+    })
+    const secondFrame = window.requestAnimationFrame(() => {
+      newFlowNameInputRef.current?.focus()
+    })
+    return () => {
+      window.cancelAnimationFrame(frame)
+      window.cancelAnimationFrame(secondFrame)
+    }
+  }, [showNewFlowDialog])
 
   useEffect(() => {
     if (!openFlowMenuId) return
@@ -112,6 +158,14 @@ export function Dashboard() {
   }
 
   const openNewFlowDialog = () => {
+    setNewFlowName('')
+    setNewFlowDescription('')
+    setSelectedTemplateId(null)
+    const cleanup = browserCleanupPromiseRef.current
+    if (cleanup) {
+      void cleanup.finally(() => setShowNewFlowDialog(true))
+      return
+    }
     setShowNewFlowDialog(true)
   }
 
@@ -372,6 +426,7 @@ export function Dashboard() {
                   Flow 名称
                 </label>
                 <input
+                  ref={newFlowNameInputRef}
                   type="text"
                   value={newFlowName}
                   onChange={(e) => setNewFlowName(e.target.value)}

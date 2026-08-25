@@ -269,6 +269,47 @@
   shape-rendering: geometricPrecision;
 }
 
+/* Canonical Cnote floating-menu primitives. Keep new menus on this surface
+   instead of inventing a second card style for each feature. */
+.cnote-menu-surface {
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--card);
+  padding: 6px;
+  box-shadow: 0 12px 30px rgb(15 23 42 / 0.1);
+}
+
+.cnote-menu-item {
+  display: flex;
+  min-height: 40px;
+  width: 100%;
+  align-items: center;
+  gap: 10px;
+  border-radius: 10px;
+  padding: 8px 12px;
+  color: var(--foreground);
+  text-align: left;
+  font-size: 12px;
+  line-height: 1.35;
+  transition: background-color 140ms ease, color 140ms ease;
+}
+
+.cnote-menu-item:hover,
+.cnote-menu-item[data-active='true'] {
+  background: var(--muted);
+}
+
+.cnote-menu-item[data-active='true'] {
+  font-weight: 600;
+}
+
+.cnote-toolbar-surface {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--card);
+  box-shadow: 0 4px 14px rgb(15 23 42 / 0.065);
+}
+
 .canvas-viewport-moving .react-flow__node {
   pointer-events: none;
 }
@@ -290,7 +331,7 @@
   box-sizing: border-box;
   min-width: 0;
   min-height: 0;
-  overflow: hidden;
+  overflow: visible;
   border-radius: 21px;
 }
 
