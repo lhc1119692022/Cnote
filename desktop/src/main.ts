@@ -1,6 +1,6 @@
-import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, Notification, session, shell } from 'electron'
 import path from 'node:path'
-import { existsSync } from 'node:fs'
+import { existsSync, mkdirSync } from 'node:fs'
 import { DesktopRuntime } from './runtime/desktop-runtime'
 import type { NativeJobRequest, NativeNetworkJobRequest, RuntimeInfo } from './runtime/types'
 
@@ -9,6 +9,107 @@ let runtime: DesktopRuntime | null = null
 let mainWindow: BrowserWindow | null = null
 let rendererHealthTimer: NodeJS.Timeout | null = null
 let emergencyRendererShown = false
+
+const ALLOWED_WEBVIEW_PROTOCOLS = new Set(['http:', 'https:', 'about:'])
+const PERSISTENT_BROWSER_PARTITION = 'persist:cnote-browser'
+let persistentBrowserPartitionConfigured = false
+
+function isAllowedWebviewPartition(value: unknown): value is string {
+  return value === PERSISTENT_BROWSER_PARTITION || (typeof value === 'string' && /^cnote-memory-[A-Za-z0-9_-]+$/.test(value))
+}
+
+function assertAllowedWebviewNavigation(value: string) {
+  const parsed = new URL(value)
+  if (!ALLOWED_WEBVIEW_PROTOCOLS.has(parsed.protocol)) throw new Error(`Browser navigation protocol is not allowed: ${parsed.protocol}`)
+  return parsed.toString()
+}
+
+function installGuestSameViewOpenBridge(guest: Electron.WebContents) {
+  void guest.executeJavaScript(`(() => {
+    if (window.__cnoteSameViewOpenBridgeInstalled) return
+    window.__cnoteSameViewOpenBridgeInstalled = true
+    const navigate = (value) => {
+      try {
+        const url = new URL(String(value || ''), location.href)
+        if (!['http:', 'https:', 'about:'].includes(url.protocol)) return false
+        location.assign(url.toString())
+        return true
+      } catch {
+        return false
+      }
+    }
+    document.addEventListener('click', (event) => {
+      const target = event.target
+      const link = target instanceof Element ? target.closest('a[target="_blank"], area[target="_blank"]') : null
+      const href = link instanceof HTMLAnchorElement || link instanceof HTMLAreaElement ? link.href : ''
+      if (!href || !navigate(href)) return
+      event.preventDefault()
+      event.stopImmediatePropagation()
+    }, true)
+    const nativeOpen = window.open.bind(window)
+    window.open = (url, target, features) => {
+      if ((target === '_blank' || target === '_new') && navigate(url)) return null
+      return nativeOpen(url, target, features)
+    }
+  })()`, true).catch(() => undefined)
+}
+
+function configureGuestWebContents(guest: Electron.WebContents) {
+  guest.setWindowOpenHandler(({ url }) => {
+    try {
+      void guest.loadURL(assertAllowedWebviewNavigation(url))
+    } catch {
+      // Invalid or unsupported target URLs are denied.
+    }
+    return { action: 'deny' }
+  })
+  guest.on('will-navigate', (event, url) => {
+    try {
+      assertAllowedWebviewNavigation(url)
+    } catch {
+      event.preventDefault()
+    }
+  })
+  guest.on('dom-ready', () => installGuestSameViewOpenBridge(guest))
+}
+
+function configurePersistentBrowserPartition() {
+  if (persistentBrowserPartitionConfigured) return
+  persistentBrowserPartitionConfigured = true
+  const browserSession = session.fromPartition(PERSISTENT_BROWSER_PARTITION)
+  browserSession.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false))
+  browserSession.on('will-download', (_event, item) => {
+    const fileName = path.basename(item.getFilename()) || `download-${Date.now()}`
+    const downloadsDirectory = path.join(app.getPath('downloads'), 'Cnote')
+    mkdirSync(downloadsDirectory, { recursive: true })
+    const savePath = path.join(downloadsDirectory, fileName)
+    item.setSavePath(savePath)
+    if (Notification.isSupported()) new Notification({ title: 'Cnote 下载', body: `开始下载：${fileName}` }).show()
+    item.once('done', (_doneEvent, state) => {
+      if (!Notification.isSupported()) return
+      new Notification({
+        title: 'Cnote 下载',
+        body: state === 'completed' ? `${fileName} 已保存到 ${savePath}` : `${fileName} 下载${state === 'cancelled' ? '已取消' : '失败'}`,
+      }).show()
+    })
+  })
+}
+
+app.on('web-contents-created', (_event, contents) => {
+  contents.on('will-attach-webview', (event, webPreferences, params) => {
+    delete webPreferences.preload
+    webPreferences.nodeIntegration = false
+    webPreferences.contextIsolation = true
+    webPreferences.sandbox = true
+    if (!isAllowedWebviewPartition(params.partition)) {
+      event.preventDefault()
+    }
+  })
+
+  contents.on('did-attach-webview', (_event, guest) => {
+    configureGuestWebContents(guest)
+  })
+})
 
 function getRuntime() {
   if (!runtime) throw new Error('Desktop runtime is not ready')
@@ -160,9 +261,6 @@ function scheduleRendererHealthCheck(window: BrowserWindow) {
 }
 
 function registerIpcHandlers() {
-  getRuntime().ports.browser.onSessionUpdated((session) => {
-    sendToMainWindow('browser:session-updated', session)
-  })
   getRuntime().ports.jobs.onUpdated((job) => {
     sendToMainWindow('jobs:updated', job)
   })
@@ -188,23 +286,11 @@ function registerIpcHandlers() {
   })
   ipcMain.handle('window:is-maximized', () => Boolean(mainWindow?.isMaximized()))
 
-  ipcMain.handle('browser:create-session', (_event, options) => getRuntime().ports.browser.createSession(options))
-  ipcMain.handle('browser:list-sessions', () => getRuntime().ports.browser.listSessions())
-  ipcMain.handle('browser:mount-session', (_event, id: unknown, bounds: unknown) =>
-    getRuntime().ports.browser.mountSession(assertString(id, 'session id'), assertBounds(bounds)))
-  ipcMain.handle('browser:unmount-session', (_event, id: unknown) =>
-    getRuntime().ports.browser.unmountSession(assertString(id, 'session id')))
-  ipcMain.handle('browser:set-visible', (_event, id: unknown, visible: unknown) =>
-    getRuntime().ports.browser.setSessionVisible(assertString(id, 'session id'), assertBoolean(visible, 'visible')))
-  ipcMain.handle('browser:set-bounds', (_event, id: unknown, bounds: unknown) =>
-    getRuntime().ports.browser.setSessionBounds(assertString(id, 'session id'), assertBounds(bounds)))
-  ipcMain.handle('browser:show-session', (_event, id: unknown) => getRuntime().ports.browser.showSession(assertString(id, 'session id')))
-  ipcMain.handle('browser:popout-session', (_event, id: unknown) => getRuntime().ports.browser.popoutSession(assertString(id, 'session id')))
-  ipcMain.handle('browser:navigate', (_event, id: unknown, url: unknown) =>
-    getRuntime().ports.browser.navigate(assertString(id, 'session id'), assertString(url, 'url')))
-  ipcMain.handle('browser:reload', (_event, id: unknown) => getRuntime().ports.browser.reload(assertString(id, 'session id')))
-  ipcMain.handle('browser:capture', (_event, id: unknown) => getRuntime().ports.browser.capture(assertString(id, 'session id')))
-  ipcMain.handle('browser:close-session', (_event, id: unknown) => getRuntime().ports.browser.closeSession(assertString(id, 'session id')))
+  ipcMain.handle('browser:popout', (_event, url: unknown, title: unknown) => {
+    const safeUrl = assertAllowedWebviewNavigation(assertString(url, 'url'))
+    const safeTitle = typeof title === 'string' && title.trim() ? title.trim().slice(0, 120) : undefined
+    getRuntime().ports.browser.popout(safeUrl, safeTitle)
+  })
   ipcMain.handle('content:parse-html', (_event, input: unknown) => getRuntime().ports.content.parseHtml(assertContentParseInput(input)))
   ipcMain.handle('network:request', async (_event, input: unknown) => {
     const request = assertNativeNetworkRequest(input)
@@ -256,21 +342,6 @@ function registerIpcHandlers() {
 function assertString(value: unknown, field: string) {
   if (typeof value !== 'string' || !value.trim()) throw new Error(`${field} is required`)
   return value.trim()
-}
-
-function assertBoolean(value: unknown, field: string) {
-  if (typeof value !== 'boolean') throw new Error(`${field} must be a boolean`)
-  return value
-}
-
-function assertBounds(value: unknown) {
-  if (!value || typeof value !== 'object') throw new Error('Browser view bounds are required')
-  const bounds = value as Record<string, unknown>
-  const result = { x: bounds.x, y: bounds.y, width: bounds.width, height: bounds.height }
-  if (Object.values(result).some((item) => typeof item !== 'number' || !Number.isFinite(item))) {
-    throw new Error('Browser view bounds are invalid')
-  }
-  return result as { x: number; y: number; width: number; height: number }
 }
 
 function assertContentParseInput(value: unknown) {
@@ -450,11 +521,13 @@ async function createMainWindow() {
       nodeIntegration: false,
       contextIsolation: true,
       sandbox: true,
+      webviewTag: true,
       devTools: true,
     },
   })
   const window = mainWindow
   if (!window) return
+  getRuntime().attachHostWindow(window)
   mainWindow.setMenuBarVisibility(false)
   mainWindow.on('maximize', sendWindowState)
   mainWindow.on('unmaximize', sendWindowState)
@@ -468,8 +541,6 @@ async function createMainWindow() {
     if (window.isDestroyed()) return
     void showEmergencyRenderer(window, `渲染进程已退出：${details.reason}`)
   })
-  getRuntime().attachHostWindow(mainWindow)
-
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     try {
       const parsed = new URL(url)
@@ -481,18 +552,15 @@ async function createMainWindow() {
     return { action: 'deny' }
   })
   await loadRenderer(mainWindow)
-  mainWindow.on('close', () => {
-    // Detach native browser views before Chromium destroys the host content
-    // view. Waiting for `closed` can make removeChildView/setVisible throw.
-    getRuntime().detachHostWindow()
-  })
   mainWindow.on('closed', () => {
     clearRendererHealthTimer()
+    getRuntime().detachHostWindow()
     mainWindow = null
   })
 }
 
 app.whenReady().then(async () => {
+  configurePersistentBrowserPartition()
   runtime = new DesktopRuntime()
   registerIpcHandlers()
   await getRuntime().ports.jobs.list()

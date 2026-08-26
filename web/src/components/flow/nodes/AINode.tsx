@@ -3,7 +3,7 @@ import { NodeProps, Position } from 'reactflow'
 import { ArrowUp, Brain, ChevronDown, Copy, FileCog, GitBranch, History, LoaderCircle, MessageSquarePlus, Search, Settings, Sparkles, Square, SquarePen, Trash2, X } from 'lucide-react'
 import { useAIStore } from '@/stores/use-ai-store'
 import { useFlowStore } from '@/stores/use-flow-store'
-import { saveTextContentToNode } from '@/lib/content-import-controller'
+import { refreshDownstreamTextNodes, saveTextContentToNode } from '@/lib/content-import-controller'
 import { emptyContentData } from '@/lib/content-import'
 import { adaptReasoningLevel, getAIModelCapabilities, getProvider, type ChatCompletionRequest, type ChatContentPart } from '@/lib/api'
 import { AI_NODE_DEFAULT_SIZE, AI_NODE_MAX_AUTO_HEIGHT, AI_NODE_MIN_SIZE } from '@/lib/flow/node-dimensions'
@@ -532,7 +532,7 @@ export const AINode = memo(({ id, data, selected }: NodeProps<AINodeData>) => {
           })),
         ],
         temperature: 1,
-        max_tokens: 4096,
+        max_tokens: data.maxOutputTokens || 8192,
         web_search: modelCapabilities.webSearch === 'unsupported' ? 'off' : webSearch,
         reasoning_effort: effectiveReasoningLevel,
       }
@@ -562,6 +562,8 @@ export const AINode = memo(({ id, data, selected }: NodeProps<AINodeData>) => {
       })
       useFlowStore.getState().addToHistory()
       useFlowStore.getState().saveCurrentFlow()
+      // 下游文本节点自动承接最新回复，无需手动刷新。
+      void refreshDownstreamTextNodes(id)
     } catch (error) {
       if (controller.signal.aborted || (error instanceof DOMException && error.name === 'AbortError')) {
         setRequestError(null)

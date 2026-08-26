@@ -194,14 +194,19 @@ function withDefaultNodeDimensions<T extends { type?: string; style?: Node['styl
     && browserData?.browserUrlMigrationVersion === undefined
     && browserData?.url === 'https://www.baidu.com/'
     && browserData?.confirmedUrl === 'https://www.baidu.com/'
-  const normalizedNode = isLegacyBaiduDefault
+  const isLegacyBingDefault = node.type === 'browser'
+    && (browserData?.browserUrlMigrationVersion === undefined || browserData?.browserUrlMigrationVersion === 2)
+    && browserData?.url === 'https://www.bing.com/'
+    && browserData?.confirmedUrl === 'https://www.bing.com/'
+  const shouldMigrateBrowserDefault = isLegacyBaiduDefault || isLegacyBingDefault
+  const normalizedNode = shouldMigrateBrowserDefault
     ? {
         ...node,
         data: {
           ...browserData,
           url: 'https://www.google.com/',
           confirmedUrl: 'https://www.google.com/',
-          browserUrlMigrationVersion: 1,
+          browserUrlMigrationVersion: 3,
         },
       }
     : node

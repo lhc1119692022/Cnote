@@ -50,3 +50,15 @@ export function createGenerationReference(input: Partial<GenerationReference> & 
     error: input.error,
   }
 }
+
+/** Keep the persisted array and the provider request payload in the same order. */
+export function normalizeGenerationReferences(references: GenerationReference[]) {
+  return references
+    .map((reference, index) => ({ reference, index }))
+    .sort((left, right) => {
+      const leftOrder = Number.isFinite(left.reference.order) ? left.reference.order : left.index
+      const rightOrder = Number.isFinite(right.reference.order) ? right.reference.order : right.index
+      return leftOrder - rightOrder || left.index - right.index
+    })
+    .map(({ reference }, index) => ({ ...reference, order: index }))
+}

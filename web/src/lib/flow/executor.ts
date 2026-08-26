@@ -1,4 +1,5 @@
 import type { FlowNode, FlowEdge, ContentNodeData, BrowserNodeData, RequestNodeData } from '@/types/flow'
+import { captureBrowserWebview, type DesktopParsedPage } from '@/lib/browser-webview'
 import type { ChatContentPart, ChatMessage } from '@/lib/api'
 import { compileAiPrompt, compileAiPromptParts, type AIContextEntry } from './ai-prompt'
 import { buildAIContextEntries } from './ai-context'
@@ -37,6 +38,7 @@ import { topologicalSort, getPredecessors } from './graph'
 import { AIClient } from '@/lib/api'
 import { ScraperClient } from '@/lib/scraper'
 import { cancelGenerationTask, runGenerationTask } from '@/lib/generation/client'
+import { normalizeGenerationReferences } from '@/lib/generation/defaults'
 import { generationChannelSupportsVariant, useGenerationStore, type GenerationChannel } from '@/stores/use-generation-store'
 import type { GenerationReference, GenerationTaskState } from '@/types/flow'
 
@@ -199,11 +201,12 @@ export class FlowExecutor {
   }
 
   /**
-   * 执行整个 Flow
+   * 执行整个 Flow：无依赖关系的分支并行执行；失败只跳过自己的下游，
+   * 不阻断其他分支。
    */
   async execute(): Promise<ExecutionResult> {
     try {
-      // 拓扑排序获取执行顺序
+      // 拓扑排序获取执行顺序（同时校验无环）
       const order = topologicalSort(this.nodes, this.edges)
 
       // 初始化所有节点的上下文
@@ -220,24 +223,65 @@ export class FlowExecutor {
         })
       })
 
-      // 按顺序执行节点
-      for (const nodeId of order) {
-        this.throwIfAborted()
-        const node = this.nodes.find((n) => n.id === nodeId)
-        if (!node) continue
+      const pending = new Set(order)
+      let firstError: string | undefined
 
-        const context = this.contexts.get(nodeId)
-        if (context?.status === 'completed' && context.output !== undefined) {
+      while (pending.size > 0) {
+        this.throwIfAborted()
+        const ready: string[] = []
+        const skipped: string[] = []
+        for (const nodeId of pending) {
+          const predecessors = getPredecessors(nodeId, this.edges)
+          const unresolved = predecessors.some((predId) => {
+            const status = this.contexts.get(predId)?.status
+            return status === 'pending' || status === 'running'
+          })
+          if (unresolved) continue
+          const failedUpstream = predecessors.some((predId) => {
+            const status = this.contexts.get(predId)?.status
+            return status === 'failed' || status === 'cancelled'
+          })
+          if (failedUpstream) skipped.push(nodeId)
+          else ready.push(nodeId)
+        }
+
+        for (const nodeId of skipped) {
+          pending.delete(nodeId)
+          const context = this.contexts.get(nodeId)
+          if (context) {
+            context.status = 'cancelled'
+            context.error = '上游节点执行失败，已跳过'
+          }
           this.publishProgress(nodeId)
+        }
+        if (!ready.length) {
+          if (!skipped.length) break
           continue
         }
 
-        await this.executeNode(node)
+        await Promise.all(ready.map(async (nodeId) => {
+          pending.delete(nodeId)
+          const node = this.nodes.find((n) => n.id === nodeId)
+          if (!node) return
+          const context = this.contexts.get(nodeId)
+          if (context?.status === 'completed' && context.output !== undefined) {
+            this.publishProgress(nodeId)
+            return
+          }
+          try {
+            await this.executeNode(node)
+          } catch (error) {
+            if (error instanceof DOMException && error.name === 'AbortError') throw error
+            if (!firstError) firstError = error instanceof Error ? error.message : 'Unknown error'
+          }
+        }))
       }
 
+      const failed = [...this.contexts.values()].some((context) => context.status === 'failed')
       return {
-        success: true,
+        success: !failed,
         contexts: this.contexts,
+        error: firstError,
       }
     } catch (error) {
       if (error instanceof DOMException && error.name === 'AbortError') {
@@ -348,12 +392,12 @@ export class FlowExecutor {
       }
     }
     if (payload?.kind === 'video') {
-      if (payload.provider === 'youtube' && this.scraperClient && payload.url && !payload.transcript) {
+      if (payload.provider === 'youtube' && payload.url && !payload.transcript) {
+        if (!this.scraperClient) throw new Error('YouTube 视频缺少字幕：请先在设置中配置内容解析服务')
         const videoId = ScraperClient.extractVideoId(payload.url)
-        if (videoId) {
-          const result = await this.scraperClient.fetchYouTubeSubtitles(videoId, { signal: this.signal })
-          return { ...payload, transcript: result.subtitles, input: mergedInput || undefined }
-        }
+        if (!videoId) throw new Error('无法识别的 YouTube 视频链接：' + payload.url)
+        const result = await this.scraperClient.fetchYouTubeSubtitles(videoId, { signal: this.signal })
+        return { ...payload, transcript: result.subtitles, input: mergedInput || undefined }
       }
       return { ...payload, input: mergedInput || undefined }
     }
@@ -362,7 +406,8 @@ export class FlowExecutor {
     if (payload?.kind === 'image') return { ...payload, input: mergedInput || undefined }
     if (payload?.kind === 'presentation') return { ...payload, input: mergedInput || undefined }
 
-    if (data.source?.kind === 'url' && data.source.provider === 'youtube' && this.scraperClient) {
+    if (data.source?.kind === 'url' && data.source.provider === 'youtube') {
+      if (!this.scraperClient) throw new Error('YouTube 视频缺少字幕：请先在设置中配置内容解析服务')
       const videoId = ScraperClient.extractVideoId(data.source.normalizedUrl)
       if (videoId) {
         const result = await this.scraperClient.fetchYouTubeSubtitles(videoId, { signal: this.signal })
@@ -425,10 +470,14 @@ export class FlowExecutor {
       model: data.model,
       messages,
       temperature: 1,
-      max_tokens: 4096,
+      max_tokens: data.maxOutputTokens || 8192,
       web_search: data.webSearch || 'auto',
       reasoning_effort: data.reasoningLevel || 'medium',
-    }, this.signal)
+    }, this.signal).then((output) => {
+      // 回复写回节点，下游节点和后续会话才能在执行结束后继续使用。
+      this.onNodeDataUpdate?.(node.id, { output })
+      return output
+    })
   }
 
   /** Execute image/video requests as part of the Flow, including submission and polling. */
@@ -476,8 +525,19 @@ export class FlowExecutor {
 
     const upstreamText = Object.values(inputs).flatMap(extractInputTexts).join('\n\n').trim()
     const upstreamReferences = Object.values(inputs).flatMap((value) => collectGenerationReferences(value))
-    const mergedReferences = [...(config.references || []), ...upstreamReferences].map((reference, index) => ({ ...reference, order: index }))
-    const runConfig = persisted ? baseConfig : { ...config, prompt: [config.prompt, upstreamText].filter(Boolean).join('\n\n'), references: mergedReferences }
+    const baseReferenceCount = config.references?.length || 0
+    const mergedReferences = normalizeGenerationReferences([
+      ...(config.references || []),
+      ...upstreamReferences.map((reference, index) => ({ ...reference, order: baseReferenceCount + index })),
+    ])
+    const runConfig = persisted ? baseConfig : {
+      ...config,
+      capability: variant === 'image'
+        ? mergedReferences.some((reference) => reference.type === 'image') ? 'image-to-image' : 'text-to-image'
+        : config.capability,
+      prompt: [config.prompt, upstreamText].filter(Boolean).join('\n\n'),
+      references: mergedReferences,
+    }
     const snapshot = { ...runConfig, references: runConfig.references.map((reference) => ({ ...reference })) }
     const task = await runGenerationTask(
       { channel, model, config: runConfig, variant },
@@ -541,10 +601,10 @@ export class FlowExecutor {
         : { url, title: data.snapshot.title, text: data.snapshot.text }
     }
 
-    if (data.desktopSessionId && typeof window !== 'undefined' && window.cnoteDesktop) {
+    if (typeof window !== 'undefined' && window.cnoteDesktop) {
       try {
-        const capture = await window.cnoteDesktop.browser.capture(data.desktopSessionId)
-        const parsed = await runDesktopNativeJob<Awaited<ReturnType<typeof window.cnoteDesktop.content.parseHtml>>>({ kind: 'native:content-parse', input: { html: capture.html, url: capture.url, title: capture.title } }, this.signal)
+        const capture = await captureBrowserWebview(node.id)
+        const parsed = await runDesktopNativeJob<DesktopParsedPage>({ kind: 'native:content-parse', input: { html: capture.html, url: capture.url, title: capture.title } }, this.signal)
         const snapshot = {
           url: capture.url,
           title: parsed.title || capture.title,

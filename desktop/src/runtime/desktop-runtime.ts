@@ -38,11 +38,10 @@ export class DesktopRuntime {
 
   attachHostWindow(window: BrowserWindow) {
     this.hostWindow = window
-    this.browserSessions.setHostWindow(window)
   }
 
   detachHostWindow() {
-    this.browserSessions.clearHostWindow()
     this.hostWindow = null
   }
+
 }

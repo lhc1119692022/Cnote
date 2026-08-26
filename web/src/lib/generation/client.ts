@@ -1,5 +1,6 @@
 import { generationAdapterForConfig, generationAdapterForModel, generationProtocolForChannel, type GenerationChannel, type GenerationModel } from '@/stores/use-generation-store'
 import type { GenerationReference, GenerationTaskState, GenerationVariantConfig } from '@/types/flow'
+import { normalizeGenerationReferences } from '@/lib/generation/defaults'
 import { loadLocalResourceUrl, storeLocalResource } from '@/lib/resource-storage'
 import { desktopFetch } from '@/lib/desktop-fetch'
 
@@ -187,12 +188,13 @@ async function prepareReferenceConfig(context: GenerationRequestContext, signal?
   const adapter = generationAdapterForModel(channel, context.model.id, config.adapterId)
   const transport = adapter?.mediaTransport || channel.mediaTransport || 'auto'
   const inlineProtocol = variant === 'image' && ['openai-images', 'openai-images-808', 'gemini-generate-content', 'zenmux-vertex'].includes(protocol)
-  const references = config.references || []
+  const references = normalizeGenerationReferences(config.references || [])
+  const orderedConfig = { ...config, references }
   const needsRemote = references.some((reference) => !isHttpsUrl(referenceURL(reference)))
-  if (!needsRemote || inlineProtocol || (variant === 'image' && protocol === 'openai-images')) return config
+  if (!needsRemote || inlineProtocol || (variant === 'image' && protocol === 'openai-images')) return orderedConfig
   if (transport === 'public-url') {
     ensurePublicReferenceURLs(references)
-    return config
+    return orderedConfig
   }
 
   const uploadPath = adapter?.mediaUploadPath || channel.mediaUploadPath || '/v1/files'
@@ -201,7 +203,7 @@ async function prepareReferenceConfig(context: GenerationRequestContext, signal?
     const url = await uploadReference(channel, reference, uploadPath, signal, config.adapterId)
     return { ...reference, source: 'uploaded' as const, url, previewUrl: reference.previewUrl || url, status: 'ready' as const }
   }))
-  return { ...config, references: prepared }
+  return { ...orderedConfig, references: normalizeGenerationReferences(prepared) }
 }
 
 async function inlineImagePart(reference: GenerationReference) {
@@ -259,7 +261,7 @@ function meaiccMediaRole(reference: GenerationReference) {
 }
 
 function mediaInputs(references: GenerationReference[], format: 'generic' | 'newapi' | 'meaicc' = 'generic') {
-  return references.map((reference) => ({
+  return normalizeGenerationReferences(references).map((reference) => ({
     ...(format === 'newapi'
       ? { kind: reference.type, role: providerMediaRole(reference) }
       : { type: format === 'meaicc' ? meaiccMediaRole(reference) : reference.type, role: reference.role }),

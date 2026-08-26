@@ -8,6 +8,7 @@ import { ScraperClient, ScraperRequestError } from '@/lib/scraper'
 import type { BrowserNodeData, ContentCategory, ContentNodeData, ContentSource, ParseError } from '@/types/flow'
 import type { Node } from 'reactflow'
 import { getNodeMediaItems, type ContentMediaKind } from '@/lib/content-media'
+import { captureBrowserWebview, type DesktopParsedPage } from '@/lib/browser-webview'
 
 const categoryLabels: Record<ContentCategory, string> = {
   text: '文本', video: '视频', social: '社媒', document: '文档', data: '数据', presentation: '演示文稿', mindmap: '思维导图', image: '图片',
@@ -299,9 +300,9 @@ async function populateNodeTextOutput(nodeId: string) {
     if (data.snapshot?.url === url && data.snapshot.text.trim()) return true
 
     try {
-      if (data.desktopSessionId && window.cnoteDesktop) {
-        const capture = await window.cnoteDesktop.browser.capture(data.desktopSessionId)
-        const parsed = await runDesktopNativeJob<Awaited<ReturnType<typeof window.cnoteDesktop.content.parseHtml>>>({ kind: 'native:content-parse', input: { html: capture.html, url: capture.url, title: capture.title } })
+      if (window.cnoteDesktop) {
+        const capture = await captureBrowserWebview(nodeId)
+        const parsed = await runDesktopNativeJob<DesktopParsedPage>({ kind: 'native:content-parse', input: { html: capture.html, url: capture.url, title: capture.title } })
         const current = useFlowStore.getState().nodes.find((node) => node.id === nodeId)
         if (!current || current.type !== 'browser') return false
         useFlowStore.getState().updateNode(nodeId, {

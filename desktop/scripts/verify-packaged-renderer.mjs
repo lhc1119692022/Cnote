@@ -66,30 +66,9 @@ if (!windowControls) {
   throw new Error('Cnote workspace did not mount its desktop window controls.')
 }
 
-const smokeId = `smoke-native-view-${Date.now()}`
-await evaluate(`window.cnoteDesktop.browser.createSession({id:${JSON.stringify(smokeId)},name:'Smoke',persistent:false,url:'about:blank'})`)
-await evaluate(`window.cnoteDesktop.browser.mountSession(${JSON.stringify(smokeId)},{x:0,y:0,width:320,height:240})`)
-const mounted = await evaluate(`window.cnoteDesktop.browser.listSessions().then((items) => items.find((item) => item.id === ${JSON.stringify(smokeId)}))`)
-if (!mounted || mounted.presentation !== 'embedded' || !mounted.visible) {
-  throw new Error(`Native browser session was not embedded: ${JSON.stringify(mounted)}`)
-}
-
-await evaluate(`window.cnoteDesktop.browser.setVisible(${JSON.stringify(smokeId)},false)`)
-const hidden = await evaluate(`window.cnoteDesktop.browser.listSessions().then((items) => items.find((item) => item.id === ${JSON.stringify(smokeId)}))`)
-if (hidden?.visible) {
-  throw new Error(`Native browser visibility could not be disabled: ${JSON.stringify(hidden)}`)
-}
-await evaluate(`window.cnoteDesktop.browser.setVisible(${JSON.stringify(smokeId)},true)`)
-
-const capture = await evaluate(`window.cnoteDesktop.browser.capture(${JSON.stringify(smokeId)})`)
-if (capture?.url !== 'about:blank' || typeof capture?.html !== 'string') {
-  throw new Error(`Native browser capture failed: ${JSON.stringify(capture)}`)
-}
-
-await evaluate(`window.cnoteDesktop.browser.unmountSession(${JSON.stringify(smokeId)})`)
-const closeResult = await evaluate(`Promise.race([window.cnoteDesktop.browser.closeSession(${JSON.stringify(smokeId)}).then(() => 'closed'), new Promise((resolve) => setTimeout(() => resolve('timeout'), 1_000))])`)
-if (closeResult !== 'closed') {
-  throw new Error(`Native browser session close did not complete: ${closeResult}`)
+const browserBridge = await evaluate('Boolean(window.cnoteDesktop?.browser?.popout)')
+if (!browserBridge) {
+  throw new Error('Desktop browser bridge is not available in the packaged renderer.')
 }
 socket.close()
-console.log('Packaged renderer and embedded native browser smoke test passed.')
+console.log('Packaged renderer and webview browser bridge smoke test passed.')

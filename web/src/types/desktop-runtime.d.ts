@@ -16,46 +16,7 @@ interface CnoteDesktopApi {
     onStateChanged: (listener: (state: { maximized: boolean }) => void) => () => void
   }
   browser: {
-    createSession: (options?: { id?: string; name?: string; persistent?: boolean; url?: string }) => Promise<{
-      id: string
-      name: string
-      partition: string
-      persistent: boolean
-      url: string
-      title: string
-      visible: boolean
-      presentation: 'embedded' | 'popup' | 'hidden'
-      createdAt: string
-    }>
-    listSessions: () => Promise<Array<{
-      id: string
-      name: string
-      partition: string
-      persistent: boolean
-      url: string
-      title: string
-      visible: boolean
-      presentation: 'embedded' | 'popup' | 'hidden'
-      createdAt: string
-    }>>
-    onSessionUpdated: (listener: (session: { id: string; name: string; partition: string; persistent: boolean; url: string; title: string; visible: boolean; presentation: 'embedded' | 'popup' | 'hidden'; createdAt: string }) => void) => () => void
-    mountSession: (id: string, bounds: { x: number; y: number; width: number; height: number }) => Promise<void>
-    unmountSession: (id: string) => Promise<void>
-    setVisible: (id: string, visible: boolean) => Promise<void>
-    setBounds: (id: string, bounds: { x: number; y: number; width: number; height: number }) => Promise<void>
-    popoutSession: (id: string) => Promise<void>
-    showSession: (id: string) => Promise<void>
-    navigate: (id: string, url: string) => Promise<unknown>
-    reload: (id: string) => Promise<unknown>
-    capture: (id: string) => Promise<{
-      sessionId: string
-      capturedAt: string
-      url: string
-      title: string
-      text: string
-      html: string
-    }>
-    closeSession: (id: string) => Promise<void>
+    popout: (url: string, title?: string) => Promise<void>
   }
   content: {
     parseHtml: (input: { html: string; url?: string; title?: string }) => Promise<{
@@ -142,6 +103,15 @@ interface DesktopNativeJobRequest {
 }
 
 declare global {
+  namespace JSX {
+    interface IntrinsicElements {
+      webview: React.DetailedHTMLProps<React.HTMLAttributes<HTMLElement> & {
+        partition?: string
+        allowpopups?: boolean
+      }, HTMLElement>
+    }
+  }
+
   interface Window {
     /** Optional desktop bridge. It is absent when Cnote runs as the Web Preview. */
     cnoteDesktop?: CnoteDesktopApi

@@ -253,6 +253,8 @@ export interface AINodeData extends BaseNodeData {
   prompt?: string
   temperature?: number
   maxTokens?: number
+  /** 单次回复的输出 token 上限；未设置时使用 8192。 */
+  maxOutputTokens?: number
   autoCompressThreshold?: number
   webSearch?: AIWebSearchMode
   reasoningLevel?: AIReasoningLevel
@@ -392,8 +394,7 @@ export interface BrowserNodeData extends BaseNodeData {
   url: string
   /** The only URL used by Flow execution and content extraction. */
   confirmedUrl?: string
-  /** Desktop-only native browser session. Web Preview continues to use its iframe fallback. */
-  desktopSessionId?: string
+  /** Desktop uses an embedded webview; Web Preview continues to use its iframe fallback. */
   browserRuntime?: 'desktop-native' | 'web-iframe'
   outputMode?: WebPageOutputMode
   syncStatus?: WebPageSyncStatus

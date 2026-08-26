@@ -2606,7 +2606,6 @@ function FlowEditorInner() {
           proOptions={{ hideAttribution: true }}
           fitView={!currentFlow?.viewport}
           fitViewOptions={FLOW_FIT_VIEW_OPTIONS}
-          onlyRenderVisibleElements
           zoomOnDoubleClick={false}
           onMoveStart={handleMoveStart}
           onMoveEnd={handleMoveEnd}

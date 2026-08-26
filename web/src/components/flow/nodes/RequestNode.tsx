@@ -1,12 +1,14 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { NodeProps, Position } from 'reactflow'
-import { Check, ChevronDown, Image as ImageIcon, LoaderCircle, Mic, Sparkles, Square, Upload, Video, X } from 'lucide-react'
+import { Check, ChevronDown, ChevronUp, Image as ImageIcon, LoaderCircle, Mic, Sparkles, Square, Upload, Video, X } from 'lucide-react'
 import { useFlowStore } from '@/stores/use-flow-store'
 import { generationAdapterForModel, generationChannelSupportsVariant, generationChannelUsesModelInference, useGenerationStore, type GenerationChannel, type GenerationModel } from '@/stores/use-generation-store'
-import { createGenerationReference, createRequestNodeData } from '@/lib/generation/defaults'
+import { createGenerationReference, createRequestNodeData, normalizeGenerationReferences } from '@/lib/generation/defaults'
 import { cancelGenerationTask, pollGenerationTask, pollIntervalForModel, submitGenerationTask } from '@/lib/generation/client'
 import { createGenerationResultContentData } from '@/lib/generation/results'
 import { deleteLocalResource, loadLocalResourceUrl, revokeManagedObjectUrl, storeLocalResource } from '@/lib/resource-storage'
+import { textForAIContextNode } from '@/lib/flow/ai-context'
+import { getNodeMediaItems } from '@/lib/content-media'
 import { REQUEST_NODE_MIN_SIZE } from '@/lib/flow/node-dimensions'
 import type { GenerationCapability, GenerationReference, GenerationTaskState, RequestNodeData, RequestVariant } from '@/types/flow'
 import { NodeDragGutters, NodeHandle, NodeHoverToolbar, NodeResizeArc } from './NodeChrome'
@@ -25,6 +27,13 @@ const CAPABILITY_LABELS: Record<GenerationCapability, string> = {
 }
 
 const TYPE_LABELS = { image: '图片', video: '视频', audio: '音频' } as const
+const TYPE_ICONS = { image: ImageIcon, video: Video, audio: Mic } as const
+const REFERENCE_DND_TYPE = 'application/x-cnote-generation-reference'
+
+function imageCapabilityForReferences(references: GenerationReference[] = []): GenerationCapability {
+  return references.some((reference) => reference.type === 'image') ? 'image-to-image' : 'text-to-image'
+}
+
 function formatElapsed(milliseconds: number) {
   const seconds = Math.max(0, Math.floor(milliseconds / 1000))
   const hours = Math.floor(seconds / 3600)
@@ -64,6 +73,65 @@ function defaultRole(type: GenerationReference['type'], variant: RequestVariant)
   return type === 'video' ? 'reference_video' : 'reference_image'
 }
 
+/** 把上游节点的文本并入提示词、图片/视频并入参考素材，与 Flow 执行器的行为保持一致。 */
+function withUpstreamInputs<T extends { prompt?: string; references?: GenerationReference[] }>(nodeId: string, variant: RequestVariant, config: T): T {
+  const { nodes, edges } = useFlowStore.getState()
+  const upstreamNodes = edges
+    .filter((edge) => edge.target === nodeId)
+    .map((edge) => nodes.find((node) => node.id === edge.source))
+    .filter((node): node is NonNullable<typeof node> => Boolean(node && !(node.data as { disabled?: boolean } | undefined)?.disabled))
+  if (!upstreamNodes.length) {
+    return variant === 'image'
+      ? { ...config, capability: imageCapabilityForReferences(config.references) }
+      : config
+  }
+
+  const upstreamText = upstreamNodes
+    .map((node) => textForAIContextNode(node).trim())
+    .filter(Boolean)
+    .join('\n\n')
+  const existingKeys = new Set((config.references || []).map((reference) => reference.url || reference.resourceId).filter(Boolean))
+  const upstreamReferences = upstreamNodes.flatMap((node) => (['image', 'video'] as const).flatMap((kind) =>
+    getNodeMediaItems(node, kind).map((item): GenerationReference => ({
+      id: `upstream-${node.id}-${kind}-${item.resource.url || item.resource.resourceId}`,
+      type: kind,
+      role: defaultRole(kind, variant),
+      label: item.label,
+      source: item.resource.url && /^https?:\/\//i.test(item.resource.url) ? 'url' : 'local',
+      url: item.resource.url || undefined,
+      resourceId: item.resource.resourceId,
+      mimeType: item.resource.mimeType,
+      order: 0,
+      status: 'ready',
+    })),
+  )).filter((reference) => {
+    const key = reference.url || reference.resourceId
+    if (!key || existingKeys.has(key)) return false
+    existingKeys.add(key)
+    return true
+  })
+
+  const baseReferenceCount = config.references?.length || 0
+  const references = normalizeGenerationReferences([
+    ...(config.references || []),
+    ...upstreamReferences.map((reference, index) => ({ ...reference, order: baseReferenceCount + index })),
+  ])
+  return {
+    ...config,
+    prompt: [config.prompt, upstreamText].filter(Boolean).join('\n\n'),
+    ...(variant === 'image' ? { capability: imageCapabilityForReferences(references) } : {}),
+    references,
+  }
+}
+
+function formatResolutionLabel(value: string) {
+  return value.replace(/^(\d+)k$/i, '$1K')
+}
+
+function formatAspectRatioLabel(value: string) {
+  return value.toLowerCase() === 'auto' ? 'Auto' : value
+}
+
 function closeOpenMenus(root: ParentNode | null, except?: HTMLDetailsElement | null) {
   root?.querySelectorAll<HTMLDetailsElement>('details[open]').forEach((menu) => {
     if (menu !== except) menu.removeAttribute('open')
@@ -76,30 +144,33 @@ type ChoiceOption = {
   disabled?: boolean
 }
 
-function InlineChoice({
+function ChoiceRow({
+  label,
   value,
   options,
   onChange,
   ariaLabel,
-  title,
 }: {
+  label: string
   value: string
   options: ChoiceOption[]
   onChange: (value: string) => void
   ariaLabel: string
-  title?: string
 }) {
-  return <div role="group" aria-label={ariaLabel} title={title || ariaLabel} className="nodrag flex min-w-0 items-center gap-1 rounded-full border border-border bg-background/75 p-0.5">
-    {options.map((option) => <button
-      key={option.value}
-      type="button"
-      disabled={option.disabled}
-      aria-pressed={option.value === value}
-      aria-label={`${ariaLabel}：${option.label}`}
-      className="nodrag shrink-0 rounded-full px-2.5 py-1 text-[10px] font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:cursor-not-allowed disabled:opacity-35 data-[selected=true]:bg-foreground data-[selected=true]:text-background"
-      data-selected={option.value === value}
-      onClick={() => { if (!option.disabled) onChange(option.value) }}
-    >{option.label}</button>)}
+  return <div role="group" aria-label={ariaLabel} className="nodrag flex items-center justify-between gap-3 px-2 py-1.5">
+    <span className="shrink-0 text-[10px] text-muted-foreground">{label}</span>
+    <div className="flex min-w-0 flex-wrap justify-end gap-1">
+      {options.map((option) => <button
+        key={option.value}
+        type="button"
+        disabled={option.disabled}
+        aria-pressed={option.value === value}
+        aria-label={`${ariaLabel}：${option.label}`}
+        className="nodrag shrink-0 rounded-full border border-transparent px-2.5 py-1 text-[10px] font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:cursor-not-allowed disabled:opacity-35 data-[selected=true]:bg-foreground data-[selected=true]:text-background"
+        data-selected={option.value === value}
+        onClick={() => { if (!option.disabled) onChange(option.value) }}
+      >{option.label}</button>)}
+    </div>
   </div>
 }
 
@@ -129,6 +200,8 @@ export const RequestNode = memo(({ id, data, selected }: NodeProps<RequestNodeDa
   const nodeRef = useRef<HTMLDivElement>(null)
   const pollingRef = useRef(false)
   const abortRef = useRef<AbortController | null>(null)
+  const draggedReferenceIdRef = useRef<string | null>(null)
+  const [draggedReferenceId, setDraggedReferenceId] = useState<string | null>(null)
 
   const variant = data.variant || 'body'
   const config = variant === 'body' ? undefined : data[variant]
@@ -151,9 +224,16 @@ export const RequestNode = memo(({ id, data, selected }: NodeProps<RequestNodeDa
     return all.length ? all : variant === 'image' ? ['text-to-image', 'image-to-image'] as GenerationCapability[] : ['text-to-video', 'image-to-video', 'reference-to-video'] as GenerationCapability[]
   }, [models, selectedModel, variant])
   const references = config?.references || []
+  const orderedReferences = normalizeGenerationReferences(references)
+  const effectiveCapability = variant === 'image'
+    ? imageCapabilityForReferences(references)
+    : config?.capability || capabilities[0]
   const timeoutMs = variant === 'image' ? 15 * 60 * 1000 : 60 * 60 * 1000
   const availableAspectRatios = useMemo(() => [...new Set((variant === 'image' ? ['auto', '1:1', '16:9', '9:16'] : ['21:9', '16:9', '4:3', '1:1', '3:4', '9:16']).concat(models.flatMap((model) => model.aspectRatios || [])))], [models, variant])
-  const availableResolutions = useMemo(() => [...new Set((variant === 'image' ? ['1k', '2k', '3k', '4k'] : ['768', '720p', '1080p', '2K', '4K']).concat(models.flatMap((model) => model.resolutions || [])))], [models, variant])
+  const availableResolutions = useMemo(() => [...new Set((variant === 'image' ? ['auto', '1k', '2k', '3k', '4k'] : ['768', '720p', '1080p', '2K', '4K']).concat(models.flatMap((model) => model.resolutions || [])))], [models, variant])
+  const selectedResolution = config?.resolution || (variant === 'image' ? 'auto' : '720p')
+  const selectedAspectRatio = config?.aspectRatio || '16:9'
+  const parameterSummary = `${formatResolutionLabel(selectedResolution)} · ${formatAspectRatioLabel(selectedAspectRatio)}`
   const task = useMemo(() => {
     if (variant === 'body') return { status: 'idle' as const }
     return data.tasks?.[variant] || (data.variant === variant ? data.task : undefined) || { status: 'idle' as const }
@@ -228,7 +308,7 @@ export const RequestNode = memo(({ id, data, selected }: NodeProps<RequestNodeDa
           adapters: liveChannel?.adapters,
         }
       : liveChannel
-    const runConfig = persisted?.config || config
+    const runConfig = persisted?.config || (config ? withUpstreamInputs(id, variant, config) : config)
     const model = persisted
       ? liveChannel?.id === persisted.channelId
         ? generationStore.getModels(liveChannel.id).find((item) => item.id === persisted.model) || { id: persisted.model, name: persisted.model, capabilities: [] }
@@ -236,6 +316,10 @@ export const RequestNode = memo(({ id, data, selected }: NodeProps<RequestNodeDa
       : config?.model ? generationStore.getModels(config.channelId).find((item) => item.id === config.model) : undefined
     if (!channel || !model || !runConfig) {
       updateTask({ status: 'failed', error: '请先选择生成渠道和模型' })
+      return
+    }
+    if (!persisted && !runConfig.prompt?.trim() && !runConfig.references?.length) {
+      updateTask({ status: 'failed', error: '缺少生成内容：请填写提示词，或让上游节点提供文本/媒体素材' })
       return
     }
 
@@ -344,12 +428,39 @@ export const RequestNode = memo(({ id, data, selected }: NodeProps<RequestNodeDa
     }
   }, [])
 
-  const updateVariant = (updates: Partial<NonNullable<typeof config>>) => {
+  const updateVariant = useCallback((updates: Partial<NonNullable<typeof config>>) => {
     if (variant === 'body') return
     const current = useFlowStore.getState().nodes.find((node) => node.id === id)
     if (!current) return
     const currentData = current.data as RequestNodeData
-    updateNode(id, { data: { ...currentData, [variant]: { ...currentData[variant], ...updates } } })
+    const nextConfig = { ...currentData[variant], ...updates }
+    const normalizedUpdates = variant === 'image'
+      ? { ...updates, capability: imageCapabilityForReferences(nextConfig.references) }
+      : updates
+    updateNode(id, { data: { ...currentData, [variant]: { ...nextConfig, ...normalizedUpdates } } })
+  }, [id, updateNode, variant])
+
+  useEffect(() => {
+    if (variant !== 'image' || !config || config.capability === effectiveCapability) return
+    updateVariant({ capability: effectiveCapability })
+  }, [config, effectiveCapability, updateVariant, variant])
+
+  const moveReference = (referenceId: string, targetId: string, insertAfter = false) => {
+    if (referenceId === targetId) return
+    const source = orderedReferences.find((reference) => reference.id === referenceId)
+    const target = orderedReferences.find((reference) => reference.id === targetId)
+    if (!source || !target || source.type !== target.type) return
+    const sameTypeReferences = orderedReferences.filter((reference) => reference.type === source.type)
+    const sourceIndex = sameTypeReferences.findIndex((reference) => reference.id === referenceId)
+    let targetIndex = sameTypeReferences.findIndex((reference) => reference.id === targetId)
+    if (sourceIndex < 0 || targetIndex < 0) return
+    const [moved] = sameTypeReferences.splice(sourceIndex, 1)
+    if (sourceIndex < targetIndex) targetIndex -= 1
+    if (insertAfter) targetIndex += 1
+    sameTypeReferences.splice(Math.max(0, Math.min(targetIndex, sameTypeReferences.length)), 0, moved)
+    const reorderedById = new Map(sameTypeReferences.map((reference, index) => [reference.id, { ...reference, order: index }]))
+    const nextReferences = orderedReferences.map((reference) => reorderedById.get(reference.id) || reference)
+    updateVariant({ references: normalizeGenerationReferences(nextReferences) })
   }
 
   const switchVariant = (nextVariant: 'image' | 'video') => {
@@ -381,7 +492,7 @@ export const RequestNode = memo(({ id, data, selected }: NodeProps<RequestNodeDa
   }
 
   const addReference = (reference: GenerationReference) => {
-    updateVariant({ references: [...references, { ...reference, order: references.length }] })
+    updateVariant({ references: normalizeGenerationReferences([...orderedReferences, { ...reference, order: orderedReferences.length }]) })
   }
 
   const handleFile = async (file: File, type: GenerationReference['type']) => {
@@ -404,19 +515,19 @@ export const RequestNode = memo(({ id, data, selected }: NodeProps<RequestNodeDa
 
   const removeReference = async (reference: GenerationReference) => {
     if (reference.resourceId) await deleteLocalResource(reference.resourceId)
-    updateVariant({ references: references.filter((item) => item.id !== reference.id).map((item, index) => ({ ...item, order: index })) })
+    updateVariant({ references: normalizeGenerationReferences(orderedReferences.filter((item) => item.id !== reference.id)) })
   }
 
   const modelGroups = useMemo(() => channels
     .filter((channel) => channel.enabled && generationChannelSupportsVariant(channel, variant === 'video' ? 'video' : 'image'))
     .map((channel) => {
       const channelModels = getModels(channel.id)
-      const visibleModels = config?.capability && generationChannelUsesModelInference(channel)
-        ? channelModels.filter((model) => !model.capabilities.length || model.capabilities.includes(config.capability as GenerationCapability))
+      const visibleModels = effectiveCapability && generationChannelUsesModelInference(channel)
+        ? channelModels.filter((model) => !model.capabilities.length || model.capabilities.includes(effectiveCapability))
         : channelModels
       return { channel, models: visibleModels }
     })
-    .filter((group) => group.models.length > 0), [channels, config?.capability, getModels, variant])
+    .filter((group) => group.models.length > 0), [channels, effectiveCapability, getModels, variant])
 
   const selectModel = (channelId: string, model: GenerationModel) => {
     const nextChannel = channels.find((channel) => channel.id === channelId)
@@ -425,12 +536,15 @@ export const RequestNode = memo(({ id, data, selected }: NodeProps<RequestNodeDa
       channelId,
       model: model.id,
       adapterId: model.adapterId,
-      capability: model.capabilities.includes(config?.capability as GenerationCapability) ? config?.capability : model.capabilities[0],
+      capability: variant === 'image'
+        ? effectiveCapability
+        : model.capabilities.includes(config?.capability as GenerationCapability) ? config?.capability : model.capabilities[0],
       ...modelConfigUpdates(config, model, variant === 'video' ? 'video' : 'image'),
     })
   }
 
   const selectCapability = (capability: GenerationCapability) => {
+    if (variant === 'image') return
     const currentModelSupportsCapability = selectedModel?.capabilities.includes(capability)
     const nextModel = currentModelSupportsCapability ? selectedModel : models.find((model) => model.capabilities.includes(capability))
     updateVariant({ capability, model: nextModel?.id || config?.model, adapterId: nextModel?.adapterId || config?.adapterId, ...modelConfigUpdates(config, nextModel, variant) })
@@ -459,34 +573,67 @@ export const RequestNode = memo(({ id, data, selected }: NodeProps<RequestNodeDa
     </div>
   ) : (() => {
     const referenceTypes: Array<GenerationReference['type']> = variant === 'video' ? ['image', 'video', 'audio'] : ['image']
-    const selectedCapability = config?.capability || capabilities[0]
     const renderReferences = (type: GenerationReference['type']) => {
-      const items = references.filter((reference) => reference.type === type)
+      const TypeIcon = TYPE_ICONS[type]
+      const items = orderedReferences.filter((reference) => reference.type === type)
       const acceptsType = !selectedModel?.inputTypes || selectedModel.inputTypes.includes(type)
-      return <div key={type} className="flex min-w-0 items-center gap-1.5">
-        <span className="shrink-0 text-[10px] font-medium text-muted-foreground">{TYPE_LABELS[type]}</span>
-        <span className="text-[10px] text-muted-foreground/70">{items.length}</span>
-        {items.map((reference) => <div key={reference.id} className="group relative shrink-0">
+      return <div key={type} role="group" aria-label={`${TYPE_LABELS[type]}参考素材，共 ${items.length} 项`} className="flex min-w-0 items-center gap-1.5">
+        {items.map((reference) => <div
+          key={reference.id}
+          draggable
+          onPointerDown={(event) => event.stopPropagation()}
+          onDragStart={(event) => {
+            event.stopPropagation()
+            draggedReferenceIdRef.current = reference.id
+            setDraggedReferenceId(reference.id)
+            event.dataTransfer.effectAllowed = 'move'
+            event.dataTransfer.setData(REFERENCE_DND_TYPE, reference.id)
+            event.dataTransfer.setData('text/plain', reference.id)
+          }}
+          onDragOver={(event) => {
+            if (!event.dataTransfer.types.includes(REFERENCE_DND_TYPE)) return
+            event.preventDefault()
+            event.stopPropagation()
+            event.dataTransfer.dropEffect = 'move'
+          }}
+          onDrop={(event) => {
+            event.preventDefault()
+            event.stopPropagation()
+            const sourceId = event.dataTransfer.getData(REFERENCE_DND_TYPE) || draggedReferenceIdRef.current
+            if (sourceId) {
+              const targetRect = event.currentTarget.getBoundingClientRect()
+              moveReference(sourceId, reference.id, event.clientX >= targetRect.left + targetRect.width / 2)
+            }
+            draggedReferenceIdRef.current = null
+            setDraggedReferenceId(null)
+          }}
+          onDragEnd={() => {
+            draggedReferenceIdRef.current = null
+            setDraggedReferenceId(null)
+          }}
+          className={`nodrag group relative shrink-0 cursor-grab active:cursor-grabbing ${draggedReferenceId === reference.id ? 'opacity-50' : ''}`}
+          title={`${reference.label || TYPE_LABELS[type]}：拖动调整顺序`}
+        >
           <LocalReferencePreview reference={reference} />
           <button type="button" className="nodrag absolute -right-1.5 -top-1.5 flex h-5 w-5 items-center justify-center rounded-full border border-border bg-card text-muted-foreground opacity-0 shadow-sm transition-opacity hover:text-destructive group-hover:opacity-100" onClick={() => void removeReference(reference)} aria-label={`删除${TYPE_LABELS[type]}素材`} title={`删除${TYPE_LABELS[type]}素材`}><X className="h-3 w-3" /></button>
         </div>)}
         <label className={`nodrag flex h-14 w-14 shrink-0 cursor-pointer items-center justify-center rounded-lg border border-dashed border-border bg-muted/35 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground ${acceptsType ? '' : 'pointer-events-none opacity-35'}`} aria-label={`上传${TYPE_LABELS[type]}素材`} title={acceptsType ? `上传${TYPE_LABELS[type]}素材` : `当前模型不支持${TYPE_LABELS[type]}输入`}>
-          <Upload className="h-4 w-4" />
+          <TypeIcon className="h-4 w-4" aria-hidden="true" />
           <input type="file" className="hidden" accept={type === 'image' ? 'image/*' : type === 'video' ? 'video/*' : 'audio/*'} disabled={!acceptsType} onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ''; if (file) void handleFile(file, type) }} />
         </label>
       </div>
     }
 
     return <div className="flex min-h-0 flex-1 flex-col">
-      <div className="relative min-h-[156px] shrink-0 px-3 pb-3 pt-3">
-        <textarea value={config?.prompt || ''} onChange={(event) => updateVariant({ prompt: event.target.value })} placeholder={variant === 'image' ? '描述你想生成的图片…' : '描述镜头、动作、氛围，或上传图片生成动态视频…'} className="nodrag nowheel absolute inset-0 h-full w-full resize-none bg-transparent px-3 pb-3 pt-3 text-sm leading-6 text-foreground outline-none placeholder:text-muted-foreground/65" aria-label={variant === 'image' ? '图片生成提示词' : '视频生成提示词'} />
-      </div>
-
-      <div className="min-h-0 flex-1 overflow-auto px-3 pb-2 custom-scrollbar">
-        <div className="flex flex-wrap items-center gap-x-3 gap-y-2 border-t border-border/70 pt-2">
+      <div className="shrink-0 px-3 pb-2 pt-3">
+        <div className="flex max-h-[168px] flex-wrap items-center gap-x-3 gap-y-2 overflow-auto custom-scrollbar">
           {referenceTypes.map(renderReferences)}
         </div>
         {selectedChannel && ['openai-images-808', '808-video'].includes(selectedChannel.protocol || '') && references.some((reference) => reference.source === 'local') && <div className="mt-2 text-[10px] leading-4 text-amber-700">当前 808 端点只接受公网 HTTPS 直链，本地素材需要先上传或替换为直链。</div>}
+      </div>
+
+      <div className="relative min-h-[156px] min-w-0 flex-1 px-3 pb-3 pt-1">
+        <textarea value={config?.prompt || ''} onChange={(event) => updateVariant({ prompt: event.target.value })} placeholder={variant === 'image' ? '描述你想生成的图片…' : '描述镜头、动作、氛围，或上传图片生成动态视频…'} className="nodrag nowheel absolute inset-0 h-full w-full resize-none bg-transparent px-3 pb-3 pt-2 text-sm leading-6 text-foreground outline-none placeholder:text-muted-foreground/65" aria-label={variant === 'image' ? '图片生成提示词' : '视频生成提示词'} />
       </div>
 
       {(task.status === 'timeout' || (task.status === 'failed' && Boolean(task.error)) || task.status === 'completed') && <div className="shrink-0 px-3 pb-2 text-[10px]">
@@ -506,45 +653,63 @@ export const RequestNode = memo(({ id, data, selected }: NodeProps<RequestNodeDa
             </div>) : <p className="px-3 py-3 text-xs text-muted-foreground">暂无可用生成模型</p>}
           </div>
         </details>
+        {variant === 'video' && <details className="group/menu relative min-w-0" onToggle={(event) => { if (event.currentTarget.open) closeOpenMenus(nodeRef.current, event.currentTarget) }}>
+          <summary className="nodrag flex h-8 max-w-[145px] cursor-pointer list-none items-center gap-1.5 rounded-full border border-border bg-card px-3 text-[11px] font-medium text-foreground hover:bg-muted" aria-label="生成模式" title="生成模式"><span className="truncate">{CAPABILITY_LABELS[effectiveCapability || 'text-to-video']}</span><ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" /></summary>
+          <div className="cnote-menu-surface absolute bottom-[calc(100%+8px)] left-0 z-50 max-h-[min(360px,70vh)] min-w-[190px] overflow-auto">
+            {capabilities.map((capability) => <button key={capability} type="button" className="cnote-menu-item" data-active={effectiveCapability === capability} onClick={() => { selectCapability(capability); closeOpenMenus(nodeRef.current) }}><span className="flex-1">{CAPABILITY_LABELS[capability]}</span>{effectiveCapability === capability && <Check className="h-3.5 w-3.5 text-primary" />}</button>)}
+          </div>
+        </details>}
         <details className="group/menu relative min-w-0" onToggle={(event) => { if (event.currentTarget.open) closeOpenMenus(nodeRef.current, event.currentTarget) }}>
-          <summary className="nodrag flex h-8 max-w-[145px] cursor-pointer list-none items-center gap-1.5 rounded-full border border-border bg-card px-3 text-[11px] font-medium text-foreground hover:bg-muted" aria-label={variant === 'video' ? '生成模式' : '生成能力'} title={variant === 'video' ? '生成模式' : '生成能力'}><span className="truncate">{variant === 'video' ? '生成模式' : '能力'} · {CAPABILITY_LABELS[selectedCapability]}</span><ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" /></summary>
-          <div className="cnote-menu-surface absolute bottom-[calc(100%+8px)] left-0 z-50 max-h-[min(360px,70vh)] min-w-[220px] overflow-auto">
-            <div className="px-3 pb-1 pt-2 text-[10px] font-medium text-muted-foreground">{variant === 'video' ? '生成模式' : '能力'}</div>
-            {capabilities.map((capability) => <button key={capability} type="button" className="cnote-menu-item" data-active={config?.capability === capability} onClick={() => { selectCapability(capability); closeOpenMenus(nodeRef.current) }}><span className="flex-1">{CAPABILITY_LABELS[capability]}</span>{config?.capability === capability && <Check className="h-3.5 w-3.5 text-primary" />}</button>)}
+          <summary className="nodrag flex h-8 max-w-[150px] cursor-pointer list-none items-center gap-1.5 rounded-full border border-border bg-card px-3 text-[11px] font-medium text-foreground hover:bg-muted" aria-label="生成参数" title="生成参数"><span className="truncate">{parameterSummary}</span><ChevronUp className="h-3.5 w-3.5 shrink-0 text-muted-foreground" /></summary>
+          <div className="cnote-menu-surface absolute bottom-[calc(100%+8px)] right-0 z-50 max-h-[min(440px,70vh)] min-w-[280px] max-w-[min(380px,calc(100vw-32px))] overflow-auto">
+            <ChoiceRow
+              label="分辨率"
+              value={selectedResolution}
+              options={availableResolutions.map((resolution) => ({ value: resolution, label: formatResolutionLabel(resolution), disabled: Boolean(selectedModel?.resolutions && !selectedModel.resolutions.includes(resolution)) }))}
+              onChange={(value) => { updateVariant({ resolution: value }); closeOpenMenus(nodeRef.current) }}
+              ariaLabel="分辨率"
+            />
+            <div className="h-px bg-border" />
+            <ChoiceRow
+              label="宽高比例"
+              value={selectedAspectRatio}
+              options={availableAspectRatios.map((ratio) => ({ value: ratio, label: formatAspectRatioLabel(ratio), disabled: Boolean(selectedModel?.aspectRatios && !selectedModel.aspectRatios.includes(ratio)) }))}
+              onChange={(value) => { updateVariant({ aspectRatio: value }); closeOpenMenus(nodeRef.current) }}
+              ariaLabel="宽高比例"
+            />
+            {variant === 'image' && <>
+              <div className="h-px bg-border" />
+              <ChoiceRow
+                label="质量"
+                value={config?.quality || 'medium'}
+                options={[{ value: 'auto', label: '自动' }, { value: 'low', label: '低' }, { value: 'medium', label: '中' }, { value: 'high', label: '高' }]}
+                onChange={(value) => { updateVariant({ quality: value as NonNullable<typeof config>['quality'] }); closeOpenMenus(nodeRef.current) }}
+                ariaLabel="质量"
+              />
+            </>}
+            {variant === 'image' && selectedModel?.thinkingLevels?.length && <>
+              <div className="h-px bg-border" />
+              <ChoiceRow
+                label="思考级别"
+                value={config?.thinkingLevel || selectedModel.defaultThinkingLevel || selectedModel.thinkingLevels[0]}
+                options={selectedModel.thinkingLevels.map((level) => ({ value: level, label: level === 'minimal' ? '最小' : '高' }))}
+                onChange={(value) => { updateVariant({ thinkingLevel: value as NonNullable<typeof config>['thinkingLevel'] }); closeOpenMenus(nodeRef.current) }}
+                ariaLabel="思考级别"
+              />
+            </>}
+            {variant === 'video' && <>
+              <div className="h-px bg-border" />
+              <div className="flex items-center justify-between gap-3 px-2 py-1.5">
+                <span className="text-[10px] text-muted-foreground">时长（秒）</span>
+                <input type="number" min={selectedModel?.minDuration || 1} max={selectedModel?.maxDuration || 60} value={config?.seconds || 30} onChange={(event) => updateVariant({ seconds: Number(event.target.value) })} className="nodrag h-7 w-16 rounded-full border border-border bg-background/75 px-2 text-center text-[10px] text-foreground outline-none focus-visible:ring-1 focus-visible:ring-foreground/30" aria-label="时长（秒）" />
+              </div>
+              <label className={`nodrag flex items-center justify-between gap-3 rounded-lg px-2 py-2 text-[11px] text-foreground hover:bg-muted/70 ${selectedModel && !selectedModel.capabilities.includes('generate-audio') ? 'opacity-45' : ''}`} title={selectedModel && !selectedModel.capabilities.includes('generate-audio') ? '当前模型不支持生成音频' : '生成音频'}>
+                <span className="flex items-center gap-2"><Mic className="h-3.5 w-3.5 text-muted-foreground" />生成音频</span>
+                <input type="checkbox" className="nodrag" checked={Boolean(config?.generateAudio)} disabled={Boolean(selectedModel && !selectedModel.capabilities.includes('generate-audio'))} onChange={(event) => updateVariant({ generateAudio: event.target.checked })} aria-label="生成音频" />
+              </label>
+            </>}
           </div>
         </details>
-        <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto custom-scrollbar pb-0.5" aria-label="生成参数">
-          <InlineChoice
-            value={config?.aspectRatio || '16:9'}
-            options={availableAspectRatios.map((ratio) => ({ value: ratio, label: ratio, disabled: Boolean(selectedModel?.aspectRatios && !selectedModel.aspectRatios.includes(ratio)) }))}
-            onChange={(value) => updateVariant({ aspectRatio: value })}
-            ariaLabel="画面比例"
-            title="画面比例"
-          />
-          <InlineChoice
-            value={config?.resolution || (variant === 'image' ? '1k' : '720p')}
-            options={availableResolutions.map((resolution) => ({ value: resolution, label: resolution, disabled: Boolean(selectedModel?.resolutions && !selectedModel.resolutions.includes(resolution)) }))}
-            onChange={(value) => updateVariant({ resolution: value })}
-            ariaLabel="分辨率"
-            title="分辨率"
-          />
-          {variant === 'image' && <InlineChoice
-            value={config?.quality || 'medium'}
-            options={[{ value: 'auto', label: '自动' }, { value: 'low', label: '低' }, { value: 'medium', label: '中' }, { value: 'high', label: '高' }]}
-            onChange={(value) => updateVariant({ quality: value as NonNullable<typeof config>['quality'] })}
-            ariaLabel="质量"
-            title="质量"
-          />}
-          {variant === 'image' && selectedModel?.thinkingLevels?.length && <InlineChoice
-            value={config?.thinkingLevel || selectedModel.defaultThinkingLevel || selectedModel.thinkingLevels[0]}
-            options={selectedModel.thinkingLevels.map((level) => ({ value: level, label: level === 'minimal' ? '最小' : '高' }))}
-            onChange={(value) => updateVariant({ thinkingLevel: value as NonNullable<typeof config>['thinkingLevel'] })}
-            ariaLabel="思考级别"
-            title="思考级别"
-          />}
-          {variant === 'video' && <label className="nodrag flex shrink-0 items-center gap-1 rounded-full border border-border bg-background/75 px-2.5 py-1 text-[10px] font-medium text-muted-foreground" title="时长（秒）"><span>时长</span><input type="number" min={selectedModel?.minDuration || 1} max={selectedModel?.maxDuration || 60} value={config?.seconds || 30} onChange={(event) => updateVariant({ seconds: Number(event.target.value) })} className="nodrag w-10 bg-transparent text-center text-[10px] text-foreground outline-none" aria-label="时长（秒）" /></label>}
-          {variant === 'video' && <label className={`nodrag flex shrink-0 items-center gap-1.5 rounded-full border border-border bg-background/75 px-2.5 py-1 text-[10px] font-medium text-muted-foreground ${selectedModel && !selectedModel.capabilities.includes('generate-audio') ? 'opacity-45' : ''}`} title={selectedModel && !selectedModel.capabilities.includes('generate-audio') ? '当前模型不支持生成音频' : '生成音频'}><input type="checkbox" checked={Boolean(config?.generateAudio)} disabled={Boolean(selectedModel && !selectedModel.capabilities.includes('generate-audio'))} onChange={(event) => updateVariant({ generateAudio: event.target.checked })} />音频</label>}
-        </div>
         <span className="flex-1" />
         <button
           type="button"

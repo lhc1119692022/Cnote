@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import type { BrowserCapture, BrowserSessionSummary, BrowserViewBounds, ContentParseInput, FileDialogFilter, JobRecord, JobUpdate, NativeJobRequest, NetworkRequest, NetworkResponse, ParsedPageContent, RuntimeInfo } from './runtime/types'
+import type { ContentParseInput, FileDialogFilter, JobRecord, JobUpdate, NativeJobRequest, NetworkRequest, NetworkResponse, ParsedPageContent, RuntimeInfo } from './runtime/types'
 
 const invoke = <T>(channel: string, ...args: unknown[]) => ipcRenderer.invoke(channel, ...args) as Promise<T>
 
@@ -18,24 +18,7 @@ const api = {
     },
   },
   browser: {
-    createSession: (options?: { id?: string; name?: string; persistent?: boolean; url?: string }) =>
-      invoke<BrowserSessionSummary>('browser:create-session', options),
-    listSessions: () => invoke<BrowserSessionSummary[]>('browser:list-sessions'),
-    onSessionUpdated: (listener: (session: BrowserSessionSummary) => void) => {
-      const handler = (_event: Electron.IpcRendererEvent, session: BrowserSessionSummary) => listener(session)
-      ipcRenderer.on('browser:session-updated', handler)
-      return () => ipcRenderer.removeListener('browser:session-updated', handler)
-    },
-    mountSession: (id: string, bounds: BrowserViewBounds) => invoke<void>('browser:mount-session', id, bounds),
-    unmountSession: (id: string) => invoke<void>('browser:unmount-session', id),
-    setVisible: (id: string, visible: boolean) => invoke<void>('browser:set-visible', id, visible),
-    setBounds: (id: string, bounds: BrowserViewBounds) => invoke<void>('browser:set-bounds', id, bounds),
-    showSession: (id: string) => invoke<void>('browser:show-session', id),
-    popoutSession: (id: string) => invoke<void>('browser:popout-session', id),
-    navigate: (id: string, url: string) => invoke<BrowserSessionSummary>('browser:navigate', id, url),
-    reload: (id: string) => invoke<BrowserSessionSummary>('browser:reload', id),
-    capture: (id: string) => invoke<BrowserCapture>('browser:capture', id),
-    closeSession: (id: string) => invoke<void>('browser:close-session', id),
+    popout: (url: string, title?: string) => invoke<void>('browser:popout', url, title),
   },
   content: {
     parseHtml: (input: ContentParseInput) => invoke<ParsedPageContent>('content:parse-html', input),

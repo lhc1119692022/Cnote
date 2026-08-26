@@ -44,34 +44,6 @@ export interface NetworkPort {
   request(input: NetworkRequest): Promise<NetworkResponse>
 }
 
-export interface BrowserSessionSummary {
-  id: string
-  name: string
-  partition: string
-  persistent: boolean
-  url: string
-  title: string
-  visible: boolean
-  presentation: 'embedded' | 'popup' | 'hidden'
-  createdAt: string
-}
-
-export interface BrowserViewBounds {
-  x: number
-  y: number
-  width: number
-  height: number
-}
-
-export interface BrowserCapture {
-  sessionId: string
-  capturedAt: string
-  url: string
-  title: string
-  text: string
-  html: string
-}
-
 export interface ContentParseInput {
   html: string
   url?: string
@@ -122,19 +94,7 @@ export interface SystemPort {
 }
 
 export interface BrowserPort {
-  createSession(options?: { id?: string; name?: string; persistent?: boolean; url?: string }): Promise<BrowserSessionSummary>
-  listSessions(): BrowserSessionSummary[]
-  onSessionUpdated(listener: (session: BrowserSessionSummary) => void): () => void
-  mountSession(id: string, bounds: BrowserViewBounds): void
-  unmountSession(id: string): void
-  setSessionVisible(id: string, visible: boolean): void
-  setSessionBounds(id: string, bounds: BrowserViewBounds): void
-  showSession(id: string): void
-  popoutSession(id: string): void
-  navigate(id: string, url: string): Promise<BrowserSessionSummary>
-  reload(id: string): Promise<BrowserSessionSummary>
-  capture(id: string): Promise<BrowserCapture>
-  closeSession(id: string): Promise<void>
+  popout(url: string, title?: string): void
 }
 
 export interface SecretPort {
