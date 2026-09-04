@@ -99,7 +99,6 @@ export function SourcesManager() {
             />
           </div>
           <div className="flex items-center gap-2">
-            <Button variant="secondary" size="sm">使用指南</Button>
             <Button size="sm" className="gap-1.5" onClick={() => setShowNewDialog(true)}>
               <Plus className="h-3.5 w-3.5" />
               新建内容

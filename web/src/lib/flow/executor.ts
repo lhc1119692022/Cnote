@@ -87,6 +87,7 @@ function collectGenerationReferences(value: unknown, references: GenerationRefer
   const merged = { ...record, ...(source || {}), ...(payload || {}), ...(resource || {}) }
   const type = mediaTypeFromValue(merged) || hintedType
   const urlCandidate = [
+    resource?.sourceUrl,
     resource?.url,
     resource?.src,
     resource?.file_url,
@@ -399,11 +400,11 @@ export class FlowExecutor {
         const result = await this.scraperClient.fetchYouTubeSubtitles(videoId, { signal: this.signal })
         return { ...payload, transcript: result.subtitles, input: mergedInput || undefined }
       }
-      return { ...payload, input: mergedInput || undefined }
+      return { ...payload, source: data.source, preview: data.preview, input: mergedInput || undefined }
     }
     if (payload?.kind === 'data') return { ...payload, input: mergedInput || undefined }
     if (payload?.kind === 'mindmap') return { ...payload, input: mergedInput || undefined }
-    if (payload?.kind === 'image') return { ...payload, input: mergedInput || undefined }
+    if (payload?.kind === 'image') return { ...payload, source: data.source, preview: data.preview, input: mergedInput || undefined }
     if (payload?.kind === 'presentation') return { ...payload, input: mergedInput || undefined }
 
     if (data.source?.kind === 'url' && data.source.provider === 'youtube') {
@@ -524,7 +525,9 @@ export class FlowExecutor {
     if (!channel || !model?.id) throw new Error('请先配置生成渠道和模型')
 
     const upstreamText = Object.values(inputs).flatMap(extractInputTexts).join('\n\n').trim()
-    const upstreamReferences = Object.values(inputs).flatMap((value) => collectGenerationReferences(value))
+    const upstreamReferences = Object.values(inputs)
+      .flatMap((value) => collectGenerationReferences(value))
+      .filter((reference) => variant === 'image' ? reference.type === 'image' : true)
     const baseReferenceCount = config.references?.length || 0
     const mergedReferences = normalizeGenerationReferences([
       ...(config.references || []),
@@ -538,7 +541,7 @@ export class FlowExecutor {
       prompt: [config.prompt, upstreamText].filter(Boolean).join('\n\n'),
       references: mergedReferences,
     }
-    const snapshot = { ...runConfig, references: runConfig.references.map((reference) => ({ ...reference })) }
+    let snapshot = { ...runConfig, references: runConfig.references.map((reference) => ({ ...reference })) }
     const task = await runGenerationTask(
       { channel, model, config: runConfig, variant },
       {
@@ -547,6 +550,9 @@ export class FlowExecutor {
         timeoutMs: variant === 'image' ? 15 * 60 * 1000 : 60 * 60 * 1000,
         signal: this.signal,
         onCancel: async (taskId) => { await cancelGenerationTask({ channel, model, config: runConfig, variant }, taskId) },
+        onConfigPrepared: (preparedConfig) => {
+          snapshot = { ...preparedConfig, references: preparedConfig.references.map((reference) => ({ ...reference })) }
+        },
         onTaskUpdate: (nextTask) => {
           const current = this.nodes.find((item) => item.id === node.id)?.data as RequestNodeData | undefined
           const previous = current?.tasks?.[variant] || current?.task || { status: 'idle' as const }
@@ -558,6 +564,10 @@ export class FlowExecutor {
               protocol: channel.protocol,
               baseURL: channel.baseURL,
               secretName: channel.secretName,
+              mediaTransport: channel.mediaTransport,
+              mediaUploadPath: channel.mediaUploadPath,
+              mediaUploadURL: channel.mediaUploadURL,
+              mediaUploadSecretName: channel.mediaUploadSecretName,
               model: model.id,
               config: snapshot,
             } } },

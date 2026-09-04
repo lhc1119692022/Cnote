@@ -10,19 +10,10 @@ interface Env {
   CN_PROXY_HEADER_VALUE?: string
 }
 
-interface DashboardProxyConfig {
-  CNOTE_PROXY_ROUTES?: Record<string, string>
-  CNOTE_PROXY_UPSTREAM_URL?: string
-  CNOTE_PROXY_HEADER_NAME?: string
-  CNOTE_PROXY_HEADER_VALUE?: string
-}
-
-const dashboardProxyConfig = globalThis as typeof globalThis & DashboardProxyConfig
-
 const DEFAULT_PROXY_HEADER_NAME = 'X-Cnote-Access'
 
 function configuredProxyRoutes(env: Env) {
-  let rawRoutes: unknown = dashboardProxyConfig.CNOTE_PROXY_ROUTES || {}
+  let rawRoutes: unknown = {}
   if (env.CN_PROXY_ROUTES?.trim()) {
     try {
       rawRoutes = JSON.parse(env.CN_PROXY_ROUTES)
@@ -44,20 +35,20 @@ function configuredProxyRoutes(env: Env) {
   }
 
   // 兼容上一版单线路配置及命令行环境变量。
-  const legacyUpstreamURL = env.CN_PROXY_UPSTREAM_URL?.trim() || dashboardProxyConfig.CNOTE_PROXY_UPSTREAM_URL?.trim() || ''
+  const legacyUpstreamURL = env.CN_PROXY_UPSTREAM_URL?.trim() || ''
   if (legacyUpstreamURL && Object.keys(routes).length === 0) routes.default = legacyUpstreamURL
   return routes
 }
 
 function proxyHeaderName(env: Env) {
-  return env.CN_PROXY_HEADER_NAME?.trim() || dashboardProxyConfig.CNOTE_PROXY_HEADER_NAME?.trim() || DEFAULT_PROXY_HEADER_NAME
+  return env.CN_PROXY_HEADER_NAME?.trim() || DEFAULT_PROXY_HEADER_NAME
 }
 
 function proxyConfig(env: Env) {
   return {
     routes: configuredProxyRoutes(env),
     headerName: proxyHeaderName(env),
-    headerValue: env.CN_PROXY_HEADER_VALUE || dashboardProxyConfig.CNOTE_PROXY_HEADER_VALUE || '',
+    headerValue: env.CN_PROXY_HEADER_VALUE || '',
   }
 }
 
@@ -84,6 +75,7 @@ const ALLOWED_ENDPOINTS = new Set([
   'v1beta/openai/models',
   'v1beta/openai/chat/completions',
   'v1beta/models',
+  'v1/media/uploads/presign',
 ])
 
 function isAllowedEndpoint(endpoint: string) {
@@ -113,32 +105,24 @@ function cnoteInterfaceAddresses(origin: string, routes: Record<string, string>)
 
 function setupResponse(url: URL, routes: Record<string, string>, corsHeaders: Record<string, string>) {
   const addresses = cnoteInterfaceAddresses(url.origin, routes)
-  const lines = addresses.length > 0
-    ? [
-        'Cnote AI 跨域代理已运行。',
-        '',
-        '请把下面对应线路的完整地址复制到 Cnote 的“接口地址”：',
-        ...addresses.map((item) => `${item.name}: ${item.address}`),
-        '',
-        '不要删掉 /proxy/线路名，也不要再追加 /v1/models 等路径。',
-      ]
-    : [
-        '尚未配置第三方 API 线路。',
-        '请回到 Worker 脚本顶部填写 CNOTE_PROXY_ROUTES 后重新部署。',
-      ]
-  return new Response(lines.join('\n'), {
-    headers: { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store', ...corsHeaders },
+  return new Response(JSON.stringify({
+    ok: true,
+    service: 'cnote-ai-proxy',
+    configured: addresses.length > 0,
+    routes: addresses,
+  }), {
+    headers: { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', ...corsHeaders },
   })
 }
 
 function buildTargetURL(upstreamURL: string, endpoint: string, search: string) {
-  if (!upstreamURL) throw new Error('请先在脚本顶部填写第三方 API 原接口地址')
+  if (!upstreamURL) throw new Error('第三方 API 原接口地址未配置')
 
   let base: URL
   try {
     base = new URL(upstreamURL)
   } catch {
-    throw new Error('脚本顶部的第三方 API 原接口地址格式不正确')
+    throw new Error('第三方 API 原接口地址格式不正确')
   }
   if (!['http:', 'https:'].includes(base.protocol) || base.username || base.password || base.search || base.hash) {
     throw new Error('第三方 API 原接口地址必须是完整的 http 或 https 地址，且不要带查询参数或 #')
@@ -298,9 +282,7 @@ export default {
       return new Response(
         JSON.stringify({
           error: 'Not found',
-          message: Object.keys(config.routes).length > 1
-            ? '请使用 Worker 地址/proxy/线路名；打开 Worker 根地址可查看已经拼好的完整地址'
-            : '打开 Worker 根地址，复制页面中已经拼好的 Cnote 接口地址',
+          message: '代理路径不存在',
         }),
         {
           status: 404,

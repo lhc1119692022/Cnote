@@ -414,9 +414,9 @@ function getPersistableNodes(nodes: Node[]) { return nodes }
 
 function nodeResourceIds(node?: Node) {
   if (!node) return []
-  const ids = new Set<string>()
+  const ids: string[] = []
   const source = node.data?.source
-  if (source?.kind === 'file' || source?.kind === 'clipboard-image') ids.add(source.resourceId as string)
+  if ((source?.kind === 'file' || source?.kind === 'clipboard-image') && source.resourceId) ids.push(source.resourceId)
   if (node.type === 'request') {
     const requestData = node.data as Partial<RequestNodeData>
     const references = [
@@ -424,8 +424,12 @@ function nodeResourceIds(node?: Node) {
       ...(requestData.video?.references || []),
     ]
     references.forEach((reference) => {
-      if (reference.resourceId) ids.add(reference.resourceId)
+      if (reference.resourceId) ids.push(reference.resourceId)
     })
+    // A request may use the same local Blob in multiple variants or roles.
+    // Keep one lease per actual reference so node deletion and duplication
+    // remain balanced.
+    return ids
   }
   const payload = node.data?.payload
   const media = payload?.kind === 'image' || payload?.kind === 'video'
@@ -439,10 +443,10 @@ function nodeResourceIds(node?: Node) {
         })
       : []
   media.forEach((item: any) => {
-    if (item?.resourceId) ids.add(item.resourceId)
-    if (item?.resource?.resourceId) ids.add(item.resource.resourceId)
+    if (item?.resourceId) ids.push(item.resourceId)
+    if (item?.resource?.resourceId) ids.push(item.resource.resourceId)
   })
-  return [...ids]
+  return [...new Set(ids)]
 }
 
 function isLocalMediaNode(node?: Node) {

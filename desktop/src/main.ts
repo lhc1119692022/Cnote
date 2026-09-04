@@ -2,9 +2,11 @@ import { app, BrowserWindow, dialog, ipcMain, Notification, session, shell } fro
 import path from 'node:path'
 import { existsSync, mkdirSync } from 'node:fs'
 import { DesktopRuntime } from './runtime/desktop-runtime'
+import { configureStorageLocation } from './runtime/storage-location'
 import type { NativeJobRequest, NativeNetworkJobRequest, RuntimeInfo } from './runtime/types'
 
 const currentDir = __dirname
+configureStorageLocation()
 let runtime: DesktopRuntime | null = null
 let mainWindow: BrowserWindow | null = null
 let rendererHealthTimer: NodeJS.Timeout | null = null
@@ -310,6 +312,11 @@ function registerIpcHandlers() {
   })
   ipcMain.handle('system:open-file', (_event, request: unknown) => getRuntime().ports.system.openFile(assertOpenFileRequest(request)))
   ipcMain.handle('system:save-file', (_event, request: unknown) => getRuntime().ports.system.saveFile(assertSaveFileRequest(request)))
+  ipcMain.handle('system:select-directory', (_event, request: unknown) => getRuntime().ports.system.selectDirectory(assertDirectoryDialogRequest(request)))
+  ipcMain.handle('system:get-storage-location', () => getRuntime().ports.system.getStorageLocation())
+  ipcMain.handle('system:set-storage-location', (_event, value: unknown) => getRuntime().ports.system.setStorageLocation(assertString(value, 'storage path')))
+  ipcMain.handle('system:reset-storage-location', () => getRuntime().ports.system.resetStorageLocation())
+  ipcMain.handle('system:restart', () => getRuntime().ports.system.restart())
 
   ipcMain.handle('jobs:list', () => getRuntime().ports.jobs.list())
   ipcMain.handle('jobs:create', (_event, kind: unknown, checkpoint: unknown) =>
@@ -438,6 +445,15 @@ function assertOpenFileRequest(value: unknown) {
   return {
     title: typeof input.title === 'string' ? input.title : undefined,
     filters: normalizeDialogFilters(input.filters),
+  }
+}
+
+function assertDirectoryDialogRequest(value: unknown) {
+  if (!value || typeof value !== 'object') return {}
+  const input = value as Record<string, unknown>
+  return {
+    title: typeof input.title === 'string' ? input.title : undefined,
+    defaultPath: typeof input.defaultPath === 'string' ? input.defaultPath : undefined,
   }
 }
 

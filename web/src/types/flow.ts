@@ -138,7 +138,7 @@ export interface DataPayload {
 export interface MindmapTreeNode { id: string; text: string; children: MindmapTreeNode[] }
 export interface MindmapPayload { kind: 'mindmap'; root: MindmapTreeNode; sourceMarkdown?: string }
 
-export interface RemoteMediaRef { url: string; resourceId?: string; mimeType?: string; width?: number; height?: number }
+export interface RemoteMediaRef { url: string; sourceUrl?: string; resourceId?: string; mimeType?: string; width?: number; height?: number }
 
 /** A media item kept by image/video nodes and passed through graph connections. */
 export interface ContentMediaItem {
@@ -342,6 +342,10 @@ export interface GenerationTaskRequestSnapshot {
   protocol?: string
   baseURL: string
   secretName?: string
+  mediaTransport?: 'auto' | 'multipart' | 'custom' | 'public-url'
+  mediaUploadPath?: string
+  mediaUploadURL?: string
+  mediaUploadSecretName?: string
   model: string
   config: GenerationVariantConfig
 }

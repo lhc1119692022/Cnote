@@ -40,9 +40,9 @@ async function withMockedFetch(handler, run) {
 
 const setup = await request('/')
 assert.equal(setup.status, 200)
-const setupText = await setup.text()
-assert.match(setupText, /https:\/\/worker\.example\.test/)
-assert.match(setupText, /不要在地址后追加 \/v1\/health/)
+const setupPayload = await setup.json()
+assert.equal(setupPayload.endpoint, 'https://worker.example.test')
+assert.equal(setupPayload.authenticationConfigured, true)
 
 const health = await request('/v1/health', { headers: allowedHeaders })
 assert.equal(health.status, 200)
@@ -67,15 +67,6 @@ assert.equal(preflight.headers.get('access-control-allow-origin'), 'https://app.
 const unauthenticated = await request('/v1/health', { headers: { Origin: 'https://app.example.test' } })
 assert.equal(unauthenticated.status, 401)
 assert.equal((await unauthenticated.json()).code, 'UNAUTHORIZED')
-
-globalThis.CNOTE_CONTENT_TOKEN = 'dashboard-content-token'
-const dashboardConfiguredHealth = await request('/v1/health', {
-  headers: { Authorization: 'Bearer dashboard-content-token' },
-}, {})
-assert.equal(dashboardConfiguredHealth.status, 200)
-const dashboardConfiguredUnauthorized = await request('/v1/health', {}, {})
-assert.equal(dashboardConfiguredUnauthorized.status, 401)
-delete globalThis.CNOTE_CONTENT_TOKEN
 
 const wrongOrigin = await request('/v1/health', {
   headers: { Origin: 'https://untrusted.example.test', Authorization: 'Bearer contract-test-token' },

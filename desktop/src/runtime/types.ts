@@ -71,6 +71,11 @@ export interface FileDialogFilter {
   extensions: string[]
 }
 
+export interface DirectoryDialogRequest {
+  title?: string
+  defaultPath?: string
+}
+
 export interface OpenFileRequest {
   title?: string
   filters?: FileDialogFilter[]
@@ -91,6 +96,11 @@ export interface OpenFileResult {
 export interface SystemPort {
   openFile(request?: OpenFileRequest): Promise<OpenFileResult | null>
   saveFile(request: SaveFileRequest): Promise<boolean>
+  selectDirectory(request?: DirectoryDialogRequest): Promise<string | null>
+  getStorageLocation(): Promise<import('./storage-location').StorageLocationInfo>
+  setStorageLocation(value: string): Promise<import('./storage-location').StorageLocationInfo>
+  resetStorageLocation(): Promise<import('./storage-location').StorageLocationInfo>
+  restart(): Promise<void>
 }
 
 export interface BrowserPort {

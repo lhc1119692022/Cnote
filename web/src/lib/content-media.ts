@@ -17,6 +17,40 @@ function singleItem(resource?: RemoteMediaRef, label?: string): ContentMediaItem
   return resource && (resource.url || resource.resourceId) ? [{ resource, label }] : []
 }
 
+function isLikelyDirectImageURL(value: string) {
+  try {
+    return /\.(?:png|jpe?g|gif|webp|avif|svg)(?:$|\/)/i.test(new URL(value).pathname)
+  } catch {
+    return false
+  }
+}
+
+function sourceMediaItem(data: ContentNodeData, kind: ContentMediaKind, label?: string): ContentMediaItem[] {
+  const source = data.source
+  if (!source) return []
+
+  if (source.kind === 'file' || source.kind === 'clipboard-image') {
+    const mimeType = source.mimeType.toLowerCase()
+    const matchesKind = kind === 'image' ? mimeType.startsWith('image/') : mimeType.startsWith('video/')
+    return matchesKind
+      ? singleItem({ url: '', resourceId: source.resourceId, mimeType }, label)
+      : []
+  }
+
+  if (source.kind === 'url') {
+    // Keep a preview URL for the canvas while retaining the original URL for
+    // generation inputs. A page thumbnail is not necessarily the provider's source.
+    const directImage = kind === 'image' && isLikelyDirectImageURL(source.normalizedUrl)
+    const previewUrl = data.preview?.thumbnailUrl
+    return singleItem({
+      url: previewUrl || source.normalizedUrl,
+      sourceUrl: directImage || !previewUrl ? source.normalizedUrl : undefined,
+    }, label)
+  }
+
+  return []
+}
+
 /** Returns a normalized media collection from social, image, or video content. */
 export function getNodeMediaItems(node: Pick<Node, 'type' | 'data'> | undefined, kind: ContentMediaKind): ContentMediaItem[] {
   if (!node || node.type !== 'content') return []
@@ -35,9 +69,11 @@ export function getNodeMediaItems(node: Pick<Node, 'type' | 'data'> | undefined,
   }
 
   if (kind === 'image' && payload?.kind === 'image') {
-    return uniqueMediaItems(payload.resources?.length ? payload.resources : singleItem(
+    const label = payload.alt || data.preview?.title
+    const fallback = sourceMediaItem(data, kind, label)
+    return uniqueMediaItems(payload.resources?.length ? payload.resources : fallback.length ? fallback : singleItem(
       data.preview?.thumbnailUrl ? { url: data.preview.thumbnailUrl, width: payload.width, height: payload.height } : undefined,
-      payload.alt || data.preview?.title,
+      label,
     ))
   }
 
@@ -46,12 +82,11 @@ export function getNodeMediaItems(node: Pick<Node, 'type' | 'data'> | undefined,
     // directly playable <video> resources. Treat only explicit media
     // resources or direct-video payloads as items for the native player.
     if (payload.provider === 'youtube' || payload.playback === 'embed' || payload.playback === 'preview' || payload.playback === 'audio') return []
-    return uniqueMediaItems(payload.resources?.length ? payload.resources : singleItem(
-      payload.playback === 'video' && payload.url
-        ? { url: payload.url, width: payload.width, height: payload.height }
-        : undefined,
-      payload.title || data.preview?.title,
-    ))
+    const label = payload.title || data.preview?.title
+    const fallback = payload.playback === 'video' && payload.url
+      ? singleItem({ url: payload.url, width: payload.width, height: payload.height }, label)
+      : sourceMediaItem(data, kind, label)
+    return uniqueMediaItems(payload.resources?.length ? payload.resources : fallback)
   }
 
   return []

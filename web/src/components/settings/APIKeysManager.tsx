@@ -2,11 +2,13 @@ import { useCallback, useEffect, useRef, useState, type ChangeEvent } from 'reac
 import { useSearchParams } from 'react-router-dom'
 import {
   Check,
+  CheckCircle2,
   ChevronDown,
+  Cloud,
   Database,
   Download,
-  ExternalLink,
   HardDrive,
+  FolderOpen,
   KeyRound,
   Pencil,
   Plus,
@@ -17,15 +19,17 @@ import {
   X,
 } from 'lucide-react'
 import { AppShell } from '@/components/layout/AppShell'
-import { Button, buttonVariants } from '@/components/ui/button'
+import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { ContentServiceSettings } from '@/components/settings/ContentServiceSettings'
 import { GenerationChannelsManager } from '@/components/settings/GenerationChannelsManager'
-import { AI_PROXY_WORKER_GUIDE_URL } from '@/config/links'
 import { AIClient, PROVIDERS, getProvider, inferProviderId, validateAPIKey, type ProtocolType } from '@/lib/api'
 import { localForageStorage } from '@/lib/localforage-storage'
+import { MAX_BROWSER_STORAGE_BYTES } from '@/lib/resource-storage'
 import { useAIStore, type APIChannel, type APIChannelInput } from '@/stores/use-ai-store'
 import { useFlowStore } from '@/stores/use-flow-store'
+import { useGenerationStore } from '@/stores/use-generation-store'
+import { MEDIA_STORAGE_DEFAULTS, useMediaStorageStore, type MediaStorageObject } from '@/stores/use-media-storage-store'
 import { useSourceStore } from '@/stores/use-source-store'
 import { useTemplateStore } from '@/stores/use-template-store'
 
@@ -83,6 +87,8 @@ export function APIKeysManager() {
     getProxyHeaderValue,
   } = useAIStore()
   const flowCount = useFlowStore((state) => state.flows.length)
+  const generationChannels = useGenerationStore((state) => state.channels)
+  const mediaStorage = useMediaStorageStore()
   const sourceCount = useSourceStore((state) => state.sources.length)
   const templateCount = useTemplateStore((state) => state.templates.length)
   const isDesktopRuntime = typeof window !== 'undefined' && Boolean(window.cnoteDesktop)
@@ -108,6 +114,20 @@ export function APIKeysManager() {
   const [connectionMessage, setConnectionMessage] = useState('')
   const [storageEstimate, setStorageEstimate] = useState<StorageEstimate>({ usage: 0, quota: 0 })
   const [storageBreakdown, setStorageBreakdown] = useState<StorageBreakdown>({ flows: 0, templates: 0, sources: 0, channels: 0 })
+  const [desktopStorageLocation, setDesktopStorageLocation] = useState<Awaited<ReturnType<NonNullable<Window['cnoteDesktop']>['system']['getStorageLocation']>> | null>(null)
+  const [desktopStorageBusy, setDesktopStorageBusy] = useState(false)
+  const [desktopStorageMessage, setDesktopStorageMessage] = useState('')
+  const [mediaBaseURL, setMediaBaseURL] = useState('')
+  const [mediaUploadPath, setMediaUploadPath] = useState(MEDIA_STORAGE_DEFAULTS.uploadPath)
+  const [mediaFieldName, setMediaFieldName] = useState(MEDIA_STORAGE_DEFAULTS.fieldName)
+  const [mediaResponsePath, setMediaResponsePath] = useState(MEDIA_STORAGE_DEFAULTS.responsePath)
+  const [mediaAccessToken, setMediaAccessToken] = useState('')
+  const [mediaTesting, setMediaTesting] = useState(false)
+  const [mediaRefreshing, setMediaRefreshing] = useState(false)
+  const [mediaMessage, setMediaMessage] = useState('')
+  const [mediaObjects, setMediaObjects] = useState<MediaStorageObject[]>([])
+  const [mediaObjectsCursor, setMediaObjectsCursor] = useState<string | undefined>()
+  const [mediaDeletingKey, setMediaDeletingKey] = useState<string | null>(null)
   const importInputRef = useRef<HTMLInputElement>(null)
   const modelRequestRef = useRef<Promise<string[]> | null>(null)
   const protocolMenuRef = useRef<HTMLDivElement>(null)
@@ -121,9 +141,26 @@ export function APIKeysManager() {
       getPersistedStateSize('cnote-sources'),
       getPersistedStateSize('cnote-ai'),
     ])
-    setStorageEstimate({ usage: estimate.usage || 0, quota: estimate.quota || 0 })
+    setStorageEstimate({
+      usage: Math.min(estimate.usage || 0, MAX_BROWSER_STORAGE_BYTES),
+      quota: Math.min(estimate.quota || MAX_BROWSER_STORAGE_BYTES, MAX_BROWSER_STORAGE_BYTES),
+    })
     setStorageBreakdown({ flows, templates, sources, channels })
   }, [])
+
+  const refreshDesktopStorageLocation = useCallback(async () => {
+    if (!isDesktopRuntime || !window.cnoteDesktop) return
+    try {
+      setDesktopStorageLocation(await window.cnoteDesktop.system.getStorageLocation())
+      setDesktopStorageMessage('')
+    } catch (error) {
+      setDesktopStorageMessage(error instanceof Error ? error.message : '无法读取桌面存储位置')
+    }
+  }, [isDesktopRuntime])
+
+  const refreshStorageOverview = useCallback(async () => {
+    await Promise.all([refreshStorageEstimate(), refreshDesktopStorageLocation()])
+  }, [refreshDesktopStorageLocation, refreshStorageEstimate])
 
   useEffect(() => {
     initializeDefaultChannels()
@@ -145,8 +182,46 @@ export function APIKeysManager() {
   }, [showProtocolMenu])
 
   useEffect(() => {
-    if (activeTab === 'storage') void refreshStorageEstimate()
-  }, [activeTab, refreshStorageEstimate])
+    if (activeTab !== 'storage') return
+    void refreshStorageOverview()
+  }, [activeTab, refreshStorageOverview])
+
+  useEffect(() => {
+    setMediaBaseURL(mediaStorage.baseURL)
+    setMediaUploadPath(mediaStorage.uploadPath || MEDIA_STORAGE_DEFAULTS.uploadPath)
+    setMediaFieldName(mediaStorage.fieldName || MEDIA_STORAGE_DEFAULTS.fieldName)
+    setMediaResponsePath(mediaStorage.responsePath || MEDIA_STORAGE_DEFAULTS.responsePath)
+    setMediaAccessToken(mediaStorage.getAccessToken())
+  }, [mediaStorage])
+
+  useEffect(() => {
+    if (mediaStorage.baseURL) return
+    const legacyChannels = generationChannels.filter((channel) => channel.mediaUploadURL)
+    const legacy = legacyChannels[0]
+    if (!legacy?.mediaUploadURL) return
+    try {
+      const parsed = new URL(legacy.mediaUploadURL)
+      const path = parsed.pathname.replace(/\/$/, '') || '/upload'
+      const slash = path.lastIndexOf('/')
+      const baseURL = `${parsed.origin}${slash > 0 ? path.slice(0, slash) : ''}`
+      const uploadPath = slash > 0 ? path.slice(slash) : path
+      mediaStorage.updateSettings({
+        baseURL,
+        uploadPath,
+        fieldName: legacy.mediaUploadField || MEDIA_STORAGE_DEFAULTS.fieldName,
+        responsePath: legacy.mediaUploadResponsePath || MEDIA_STORAGE_DEFAULTS.responsePath,
+        accessToken: legacy.mediaUploadApiKey || '',
+      })
+      legacyChannels.forEach((channel) => useGenerationStore.getState().updateChannel(channel.id, {
+        mediaUploadURL: undefined,
+        mediaUploadApiKey: '',
+        encryptedMediaUploadKey: undefined,
+      }))
+      setMediaMessage('已把旧渠道中的自定义上传配置迁移到这里，请检查后测试。')
+    } catch {
+      // Keep the legacy channel fallback for malformed historical values.
+    }
+  }, [generationChannels, mediaStorage])
 
   useEffect(() => {
     const nextTab = isSettingsTab(requestedTab) ? requestedTab : 'channels'
@@ -156,6 +231,121 @@ export function APIKeysManager() {
   const selectTab = (tab: SettingsTab) => {
     setActiveTab(tab)
     setSearchParams(tab === 'channels' ? {} : { tab })
+  }
+
+  const mediaDraft = () => ({
+    baseURL: mediaBaseURL.trim(),
+    uploadPath: mediaUploadPath.trim() || MEDIA_STORAGE_DEFAULTS.uploadPath,
+    fieldName: mediaFieldName.trim() || MEDIA_STORAGE_DEFAULTS.fieldName,
+    responsePath: mediaResponsePath.trim() || MEDIA_STORAGE_DEFAULTS.responsePath,
+    accessToken: mediaAccessToken,
+  })
+
+  const testMediaStorage = async () => {
+    if (mediaTesting) return
+    setMediaTesting(true)
+    setMediaMessage('')
+    try {
+      const draft = mediaDraft()
+      const health = await mediaStorage.testConnection(draft)
+      try {
+        await mediaStorage.refreshUsage({ baseURL: draft.baseURL, accessToken: draft.accessToken })
+      } catch (error) {
+        // A custom service may omit the optional usage API. The bundled Worker
+        // exposes it, so its authentication failures must remain visible.
+        const message = error instanceof Error ? error.message : ''
+        if (health.uploadConfigured !== undefined || !message.includes('404')) throw error
+      }
+      setMediaMessage(`连接成功${health.version ? `，服务版本 ${health.version}` : ''}`)
+    } catch (error) {
+      setMediaMessage(error instanceof Error ? error.message : '无法连接媒体上传服务')
+    } finally {
+      setMediaTesting(false)
+    }
+  }
+
+  const refreshMediaUsage = async () => {
+    if (mediaRefreshing) return
+    setMediaRefreshing(true)
+    setMediaMessage('')
+    try {
+      const usage = await mediaStorage.refreshUsage({ baseURL: mediaBaseURL, accessToken: mediaAccessToken })
+      setMediaMessage(`已更新远端用量：${usage.objectCount} 个对象，${formatBytes(usage.totalBytes)}`)
+    } catch (error) {
+      setMediaMessage(error instanceof Error ? error.message : '无法读取远端用量')
+    } finally {
+      setMediaRefreshing(false)
+    }
+  }
+
+  const loadMediaObjects = async (cursor?: string) => {
+    try {
+      const result = await mediaStorage.listObjects({
+        limit: 50,
+        cursor,
+        draft: { baseURL: mediaBaseURL, accessToken: mediaAccessToken },
+      })
+      setMediaObjects((current) => cursor ? [...current, ...result.objects] : result.objects)
+      setMediaObjectsCursor(result.cursor)
+    } catch (error) {
+      setMediaMessage(error instanceof Error ? error.message : '无法读取远端对象')
+    }
+  }
+
+  const deleteMediaObject = async (object: MediaStorageObject) => {
+    if (!confirm(`确定删除远端对象“${object.originalName || object.key}”吗？删除后，使用该地址的任务将无法再读取素材。`)) return
+    setMediaDeletingKey(object.key)
+    try {
+      await mediaStorage.deleteObject(object.key, { baseURL: mediaBaseURL, accessToken: mediaAccessToken })
+      setMediaObjects((current) => current.filter((item) => item.key !== object.key))
+      await mediaStorage.refreshUsage({ baseURL: mediaBaseURL, accessToken: mediaAccessToken }).catch(() => undefined)
+      setMediaMessage('远端对象已删除')
+    } catch (error) {
+      setMediaMessage(error instanceof Error ? error.message : '删除远端对象失败')
+    } finally {
+      setMediaDeletingKey(null)
+    }
+  }
+
+  const chooseDesktopStorageLocation = async () => {
+    if (!isDesktopRuntime || !window.cnoteDesktop || desktopStorageBusy) return
+    setDesktopStorageBusy(true)
+    setDesktopStorageMessage('')
+    try {
+      const selected = await window.cnoteDesktop.system.selectDirectory({
+        title: '选择 Cnote 浏览器缓存与本地数据位置',
+        defaultPath: desktopStorageLocation?.configuredPath || desktopStorageLocation?.currentPath,
+      })
+      if (!selected) return
+      const next = await window.cnoteDesktop.system.setStorageLocation(selected)
+      setDesktopStorageLocation(next)
+      setDesktopStorageMessage('新位置将在重启 Cnote 后生效；当前数据仍保留在原位置。')
+    } catch (error) {
+      setDesktopStorageMessage(error instanceof Error ? error.message : '无法设置桌面存储位置')
+    } finally {
+      setDesktopStorageBusy(false)
+    }
+  }
+
+  const resetDesktopStorageLocation = async () => {
+    if (!isDesktopRuntime || !window.cnoteDesktop || desktopStorageBusy) return
+    if (!confirm('恢复默认位置后，重启 Cnote 才会生效。是否继续？')) return
+    setDesktopStorageBusy(true)
+    setDesktopStorageMessage('')
+    try {
+      const next = await window.cnoteDesktop.system.resetStorageLocation()
+      setDesktopStorageLocation(next)
+      setDesktopStorageMessage('已恢复默认位置，重启 Cnote 后生效。')
+    } catch (error) {
+      setDesktopStorageMessage(error instanceof Error ? error.message : '无法恢复默认存储位置')
+    } finally {
+      setDesktopStorageBusy(false)
+    }
+  }
+
+  const restartDesktop = () => {
+    if (!isDesktopRuntime || !window.cnoteDesktop) return
+    void window.cnoteDesktop.system.restart()
   }
 
   const resetChannelDialog = () => {
@@ -244,7 +434,7 @@ export function APIKeysManager() {
       setConnectionMessage(ids.length ? `已拉取 ${ids.length} 个模型，请选择要启用的模型` : '连接成功，但接口没有返回模型')
     } catch (error) {
       const message = error instanceof TypeError
-        ? '第三方 API 跨域错误！请查看下方的 AI 代理部署文档。'
+        ? '浏览器无法直接访问该接口，请改用支持跨域的端点或你信任的代理地址。'
         : error instanceof Error ? error.message : '拉取模型失败'
       setConnectionMessage(message)
     } finally {
@@ -360,17 +550,17 @@ export function APIKeysManager() {
     : `${usagePercent.toFixed(2)}%`
 
   const dataRows = [
-    { label: 'Flow', description: '工作流与画板数据', count: flowCount, size: storageBreakdown.flows },
-    { label: '模板', description: '保存的 Flow 模板', count: templateCount, size: storageBreakdown.templates },
-    { label: '内容', description: '内容库中的素材', count: sourceCount, size: storageBreakdown.sources },
-    { label: '渠道配置', description: '加密保存在本机的 API 渠道', count: apiKeys.length, size: storageBreakdown.channels },
+    { label: 'Flow', count: flowCount, size: storageBreakdown.flows },
+    { label: '模板', count: templateCount, size: storageBreakdown.templates },
+    { label: '内容', count: sourceCount, size: storageBreakdown.sources },
+    { label: '渠道配置', count: apiKeys.length, size: storageBreakdown.channels },
   ]
 
   return (
     <AppShell>
       <main className="flex h-full min-w-0 flex-col overflow-hidden">
         <header className="flex h-[60px] shrink-0 items-center justify-between border-b border-border bg-card px-6">
-          <h1 className="text-[15px] font-semibold text-foreground">渠道</h1>
+          <h1 className="text-[15px] font-semibold text-foreground">设置</h1>
           <div className="flex items-center gap-2">
             {activeTab === 'channels' && (
               <>
@@ -437,42 +627,82 @@ export function APIKeysManager() {
           ) : (
             <section>
               <div className="rounded-xl border border-border bg-card p-5">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div className="flex items-center gap-2"><Database className="h-4 w-4 text-muted-foreground" /><h2 className="text-sm font-medium">浏览器存储</h2></div>
+                  <Button variant="secondary" size="sm" className="gap-1.5" onClick={() => void refreshStorageOverview()}><RefreshCw className="h-3.5 w-3.5" />刷新</Button>
+                </div>
+
+                <div className="mt-4 flex flex-wrap items-baseline gap-x-7 gap-y-2 text-[12px]">
+                  <div className="flex items-baseline gap-2"><span className="text-muted-foreground">已使用</span><span className="text-sm font-medium">{formatBytes(storageEstimate.usage)}</span></div>
+                  <div className="flex items-baseline gap-2"><span className="text-muted-foreground">上限</span><span className="text-sm font-medium">{formatBytes(MAX_BROWSER_STORAGE_BYTES)}</span></div>
+                  <div className="flex items-baseline gap-2"><span className="text-muted-foreground">可用</span><span className="text-sm font-medium">{formatBytes(Math.max(storageEstimate.quota - storageEstimate.usage, 0))}</span></div>
+                </div>
+
+                <div className="mt-4 flex items-center justify-between text-[11px] text-muted-foreground"><span>使用率</span><span>{formattedUsagePercent}</span></div>
+                <div className="mt-2 h-2 overflow-hidden rounded-full bg-muted"><div className="h-full rounded-full bg-primary transition-all" style={{ width: `${usagePercent}%` }} /></div>
+
+              <div className="mt-5 border-t border-border pt-4">
+                <div className="grid gap-x-6 gap-y-3 sm:grid-cols-2 lg:grid-cols-4">
+                  {dataRows.map((row) => (
+                    <div key={row.label} className="min-w-0">
+                      <div className="flex items-center justify-between gap-3"><span className="text-[12px] text-muted-foreground">{row.label}</span><span className="text-[12px] font-medium">{formatBytes(row.size)}</span></div>
+                      <p className="mt-1 text-[11px] text-muted-foreground">{row.count} 项</p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {isDesktopRuntime && <div className="mt-5 border-t border-border pt-4">
+                <div className="flex items-center gap-2"><HardDrive className="h-4 w-4 text-muted-foreground" /><h2 className="text-sm font-medium">桌面端缓存与本地数据</h2></div>
+                <div className="mt-3 flex flex-wrap items-baseline gap-x-3 gap-y-1 text-[12px]"><span className="text-muted-foreground">当前位置</span><span className="min-w-0 break-all text-foreground">{desktopStorageLocation?.currentPath || '读取中…'}</span></div>
+                {desktopStorageLocation?.configuredPath && desktopStorageLocation.configuredPath !== desktopStorageLocation.currentPath && <p className="mt-1 break-all text-[11px] text-muted-foreground">下次启动：{desktopStorageLocation.configuredPath}</p>}
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <Button size="sm" className="gap-1.5" disabled={desktopStorageBusy} onClick={() => void chooseDesktopStorageLocation()}><FolderOpen className="h-3.5 w-3.5" />选择位置</Button>
+                  <Button variant="secondary" size="sm" disabled={desktopStorageBusy || !desktopStorageLocation?.configuredPath} onClick={() => void resetDesktopStorageLocation()}>恢复默认</Button>
+                  {desktopStorageLocation?.restartRequired && <Button variant="outline" size="sm" className="gap-1.5" onClick={restartDesktop}><RefreshCw className="h-3.5 w-3.5" />立即重启</Button>}
+                </div>
+                {desktopStorageMessage && <p className="mt-3 text-[12px] leading-relaxed text-muted-foreground">{desktopStorageMessage}</p>}
+              </div>}
+              </div>
+
+              <div className="mt-5 rounded-xl border border-border bg-card p-5">
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <div>
-                    <div className="flex items-center gap-2"><Database className="h-4 w-4 text-muted-foreground" /><h2 className="text-sm font-medium">浏览器存储</h2></div>
-                    <p className="mt-1.5 text-[12px] text-muted-foreground">浏览器配额是当前网站可使用的本地存储上限估算，不是云端或账号额度</p>
+                    <div className="flex items-center gap-2"><Cloud className="h-4 w-4 text-muted-foreground" /><h2 className="text-sm font-medium">自定义媒体存储</h2>{mediaStorage.enabled && mediaStorage.health?.ok && <span className="inline-flex items-center gap-1 rounded-full border border-emerald-300 bg-emerald-50 px-2 py-0.5 text-[10px] text-emerald-700 dark:border-emerald-800 dark:bg-emerald-950/30 dark:text-emerald-300"><CheckCircle2 className="h-3 w-3" />已连接</span>}</div>
+                    <p className="mt-1.5 text-[12px] text-muted-foreground">用于把本地图片、视频、音频等参考素材转换为无需登录即可读取的 HTTPS 地址。</p>
                   </div>
-                  <Button variant="secondary" size="sm" className="gap-1.5" onClick={() => void refreshStorageEstimate()}><RefreshCw className="h-3.5 w-3.5" />刷新</Button>
+                  {mediaStorage.usage && <span className="text-[11px] text-muted-foreground">上次更新 {new Date(mediaStorage.usage.fetchedAt).toLocaleString()}</span>}
                 </div>
 
-                <div className="mt-5 grid gap-3" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))' }}>
-                  <div className="rounded-lg bg-muted/50 px-4 py-3.5"><p className="text-[11px] text-muted-foreground">已使用</p><p className="mt-1.5 text-lg font-medium">{formatBytes(storageEstimate.usage)}</p></div>
-                  <div className="rounded-lg bg-muted/50 px-4 py-3.5"><p className="text-[11px] text-muted-foreground">浏览器配额</p><p className="mt-1.5 text-lg font-medium">{formatBytes(storageEstimate.quota)}</p></div>
-                  <div className="rounded-lg bg-muted/50 px-4 py-3.5"><p className="text-[11px] text-muted-foreground">可用空间</p><p className="mt-1.5 text-lg font-medium">{formatBytes(Math.max(storageEstimate.quota - storageEstimate.usage, 0))}</p></div>
+                <div className="mt-5 grid gap-4 md:grid-cols-2">
+                  <label className="block text-[13px] text-muted-foreground"><span className="mb-2 block font-medium">服务地址</span><input value={mediaBaseURL} onChange={(event) => { setMediaBaseURL(event.target.value); setMediaMessage('') }} placeholder="https://cnote-media.your-name.workers.dev" className="h-10 w-full rounded-lg border border-border bg-background px-3 text-foreground outline-none focus:border-primary focus:ring-2 focus:ring-ring/20" /></label>
+                  <label className="block text-[13px] text-muted-foreground"><span className="mb-2 block font-medium">访问令牌</span><input type="password" value={mediaAccessToken} onChange={(event) => { setMediaAccessToken(event.target.value); setMediaMessage('') }} placeholder="与 Worker 的 CN_MEDIA_UPLOAD_TOKEN 一致" className="h-10 w-full rounded-lg border border-border bg-background px-3 text-foreground outline-none focus:border-primary focus:ring-2 focus:ring-ring/20" /></label>
                 </div>
 
-                <div className="mt-5 flex items-center justify-between text-[12px] text-muted-foreground"><span>当前站点占浏览器配额</span><span>{formattedUsagePercent}</span></div>
-                <div className="mt-2 h-2 overflow-hidden rounded-full bg-muted"><div className="h-full rounded-full bg-primary transition-all" style={{ width: `${usagePercent}%` }} /></div>
-              </div>
-
-              <div className="mt-4 grid gap-3" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))' }}>
-                {dataRows.map((row) => (
-                  <div key={row.label} className="flex items-center justify-between gap-4 rounded-xl border border-border bg-card p-4">
-                    <div className="min-w-0"><p className="text-[13px] font-medium">{row.label}</p><p className="mt-1 truncate text-[11px] text-muted-foreground">{row.description}</p></div>
-                    <div className="shrink-0 text-right">
-                      <p className="text-[13px] font-medium">{formatBytes(row.size)}</p>
-                      <p className="mt-1 text-[10px] text-muted-foreground">约 {row.count} 项</p>
-                    </div>
+                <details className="group mt-4 rounded-lg border border-border bg-muted/25 px-3.5 py-3">
+                  <summary className="flex cursor-pointer list-none items-center justify-between gap-3 text-[12px] font-medium"><span>上传接口选项</span><ChevronDown className="h-4 w-4 text-muted-foreground transition-transform group-open:rotate-180" /></summary>
+                  <div className="mt-3 grid gap-3 md:grid-cols-3">
+                    <label className="block text-[12px] text-muted-foreground"><span className="mb-1.5 block font-medium">上传路径</span><input value={mediaUploadPath} onChange={(event) => setMediaUploadPath(event.target.value)} placeholder="/upload" className="h-9 w-full rounded-lg border border-border bg-background px-3 text-foreground outline-none focus:border-primary focus:ring-2 focus:ring-ring/20" /></label>
+                    <label className="block text-[12px] text-muted-foreground"><span className="mb-1.5 block font-medium">文件字段</span><input value={mediaFieldName} onChange={(event) => setMediaFieldName(event.target.value)} placeholder="file" className="h-9 w-full rounded-lg border border-border bg-background px-3 text-foreground outline-none focus:border-primary focus:ring-2 focus:ring-ring/20" /></label>
+                    <label className="block text-[12px] text-muted-foreground"><span className="mb-1.5 block font-medium">响应 URL 路径</span><input value={mediaResponsePath} onChange={(event) => setMediaResponsePath(event.target.value)} placeholder="url" className="h-9 w-full rounded-lg border border-border bg-background px-3 text-foreground outline-none focus:border-primary focus:ring-2 focus:ring-ring/20" /></label>
                   </div>
-                ))}
+                </details>
+
+                <div className="mt-4 flex flex-wrap gap-2">
+                  <Button size="sm" className="gap-1.5" disabled={mediaTesting || !mediaBaseURL.trim()} onClick={() => void testMediaStorage()}><RefreshCw className={`h-3.5 w-3.5 ${mediaTesting ? 'animate-spin' : ''}`} />{mediaTesting ? '正在测试' : '测试并保存'}</Button>
+                  <Button variant="secondary" size="sm" className="gap-1.5" disabled={mediaRefreshing || !mediaBaseURL.trim()} onClick={() => void refreshMediaUsage()}><RefreshCw className={`h-3.5 w-3.5 ${mediaRefreshing ? 'animate-spin' : ''}`} />刷新远端用量</Button>
+                  {(mediaStorage.baseURL || mediaBaseURL) && <Button variant="outline" size="sm" className="gap-1.5 text-destructive" onClick={() => { if (!confirm('确定清除自定义媒体存储配置吗？远端对象不会被删除。')) return; mediaStorage.clearSettings(); setMediaBaseURL(''); setMediaAccessToken(''); setMediaObjects([]); setMediaObjectsCursor(undefined); setMediaMessage('已清除配置；远端对象仍保留。') }}><Trash2 className="h-3.5 w-3.5" />清除配置</Button>}
+                </div>
+                {mediaMessage && <p className={`mt-3 text-[12px] leading-5 ${mediaMessage.startsWith('连接成功') || mediaMessage.includes('已更新') ? 'text-emerald-600 dark:text-emerald-400' : 'text-muted-foreground'}`}>{mediaMessage}</p>}
+
+                {mediaStorage.usage && <div className="mt-5 grid gap-3 sm:grid-cols-2"><div className="rounded-lg bg-muted/50 px-4 py-3"><p className="text-[11px] text-muted-foreground">远端对象</p><p className="mt-1.5 text-lg font-medium">{mediaStorage.usage.objectCount}</p></div><div className="rounded-lg bg-muted/50 px-4 py-3"><p className="text-[11px] text-muted-foreground">远端占用</p><p className="mt-1.5 text-lg font-medium">{formatBytes(mediaStorage.usage.totalBytes)}</p></div></div>}
+
+                <div className="mt-5 flex flex-wrap items-center justify-between gap-2 border-t border-border pt-4"><div><h3 className="text-[12px] font-medium">远端对象</h3><p className="mt-1 text-[11px] text-muted-foreground">只删除你确认不再被任何 Flow 或任务使用的对象。</p></div><Button variant="outline" size="sm" className="gap-1.5" disabled={!mediaBaseURL.trim()} onClick={() => void loadMediaObjects()}><RefreshCw className="h-3.5 w-3.5" />查看对象</Button></div>
+                {mediaObjects.length > 0 && <div className="mt-3 space-y-2">{mediaObjects.map((object) => <article key={object.key} className="flex items-center justify-between gap-3 rounded-lg border border-border bg-background px-3 py-2.5"><div className="min-w-0"><p className="truncate text-[12px] font-medium">{object.originalName || object.key}</p><p className="mt-1 truncate text-[10px] text-muted-foreground">{formatBytes(object.size)}{object.uploaded ? ` · ${new Date(object.uploaded).toLocaleString()}` : ''}</p></div><Button variant="outline" size="icon-sm" aria-label={`删除远端对象 ${object.originalName || object.key}`} disabled={mediaDeletingKey === object.key} onClick={() => void deleteMediaObject(object)}><Trash2 className="h-3.5 w-3.5 text-destructive" /></Button></article>)}{mediaObjectsCursor && <Button variant="secondary" size="sm" className="mt-2 w-full" onClick={() => void loadMediaObjects(mediaObjectsCursor)}>加载更多</Button>}</div>}
+
               </div>
 
-              <p className="mt-2 text-[10px] text-muted-foreground">分类大小按已保存数据的序列化内容估算，不包含浏览器索引等额外开销。</p>
-
-              <div className="mt-4 flex gap-3 rounded-lg bg-muted/55 px-3.5 py-3">
-                <HardDrive className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
-                <div><h2 className="text-[12px] font-medium">当前仅本地保存</h2><p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">尚未启用跨设备同步，请定期导出配置并妥善备份重要 Flow。</p></div>
-              </div>
+              <p className="mt-4 flex items-center gap-2 px-1 text-[11px] text-muted-foreground"><HardDrive className="h-3.5 w-3.5 shrink-0" /><span>当前仅本地保存，未启用跨设备同步。</span></p>
             </section>
           )}
         </div>
@@ -509,24 +739,12 @@ export function APIKeysManager() {
 
           {!isDesktopRuntime && <details className="group mt-4 rounded-lg border border-border bg-muted/30 p-3.5">
             <summary className="flex cursor-pointer list-none items-center justify-between gap-3 text-[13px] font-medium">
-              <span className="flex items-center gap-2"><ShieldCheck className="h-4 w-4 text-muted-foreground" />第三方 API 跨域错误！</span>
+              <span className="flex items-center gap-2"><ShieldCheck className="h-4 w-4 text-muted-foreground" />代理请求头（可选）</span>
               <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground transition-transform group-open:rotate-180" />
             </summary>
-
-            <div className="mt-3 flex flex-wrap items-start justify-between gap-3">
-              <p className="max-w-[390px] text-[11px] leading-relaxed text-muted-foreground">一个 Worker 可以配置多条第三方线路。部署后打开 Worker 根地址，复制页面中已经拼好的“Worker 地址/proxy/线路名”。</p>
-              <a href={AI_PROXY_WORKER_GUIDE_URL} target="_blank" rel="noreferrer" className={buttonVariants({ variant: 'secondary', size: 'sm', className: 'gap-1.5' })}><ExternalLink className="h-3.5 w-3.5" />查看部署文档</a>
-            </div>
-
-            <div className="mt-4 border-t border-border pt-4">
-              <div>
-                <h3 className="text-[12px] font-medium text-foreground">代理访问校验 <span className="font-normal text-muted-foreground">（可选）</span></h3>
-                <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">把 Worker 脚本顶部的请求头名称和值原样填到这里。已有渠道的请求头值留空会保持不变。</p>
-              </div>
-              <div className="mt-3 grid gap-3" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))' }}>
-                <label className="block text-[12px] text-muted-foreground"><span className="mb-1.5 block">请求头名称</span><input value={proxyHeaderName} onChange={(event) => setProxyHeaderName(event.target.value)} placeholder="如：X-Cnote-Access" className="h-9 w-full rounded-lg border border-border bg-background px-3 text-foreground outline-none focus:border-primary focus:ring-2 focus:ring-ring/20" /></label>
-                <label className="block text-[12px] text-muted-foreground"><span className="mb-1.5 block">请求头值 {editingChannelId && <span>（留空保持不变）</span>}</span><input type="password" value={proxyHeaderValue} onChange={(event) => setProxyHeaderValue(event.target.value)} placeholder={editingChannelId ? '留空保持现有值' : '输入随机请求头值'} className="h-9 w-full rounded-lg border border-border bg-background px-3 text-foreground outline-none focus:border-primary focus:ring-2 focus:ring-ring/20" /></label>
-              </div>
+            <div className="mt-3 grid gap-3" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))' }}>
+              <label className="block text-[12px] text-muted-foreground"><span className="mb-1.5 block">请求头名称</span><input value={proxyHeaderName} onChange={(event) => setProxyHeaderName(event.target.value)} placeholder="如：X-Cnote-Access" className="h-9 w-full rounded-lg border border-border bg-background px-3 text-foreground outline-none focus:border-primary focus:ring-2 focus:ring-ring/20" /></label>
+              <label className="block text-[12px] text-muted-foreground"><span className="mb-1.5 block">请求头值 {editingChannelId && <span>（留空保持不变）</span>}</span><input type="password" value={proxyHeaderValue} onChange={(event) => setProxyHeaderValue(event.target.value)} placeholder={editingChannelId ? '留空保持现有值' : '输入请求头值'} className="h-9 w-full rounded-lg border border-border bg-background px-3 text-foreground outline-none focus:border-primary focus:ring-2 focus:ring-ring/20" /></label>
             </div>
           </details>}
 

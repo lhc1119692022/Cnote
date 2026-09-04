@@ -7,6 +7,8 @@ import type { GenerationCapability } from '@/types/flow'
 
 export type GenerationProviderId = '808' | 'newapi' | 'meaicc' | 'fmage' | 'custom'
 export type GenerationProtocolId = 'openai-images' | 'gemini-generate-content' | 'zenmux-vertex' | 'openai-images-808' | '808-video' | 'meaicc-video' | 'generic-video' | 'newapi'
+/** How local video references become provider-readable inputs. */
+export type GenerationMediaTransport = 'auto' | 'multipart' | 'custom' | 'public-url'
 export type GenerationNodeVariant = 'image' | 'video'
 
 export interface GenerationModel {
@@ -47,10 +49,20 @@ export interface GenerationChannel {
   supportsVideo?: boolean
   /** One connection can expose multiple request contracts. */
   adapters?: GenerationAdapter[]
-  /** How local references are handed to a provider. */
-  mediaTransport?: 'auto' | 'multipart' | 'public-url'
-  /** Optional provider upload endpoint used by the auto/multipart strategy. */
+  /** How local video references are handed to a provider. */
+  mediaTransport?: GenerationMediaTransport
+  /** Optional provider-relative upload endpoint used by auto/multipart. */
   mediaUploadPath?: string
+  /** Full custom upload service URL used when mediaTransport is custom. */
+  mediaUploadURL?: string
+  /** Optional multipart field name for a custom upload service. */
+  mediaUploadField?: string
+  /** Optional response path containing the public URL, defaults to url. */
+  mediaUploadResponsePath?: string
+  /** Upload-service credential kept in desktop SafeStorage when available. */
+  mediaUploadApiKey?: string
+  encryptedMediaUploadKey?: string
+  mediaUploadSecretName?: string
 }
 
 export interface GenerationAdapter {
@@ -60,8 +72,11 @@ export interface GenerationAdapter {
   enabled?: boolean
   supportsImage?: boolean
   supportsVideo?: boolean
-  mediaTransport?: 'auto' | 'multipart' | 'public-url'
+  mediaTransport?: GenerationMediaTransport
   mediaUploadPath?: string
+  mediaUploadURL?: string
+  mediaUploadField?: string
+  mediaUploadResponsePath?: string
 }
 
 export const GENERATION_PROVIDER_LABELS: Record<GenerationProviderId, string> = {
@@ -377,7 +392,14 @@ export function generationProtocolForChannel(channel: Pick<GenerationChannel, 'p
 export function generationAdaptersForChannel(channel: GenerationChannel): GenerationAdapter[] {
   const legacyProtocol = generationProtocolForChannel(channel)
   const adapters = (channel.adapters || []).filter((adapter) => adapter.enabled !== false)
-  if (adapters.length) return adapters
+  if (adapters.length) {
+    // A channel has one request contract. Older persisted channels could
+    // contain several adapters; keep the selected protocol and ignore the
+    // rest so model routing cannot silently switch request formats.
+    const selected = (channel.protocol ? adapters.find((adapter) => adapter.protocol === legacyProtocol) : undefined) || adapters[0]
+    const selectedProtocol = selected.protocol || legacyProtocol
+    return [{ ...selected, protocol: selectedProtocol, id: selected.id || selectedProtocol }]
+  }
   return [{
     id: legacyProtocol,
     protocol: legacyProtocol,
@@ -386,6 +408,9 @@ export function generationAdaptersForChannel(channel: GenerationChannel): Genera
     supportsVideo: channel.supportsVideo,
     mediaTransport: channel.mediaTransport,
     mediaUploadPath: channel.mediaUploadPath,
+    mediaUploadURL: channel.mediaUploadURL,
+    mediaUploadField: channel.mediaUploadField,
+    mediaUploadResponsePath: channel.mediaUploadResponsePath,
   }]
 }
 
@@ -401,6 +426,10 @@ export function generationAdapterForModel(channel: GenerationChannel, modelId: s
 
 function desktopSecretName(channelId: string) {
   return `cnote:generation:${channelId}`
+}
+
+function desktopMediaUploadSecretName(channelId: string) {
+  return `cnote:generation-media-upload:${channelId}`
 }
 
 function saveDesktopSecret(name: string, value: string | undefined) {
@@ -448,17 +477,30 @@ interface GenerationState {
 }
 
 function normalizeChannel(channel: GenerationChannel): GenerationChannel {
-  const protocol = generationProtocolForChannel(channel)
+  const configuredAdapters = (channel.adapters || []).filter((adapter) => adapter.enabled !== false)
+  const protocol = channel.protocol
+    ? generationProtocolForChannel(channel)
+    : configuredAdapters[0]?.protocol || generationProtocolForChannel(channel)
   const catalog = modelsForGenerationProtocol(protocol)
   const modelIds = channel.modelIds || catalog.map((model) => model.id)
+  const selectedAdapter = configuredAdapters.find((adapter) => adapter.protocol === protocol) || configuredAdapters[0]
   const normalized = {
     ...channel,
     protocol,
     modelIds,
     secretName: channel.secretName,
-    adapters: channel.adapters?.length
-      ? channel.adapters
-      : [{ id: protocol, protocol, label: GENERATION_PROTOCOL_LABELS[protocol], mediaTransport: channel.mediaTransport, mediaUploadPath: channel.mediaUploadPath }],
+    mediaUploadSecretName: channel.mediaUploadSecretName || desktopMediaUploadSecretName(channel.id),
+    adapters: [{
+      ...(selectedAdapter || {}),
+      id: selectedAdapter?.id || protocol,
+      protocol,
+      label: selectedAdapter?.label || GENERATION_PROTOCOL_LABELS[protocol],
+      mediaTransport: selectedAdapter?.mediaTransport ?? channel.mediaTransport,
+      mediaUploadPath: selectedAdapter?.mediaUploadPath ?? channel.mediaUploadPath,
+      mediaUploadURL: selectedAdapter?.mediaUploadURL ?? channel.mediaUploadURL,
+      mediaUploadField: selectedAdapter?.mediaUploadField ?? channel.mediaUploadField,
+      mediaUploadResponsePath: selectedAdapter?.mediaUploadResponsePath ?? channel.mediaUploadResponsePath,
+    }],
   }
   return {
     ...normalized,
@@ -488,11 +530,17 @@ export const useGenerationStore = create<GenerationState>()(
           supportsImage: input.supportsImage ?? !['808-video', 'meaicc-video', 'generic-video'].includes(protocol),
           supportsVideo: input.supportsVideo ?? ['808-video', 'meaicc-video', 'generic-video', 'newapi'].includes(protocol),
           secretName: input.secretName || desktopSecretName(id),
+          mediaUploadSecretName: input.mediaUploadSecretName || desktopMediaUploadSecretName(id),
           mediaTransport: input.mediaTransport,
           mediaUploadPath: input.mediaUploadPath,
+          mediaUploadURL: input.mediaUploadURL,
+          mediaUploadField: input.mediaUploadField,
+          mediaUploadResponsePath: input.mediaUploadResponsePath,
+          mediaUploadApiKey: input.mediaUploadApiKey,
           adapters: input.adapters,
         })
         saveDesktopSecret(channel.secretName || desktopSecretName(id), input.apiKey)
+        saveDesktopSecret(channel.mediaUploadSecretName || desktopMediaUploadSecretName(id), input.mediaUploadApiKey)
         set((state) => ({ channels: [...state.channels, channel] }))
         return channel
       },
@@ -502,13 +550,24 @@ export const useGenerationStore = create<GenerationState>()(
           const keyUpdates = updates.apiKey === undefined
             ? {}
             : { encryptedKey: updates.apiKey ? encryptAPIKey(updates.apiKey) : undefined, secretName: channel.secretName || desktopSecretName(id) }
+          const mediaKeyUpdates = updates.mediaUploadApiKey === undefined
+            ? {}
+            : {
+                encryptedMediaUploadKey: updates.mediaUploadApiKey ? encryptAPIKey(updates.mediaUploadApiKey) : undefined,
+                mediaUploadSecretName: channel.mediaUploadSecretName || desktopMediaUploadSecretName(id),
+              }
           if (updates.apiKey) saveDesktopSecret(keyUpdates.secretName || desktopSecretName(id), updates.apiKey)
-          return normalizeChannel({ ...channel, ...updates, ...keyUpdates })
+          if (updates.mediaUploadApiKey) saveDesktopSecret(mediaKeyUpdates.mediaUploadSecretName || desktopMediaUploadSecretName(id), updates.mediaUploadApiKey)
+          if (updates.mediaUploadApiKey === '' && channel.mediaUploadSecretName && typeof window !== 'undefined') {
+            void window.cnoteDesktop?.secrets.delete(channel.mediaUploadSecretName).catch(() => undefined)
+          }
+          return normalizeChannel({ ...channel, ...updates, ...keyUpdates, ...mediaKeyUpdates })
         }),
       })),
       removeChannel: (id) => set((state) => {
         const channel = state.channels.find((item) => item.id === id)
         if (channel?.secretName && typeof window !== 'undefined') void window.cnoteDesktop?.secrets.delete(channel.secretName).catch(() => undefined)
+        if (channel?.mediaUploadSecretName && typeof window !== 'undefined') void window.cnoteDesktop?.secrets.delete(channel.mediaUploadSecretName).catch(() => undefined)
         return { channels: state.channels.filter((item) => item.id !== id) }
       }),
       getChannel: (id) => get().channels.find((channel) => channel.id === id),
@@ -545,6 +604,8 @@ export const useGenerationStore = create<GenerationState>()(
           ...channel,
           apiKey: undefined,
           encryptedKey: channel.apiKey ? encryptAPIKey(channel.apiKey) : channel.encryptedKey,
+          mediaUploadApiKey: undefined,
+          encryptedMediaUploadKey: channel.mediaUploadApiKey ? encryptAPIKey(channel.mediaUploadApiKey) : channel.encryptedMediaUploadKey,
         })),
       }),
       merge: (persisted, current) => {
@@ -555,6 +616,7 @@ export const useGenerationStore = create<GenerationState>()(
           channels: (stored?.channels || []).map((channel) => normalizeChannel({
             ...channel,
             apiKey: channel.apiKey || (channel.encryptedKey ? decryptAPIKey(channel.encryptedKey) : ''),
+            mediaUploadApiKey: channel.mediaUploadApiKey || (channel.encryptedMediaUploadKey ? decryptAPIKey(channel.encryptedMediaUploadKey) : ''),
           } as GenerationChannel)),
         }
       },

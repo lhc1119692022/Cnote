@@ -50,6 +50,26 @@ interface CnoteDesktopApi {
   system: {
     openFile: (request?: { title?: string; filters?: Array<{ name: string; extensions: string[] }> }) => Promise<{ name: string; data: Uint8Array } | null>
     saveFile: (request: { title?: string; suggestedName: string; filters?: Array<{ name: string; extensions: string[] }>; data: Uint8Array }) => Promise<boolean>
+    selectDirectory: (request?: { title?: string; defaultPath?: string }) => Promise<string | null>
+    getStorageLocation: () => Promise<{
+      currentPath: string
+      defaultPath: string
+      configuredPath?: string
+      restartRequired: boolean
+    }>
+    setStorageLocation: (value: string) => Promise<{
+      currentPath: string
+      defaultPath: string
+      configuredPath?: string
+      restartRequired: boolean
+    }>
+    resetStorageLocation: () => Promise<{
+      currentPath: string
+      defaultPath: string
+      configuredPath?: string
+      restartRequired: boolean
+    }>
+    restart: () => Promise<void>
   }
   jobs: {
     list: () => Promise<DesktopJobRecord[]>

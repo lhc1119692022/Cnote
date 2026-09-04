@@ -3,6 +3,9 @@
   "version": "0.1.0",
   "type": "module",
   "private": true,
+  "author": "lhc1119692022",
+  "license": "MIT",
+  "repository": "https://github.com/lhc1119692022/Cnote",
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",

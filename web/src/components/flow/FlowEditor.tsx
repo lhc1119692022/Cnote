@@ -73,7 +73,7 @@ import { hasCycle } from "@/lib/flow/graph";
 import { hasNodeConnections } from "@/lib/flow/disabled";
 import { AI_NODE_DEFAULT_SIZE, BROWSER_NODE_DEFAULT_SIZE, GROUP_NODE_PADDING, REQUEST_NODE_DEFAULT_SIZE } from "@/lib/flow/node-dimensions";
 import { createRequestNodeData } from "@/lib/generation/defaults";
-import type { ContentNodeData } from "@/types/flow";
+import type { ContentNodeData, RequestNodeData } from "@/types/flow";
 import { useLocalResourceUrl } from "@/hooks/use-local-resource-url";
 import { NodeMenuIcon } from "./NodeMenuIcon";
 import { Toolbar } from "./Toolbar";
@@ -244,6 +244,20 @@ function getContentResourceId(data?: ContentNodeData) {
   return source?.kind === "file" || source?.kind === "clipboard-image"
     ? source.resourceId
     : undefined;
+}
+
+function getNodeResourceIdsForRetain(node: Pick<Node, "type" | "data">) {
+  const ids: string[] = []
+  const contentId = getContentResourceId(node.type === "content" ? node.data as ContentNodeData : undefined)
+  if (contentId) ids.push(contentId)
+  if (node.type === "request") {
+    const data = node.data as Partial<RequestNodeData>
+    for (const reference of [...(data.image?.references || []), ...(data.video?.references || [])]) {
+      if (reference.resourceId) ids.push(reference.resourceId)
+    }
+    return ids
+  }
+  return [...new Set(ids)]
 }
 
 function isLocalVideoNode(node?: Node) {
@@ -562,7 +576,6 @@ function FlowEditorInner() {
   const closeContentEditor = useContentEditorStore((state) => state.close);
   const [showMinimap, setShowMinimap] = useState(true);
   const [isViewportMoving, setIsViewportMoving] = useState(false);
-  const [showGuide, setShowGuide] = useState(false);
   const [panelTab, setPanelTab] = useState<"nodes" | "content">("nodes");
   const [panelFilter, setPanelFilter] = useState("all");
   const [filterMenuOpen, setFilterMenuOpen] = useState(false);
@@ -2027,7 +2040,7 @@ function FlowEditorInner() {
             },
           }));
           for (const node of nodesToPaste) {
-            await retainLocalResource(getContentResourceId(node.data));
+            await Promise.all(getNodeResourceIdsForRetain(node).map((resourceId) => retainLocalResource(resourceId)));
             addNode({ ...node, id: undefined });
           }
         }
@@ -2962,66 +2975,7 @@ function FlowEditorInner() {
         leftOffset={showNodePanel ? 284 : 24}
         onToggleMinimap={() => setShowMinimap((value) => !value)}
         onArrange={arrangeNodes}
-        onGuide={() => setShowGuide(true)}
       />
-
-      {showGuide && (
-        <div
-          className="absolute inset-0 z-[60] flex items-center justify-center bg-black/30 p-4"
-          onClick={() => setShowGuide(false)}
-        >
-          <div
-            className="w-full max-w-lg rounded-xl border border-border bg-card p-6 shadow-xl"
-            onClick={(event) => event.stopPropagation()}
-          >
-            <div className="flex items-center justify-between border-b border-border pb-3">
-              <h2 className="text-base font-semibold">快捷键</h2>
-              <button
-                className="text-xs text-muted-foreground"
-                onClick={() => setShowGuide(false)}
-              >
-                关闭
-              </button>
-            </div>
-            <div className="mt-4 space-y-3 text-sm">
-              <p className="flex justify-between">
-                <span>Ctrl / Space + 拖动</span>
-                <span className="text-muted-foreground">
-                  临时切换选择 / 移动
-                </span>
-              </p>
-              <p className="flex justify-between">
-                <span>滚轮</span>
-                <span className="text-muted-foreground">缩放画布</span>
-              </p>
-              <p className="flex justify-between">
-                <span>拖动</span>
-                <span className="text-muted-foreground">框选多个节点</span>
-              </p>
-              <p className="flex justify-between">
-                <span>Shift / Cmd + 点击</span>
-                <span className="text-muted-foreground">追加选择节点</span>
-              </p>
-              <p className="flex justify-between">
-                <span>Ctrl / Cmd + C / V</span>
-                <span className="text-muted-foreground">复制 / 粘贴节点</span>
-              </p>
-              <p className="flex justify-between">
-                <span>Delete / Backspace</span>
-                <span className="text-muted-foreground">删除选中节点或连接线</span>
-              </p>
-              <p className="flex justify-between">
-                <span>双击空白</span>
-                <span className="text-muted-foreground">添加节点</span>
-              </p>
-              <p className="flex justify-between">
-                <span>空格 + 左键 / 鼠标中键</span>
-                <span className="text-muted-foreground">拖动画布</span>
-              </p>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

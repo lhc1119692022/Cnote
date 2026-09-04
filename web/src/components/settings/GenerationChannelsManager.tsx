@@ -9,10 +9,13 @@ import {
   generationChannelSupportsVariant,
   generationProtocolForChannel,
   modelsForGenerationProtocol,
+  type GenerationMediaTransport,
   useGenerationStore,
   type GenerationChannel,
   type GenerationProtocolId,
 } from '@/stores/use-generation-store'
+import { testGenerationMediaUpload } from '@/lib/generation/client'
+import { useMediaStorageStore } from '@/stores/use-media-storage-store'
 
 const PROTOCOL_DEFAULT_URLS: Record<GenerationProtocolId, string> = {
   'openai-images': 'https://api.openai.com/v1',
@@ -43,26 +46,32 @@ function normalizeEndpoint(baseURL: string) {
   return baseURL.trim().replace(/\/$/, '')
 }
 
+function defaultMediaUploadPath(protocol: GenerationProtocolId) {
+  return protocol === '808-video' ? '/v1/media/uploads/presign' : ''
+}
+
 export function GenerationChannelsManager({ embedded = false, openNewRequest = 0 }: GenerationChannelsManagerProps = {}) {
   const channels = useGenerationStore((state) => state.channels)
   const addChannel = useGenerationStore((state) => state.addChannel)
   const updateChannel = useGenerationStore((state) => state.updateChannel)
   const removeChannel = useGenerationStore((state) => state.removeChannel)
   const getAPIKey = useGenerationStore((state) => state.getAPIKey)
+  const hasCustomMediaStorage = useMediaStorageStore((state) => Boolean(state.baseURL))
 
   const [showChannelDialog, setShowChannelDialog] = useState(false)
   const [editingChannelId, setEditingChannelId] = useState<string | null>(null)
   const [channelName, setChannelName] = useState('')
   const [protocol, setProtocol] = useState<GenerationProtocolId>('openai-images')
-  const [adapterProtocols, setAdapterProtocols] = useState<GenerationProtocolId[]>(['openai-images'])
   const [baseURL, setBaseURL] = useState(PROTOCOL_DEFAULT_URLS['openai-images'])
   const [apiKey, setAPIKey] = useState('')
   const [modelIds, setModelIds] = useState<string[]>([])
   const [customModelId, setCustomModelId] = useState('')
   const [supportsImage, setSupportsImage] = useState(true)
   const [supportsVideo, setSupportsVideo] = useState(false)
-  const [mediaTransport, setMediaTransport] = useState<NonNullable<GenerationChannel['mediaTransport']>>('auto')
-  const [mediaUploadPath, setMediaUploadPath] = useState('/v1/files')
+  const [mediaTransport, setMediaTransport] = useState<GenerationMediaTransport>('auto')
+  const [mediaUploadPath, setMediaUploadPath] = useState('')
+  const [mediaTestState, setMediaTestState] = useState<'idle' | 'testing' | 'success' | 'error'>('idle')
+  const [mediaTestMessage, setMediaTestMessage] = useState('')
   const [showProtocolMenu, setShowProtocolMenu] = useState(false)
   const protocolMenuRef = useRef<HTMLDivElement>(null)
 
@@ -87,7 +96,6 @@ export function GenerationChannelsManager({ embedded = false, openNewRequest = 0
     setEditingChannelId(null)
     setChannelName('')
     setProtocol('openai-images')
-    setAdapterProtocols(['openai-images'])
     setBaseURL(PROTOCOL_DEFAULT_URLS['openai-images'])
     setAPIKey('')
     setModelIds([])
@@ -95,7 +103,9 @@ export function GenerationChannelsManager({ embedded = false, openNewRequest = 0
     setSupportsImage(true)
     setSupportsVideo(false)
     setMediaTransport('auto')
-    setMediaUploadPath('/v1/files')
+    setMediaUploadPath('')
+    setMediaTestState('idle')
+    setMediaTestMessage('')
     setShowProtocolMenu(false)
   }, [])
 
@@ -118,23 +128,25 @@ export function GenerationChannelsManager({ embedded = false, openNewRequest = 0
     setEditingChannelId(channel.id)
     setChannelName(channel.name)
     setProtocol(nextProtocol)
-    setAdapterProtocols(channel.adapters?.length ? channel.adapters.map((adapter) => adapter.protocol) : [nextProtocol])
     setBaseURL(channel.baseURL || PROTOCOL_DEFAULT_URLS[nextProtocol])
     setAPIKey('')
     setModelIds(channel.modelIds || [])
     setCustomModelId('')
     setSupportsImage(generationChannelSupportsVariant(channel, 'image'))
     setSupportsVideo(generationChannelSupportsVariant(channel, 'video'))
-    setMediaTransport(channel.mediaTransport || channel.adapters?.find((adapter) => adapter.mediaTransport)?.mediaTransport || 'auto')
-    setMediaUploadPath(channel.mediaUploadPath || channel.adapters?.find((adapter) => adapter.mediaUploadPath)?.mediaUploadPath || '/v1/files')
+    const storedMediaTransport = channel.mediaTransport || channel.adapters?.find((adapter) => adapter.mediaTransport)?.mediaTransport || 'auto'
+    setMediaTransport(storedMediaTransport === 'public-url' ? 'auto' : storedMediaTransport)
+    setMediaUploadPath(channel.mediaUploadPath || channel.adapters?.find((adapter) => adapter.mediaUploadPath)?.mediaUploadPath || defaultMediaUploadPath(nextProtocol))
+    setMediaTestState('idle')
+    setMediaTestMessage('')
     setShowProtocolMenu(false)
     setShowChannelDialog(true)
   }
 
   const selectProtocol = (nextProtocol: GenerationProtocolId) => {
     setProtocol(nextProtocol)
-    setAdapterProtocols((current) => current.includes(nextProtocol) ? current : [nextProtocol, ...current])
     setBaseURL(PROTOCOL_DEFAULT_URLS[nextProtocol])
+    setMediaUploadPath(defaultMediaUploadPath(nextProtocol))
     const knownModels = ['808-video', 'meaicc-video'].includes(nextProtocol)
       ? modelsForGenerationProtocol(nextProtocol).map((model) => model.id)
       : []
@@ -143,18 +155,8 @@ export function GenerationChannelsManager({ embedded = false, openNewRequest = 0
     setShowProtocolMenu(false)
     setSupportsImage(protocolSupportsImage(nextProtocol))
     setSupportsVideo(protocolSupportsVideo(nextProtocol))
-  }
-
-  const toggleAdapterProtocol = (value: GenerationProtocolId) => {
-    setAdapterProtocols((current) => {
-      if (current.includes(value)) {
-        if (current.length === 1) return current
-        const next = current.filter((item) => item !== value)
-        if (value === protocol) setProtocol(next[0])
-        return next
-      }
-      return [...current, value]
-    })
+    setMediaTestState('idle')
+    setMediaTestMessage('')
   }
 
   const addCustomModel = () => {
@@ -184,6 +186,14 @@ export function GenerationChannelsManager({ embedded = false, openNewRequest = 0
       alert('请至少选择图片节点或视频节点')
       return
     }
+    if (supportsVideo && mediaTransport === 'multipart' && !normalizedUploadPath) {
+      alert('multipart 模式需要填写供应商上传路径')
+      return
+    }
+    if (supportsVideo && mediaTransport === 'custom' && !hasCustomMediaStorage) {
+      alert('请先在“本地存储”中配置自定义上传服务')
+      return
+    }
 
     const updates = {
       providerId: 'custom' as const,
@@ -194,17 +204,17 @@ export function GenerationChannelsManager({ embedded = false, openNewRequest = 0
       enabled: true,
       supportsImage,
       supportsVideo,
-      mediaTransport,
-      mediaUploadPath: normalizedUploadPath,
-      adapters: adapterProtocols.map((value) => ({
-        id: value,
-        protocol: value,
-        label: GENERATION_PROTOCOL_LABELS[value],
-        supportsImage: protocolSupportsImage(value),
-        supportsVideo: protocolSupportsVideo(value),
-        mediaTransport,
-        mediaUploadPath: normalizedUploadPath,
-      })),
+      mediaTransport: supportsVideo ? mediaTransport : undefined,
+      mediaUploadPath: supportsVideo ? normalizedUploadPath : undefined,
+      adapters: [{
+        id: protocol,
+        protocol,
+        label: GENERATION_PROTOCOL_LABELS[protocol],
+        supportsImage: protocolSupportsImage(protocol),
+        supportsVideo: protocolSupportsVideo(protocol),
+        mediaTransport: supportsVideo ? mediaTransport : undefined,
+        mediaUploadPath: supportsVideo ? normalizedUploadPath : undefined,
+      }],
     }
     const secretValue = apiKey.trim()
     let savedChannel: GenerationChannel | undefined
@@ -226,6 +236,47 @@ export function GenerationChannelsManager({ embedded = false, openNewRequest = 0
       }
     }
     resetChannelDialog()
+  }
+
+  const handleTestMediaUpload = async () => {
+    if (!supportsVideo) return
+    if (!editingChannelId) {
+      setMediaTestState('error')
+      setMediaTestMessage('请先保存渠道，再验证上传接口。')
+      return
+    }
+    if (apiKey.trim()) {
+      setMediaTestState('error')
+      setMediaTestMessage('请先保存刚修改的密钥，再验证上传接口。')
+      return
+    }
+    const current = channels.find((channel) => channel.id === editingChannelId)
+    if (!current) return
+    const candidate: GenerationChannel = {
+      ...current,
+      mediaTransport,
+      mediaUploadPath: mediaUploadPath.trim() || undefined,
+      protocol,
+      adapters: [{
+        id: protocol,
+        protocol,
+        label: GENERATION_PROTOCOL_LABELS[protocol],
+        supportsImage: protocolSupportsImage(protocol),
+        supportsVideo: protocolSupportsVideo(protocol),
+        mediaTransport,
+        mediaUploadPath: mediaUploadPath.trim() || undefined,
+      }],
+    }
+    setMediaTestState('testing')
+    setMediaTestMessage('正在验证上传接口…')
+    try {
+      const result = await testGenerationMediaUpload(candidate, protocol)
+      setMediaTestState('success')
+      setMediaTestMessage(`验证成功：${result.url}`)
+    } catch (error) {
+      setMediaTestState('error')
+      setMediaTestMessage(error instanceof Error ? error.message : '上传接口验证失败')
+    }
   }
 
   const content = (
@@ -277,7 +328,7 @@ export function GenerationChannelsManager({ embedded = false, openNewRequest = 0
           <div className="grid gap-4" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))' }}>
             <label className="block text-[13px] text-muted-foreground"><span className="mb-2 block font-medium">提供商名称</span><input autoFocus value={channelName} onChange={(event) => setChannelName(event.target.value)} placeholder="如：Fmage / 我的图像服务" className="h-10 w-full rounded-lg border border-border bg-background px-3 text-foreground outline-none focus:border-primary focus:ring-2 focus:ring-ring/20" /></label>
             <div ref={protocolMenuRef} className="relative text-[13px] text-muted-foreground">
-              <span className="mb-2 block font-medium">端点方式</span>
+              <span className="mb-2 block font-medium">端点方式（单选）</span>
               <button type="button" aria-haspopup="listbox" aria-expanded={showProtocolMenu} onClick={() => setShowProtocolMenu((visible) => !visible)} className="flex h-10 w-full items-center justify-between gap-3 rounded-lg border border-border bg-background px-3 text-left text-foreground outline-none focus:border-primary focus:ring-2 focus:ring-ring/20">
                 <span className="flex min-w-0 items-center gap-2"><span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-muted text-muted-foreground">{selectedProtocol.group === 'image' ? <ImageIcon className="h-3.5 w-3.5" /> : selectedProtocol.group === 'video' ? <Video className="h-3.5 w-3.5" /> : <Layers3 className="h-3.5 w-3.5" />}</span><span className="truncate">{selectedProtocol.label}</span></span>
                 <ChevronDown className={`h-4 w-4 shrink-0 text-muted-foreground transition-transform ${showProtocolMenu ? 'rotate-180' : ''}`} />
@@ -286,29 +337,29 @@ export function GenerationChannelsManager({ embedded = false, openNewRequest = 0
                 {(Object.keys(PROTOCOL_GROUP_LABELS) as Array<keyof typeof PROTOCOL_GROUP_LABELS>).map((group) => {
                   const options = GENERATION_PROTOCOL_OPTIONS.filter((option) => option.group === group)
                   if (!options.length) return null
-                  return <div key={group} className="border-t border-border py-1.5 first:border-t-0 first:pt-0"><div className="px-3 pb-1 pt-1 text-[10px] font-semibold tracking-wide text-muted-foreground">{PROTOCOL_GROUP_LABELS[group]}</div>{options.map((option) => <button key={option.value} type="button" role="option" aria-selected={option.value === protocol} data-active={option.value === protocol} onClick={() => selectProtocol(option.value)} className="cnote-menu-item"><span className="min-w-0"><span className="block truncate">{option.label}</span><span className="mt-0.5 block truncate text-[10px] font-normal text-muted-foreground">{option.description}</span></span>{option.value === protocol && <Check className="h-3.5 w-3.5 shrink-0 text-primary" />}</button>)}</div>
+                  return <div key={group} className="border-t border-border py-1.5 first:border-t-0 first:pt-0"><div className="px-3 pb-1 pt-1 text-[10px] font-semibold tracking-wide text-muted-foreground">{PROTOCOL_GROUP_LABELS[group]}</div>{options.map((option) => <button key={option.value} type="button" role="option" aria-selected={option.value === protocol} data-active={option.value === protocol} title={option.description} onClick={() => selectProtocol(option.value)} className="cnote-menu-item"><span className="min-w-0 flex-1 truncate text-left">{option.label}</span>{option.value === protocol && <Check className="h-3.5 w-3.5 shrink-0 text-primary" />}</button>)}</div>
                 })}
               </div>}
-              <div className="mt-2 flex flex-wrap gap-1.5">
-                {adapterProtocols.map((value) => <button key={value} type="button" className="rounded-full border border-primary/40 bg-primary/5 px-2 py-1 text-[10px] text-primary" onClick={() => toggleAdapterProtocol(value)} title="移除适配器">{GENERATION_PROTOCOL_LABELS[value]} <X className="ml-0.5 inline h-3 w-3" /></button>)}
-              </div>
-              <div className="mt-1.5 flex flex-wrap gap-1.5">
-                {GENERATION_PROTOCOL_OPTIONS.filter((option) => !adapterProtocols.includes(option.value)).map((option) => <button key={option.value} type="button" className="rounded-full border border-border px-2 py-1 text-[10px] text-muted-foreground hover:bg-muted hover:text-foreground" onClick={() => toggleAdapterProtocol(option.value)}>+ {option.label}</button>)}
-              </div>
+              <span className="mt-1.5 block text-[11px] leading-relaxed text-muted-foreground">端点方式决定请求体和任务轮询契约；同一提供商的不同模型不能仅靠接口地址自动识别。</span>
             </div>
           </div>
 
           <label className="mt-3 block text-[13px] text-muted-foreground"><span className="mb-2 block font-medium">接口地址</span><input value={baseURL} onChange={(event) => setBaseURL(event.target.value)} placeholder="https://api.example.com/v1" className="h-10 w-full rounded-lg border border-border bg-background px-3 text-foreground outline-none focus:border-primary focus:ring-2 focus:ring-ring/20" /></label>
 
-          <div className="mt-4 grid gap-4" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))' }}>
-            <label className="block text-[13px] text-muted-foreground"><span className="mb-2 block font-medium">素材传输方式</span><select value={mediaTransport} onChange={(event) => setMediaTransport(event.target.value as NonNullable<GenerationChannel['mediaTransport']>)} className="h-10 w-full rounded-lg border border-border bg-background px-3 text-foreground outline-none focus:border-primary focus:ring-2 focus:ring-ring/20"><option value="auto">自动：优先按协议处理</option><option value="multipart">上传文件（multipart）</option><option value="public-url">仅使用公网 HTTPS 地址</option></select><span className="mt-1.5 block text-[11px] text-muted-foreground">视频参考素材通常需要供应商可访问的公网地址；自动模式会尝试上传。</span></label>
-            <label className="block text-[13px] text-muted-foreground"><span className="mb-2 block font-medium">供应商上传路径</span><input value={mediaUploadPath} onChange={(event) => setMediaUploadPath(event.target.value)} placeholder="/v1/files" className="h-10 w-full rounded-lg border border-border bg-background px-3 text-foreground outline-none focus:border-primary focus:ring-2 focus:ring-ring/20" /><span className="mt-1.5 block text-[11px] text-muted-foreground">仅在自动或 multipart 模式下使用；不同供应商可留空并自行处理。</span></label>
-          </div>
-
-          <div className="mt-4 text-[13px] text-muted-foreground"><span className="mb-2 flex items-center gap-1.5 font-medium"><KeyRound className="h-3.5 w-3.5" />API Key {editingChannelId && <span className="font-normal">（留空则保持不变）</span>}</span><input type="password" value={apiKey} onChange={(event) => setAPIKey(event.target.value)} placeholder={editingChannelId ? '留空保持现有密钥' : '输入 API Key'} className="h-10 w-full rounded-lg border border-border bg-background px-3 text-foreground outline-none focus:border-primary focus:ring-2 focus:ring-ring/20" /></div>
-
           <div className="mt-4 flex items-center gap-3 text-[13px] text-muted-foreground"><span className="shrink-0 font-medium text-foreground">渠道支持</span><div className="flex min-w-0 flex-1 gap-2"><button type="button" aria-pressed={supportsImage} onClick={() => setSupportsImage((value) => !value)} className={`flex min-w-0 flex-1 items-center justify-center gap-2 rounded-lg border px-3 py-2.5 text-[12px] transition-colors ${supportsImage ? 'border-primary bg-primary/10 font-medium text-primary' : 'border-border bg-background text-muted-foreground hover:bg-muted'}`}><ImageIcon className="h-4 w-4 shrink-0" />图片生成</button><button type="button" aria-pressed={supportsVideo} onClick={() => setSupportsVideo((value) => !value)} className={`flex min-w-0 flex-1 items-center justify-center gap-2 rounded-lg border px-3 py-2.5 text-[12px] transition-colors ${supportsVideo ? 'border-primary bg-primary/10 font-medium text-primary' : 'border-border bg-background text-muted-foreground hover:bg-muted'}`}><Video className="h-4 w-4 shrink-0" />视频生成</button></div></div>
 
+          {supportsVideo && <div className="mt-4 grid gap-4 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] md:items-end">
+            <label className="block text-[13px] text-muted-foreground"><span className="mb-2 block font-medium">素材传输方式</span><select value={mediaTransport === 'public-url' ? 'auto' : mediaTransport} onChange={(event) => { setMediaTransport(event.target.value as GenerationMediaTransport); setMediaTestState('idle'); setMediaTestMessage('') }} className="h-10 w-full rounded-lg border border-border bg-background px-3 text-foreground outline-none focus:border-primary focus:ring-2 focus:ring-ring/20"><option value="auto">自动</option><option value="multipart">multipart</option><option value="custom">自定义</option></select></label>
+            {mediaTransport !== 'custom' ? (
+              <label className="block text-[13px] text-muted-foreground"><span className="mb-2 block font-medium">供应商上传路径</span><input value={mediaUploadPath} onChange={(event) => { setMediaUploadPath(event.target.value); setMediaTestState('idle'); setMediaTestMessage('') }} placeholder={protocol === '808-video' ? '/v1/media/uploads/presign' : '/v1/media/uploads'} className="h-10 w-full rounded-lg border border-border bg-background px-3 text-foreground outline-none focus:border-primary focus:ring-2 focus:ring-ring/20" /></label>
+            ) : <div className="flex h-10 items-center text-[11px] leading-relaxed text-muted-foreground">自定义服务地址和令牌在“本地存储”中统一配置。</div>}
+            <div className="flex min-w-0 flex-wrap items-center gap-2">
+              <Button type="button" variant="outline" size="sm" className="gap-1.5" onClick={() => void handleTestMediaUpload()} disabled={mediaTestState === 'testing'}><Check className="h-3.5 w-3.5" />验证上传</Button>
+            </div>
+            {mediaTestMessage && <span className={`min-w-0 break-words text-[11px] md:col-span-full ${mediaTestState === 'success' ? 'text-emerald-700' : mediaTestState === 'error' ? 'text-destructive' : 'text-muted-foreground'}`} title={mediaTestMessage}>{mediaTestMessage}</span>}
+          </div>}
+
+          <div className="mt-4 text-[13px] text-muted-foreground"><span className="mb-2 flex items-center gap-1.5 font-medium"><KeyRound className="h-3.5 w-3.5" />API Key {editingChannelId && <span className="font-normal">（留空则保持不变）</span>}</span><input type="password" value={apiKey} onChange={(event) => setAPIKey(event.target.value)} placeholder={editingChannelId ? '留空保持现有密钥' : '输入 API Key'} className="h-10 w-full rounded-lg border border-border bg-background px-3 text-foreground outline-none focus:border-primary focus:ring-2 focus:ring-ring/20" /></div>
           <div className="mt-5"><div><h3 className="text-[13px] font-medium">渠道模型</h3><p className="mt-1 text-[11px] text-muted-foreground">手动添加这个渠道实际开放的模型 ID。</p></div>
             <div className="mt-3 min-h-[52px] rounded-lg border border-border bg-background px-3 py-3">{modelIds.length > 0 ? <div className="flex flex-wrap gap-2">{modelIds.map((modelId) => <button key={modelId} type="button" onClick={() => setModelIds((current) => current.filter((id) => id !== modelId))} className="flex items-center gap-1.5 rounded-lg border border-primary bg-primary/10 px-2.5 py-1.5 text-[11px] text-foreground" title="移除模型">{modelId}<X className="h-3 w-3" /></button>)}</div> : <p className="text-center text-[11px] text-muted-foreground">尚未添加模型 ID</p>}</div>
             <div className="mt-2 flex gap-2"><input value={customModelId} onChange={(event) => setCustomModelId(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); addCustomModel() } }} placeholder="手动输入模型 ID" className="h-9 min-w-0 flex-1 rounded-lg border border-border bg-background px-3 text-[12px] text-foreground outline-none focus:border-primary focus:ring-2 focus:ring-ring/20" /><Button variant="secondary" size="sm" onClick={addCustomModel}>添加模型</Button></div>

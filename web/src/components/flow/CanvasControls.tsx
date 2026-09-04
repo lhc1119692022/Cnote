@@ -6,7 +6,6 @@ import {
   ZoomOut,
   Map,
   LayoutGrid,
-  CircleHelp,
   LocateFixed,
   Moon,
   Sun,
@@ -19,11 +18,10 @@ interface CanvasControlsProps {
   minimapVisible: boolean
   onToggleMinimap: () => void
   onArrange: () => void
-  onGuide: () => void
   leftOffset?: number
 }
 
-export function CanvasControls({ minimapVisible, onToggleMinimap, onArrange, onGuide, leftOffset = 24 }: CanvasControlsProps) {
+export function CanvasControls({ minimapVisible, onToggleMinimap, onArrange, leftOffset = 24 }: CanvasControlsProps) {
   const reactFlowInstance = useReactFlow()
   const { theme, toggleTheme } = useTheme()
 
@@ -121,7 +119,6 @@ export function CanvasControls({ minimapVisible, onToggleMinimap, onArrange, onG
       <div className="contents">
         <Button variant="ghost" size="icon" className="h-9 w-9 rounded-lg" onClick={onToggleMinimap} title={minimapVisible ? '隐藏小地图' : '显示小地图'}><Map className="h-4 w-4" /></Button>
         <Button variant="ghost" size="icon" className="h-9 w-9 rounded-lg" onClick={onArrange} title="整理节点"><LayoutGrid className="h-4 w-4" /></Button>
-        <Button variant="ghost" size="icon" className="h-9 w-9 rounded-lg" onClick={onGuide} title="操作指南"><CircleHelp className="h-4 w-4" /></Button>
         <div className="my-1 h-px w-7 bg-border" />
         <Button variant="ghost" size="icon" className="h-9 w-9 rounded-lg" onClick={toggleTheme} title="切换主题">{theme === 'dark' ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}</Button>
       </div></div>

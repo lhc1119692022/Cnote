@@ -1,7 +1,8 @@
 import { app, dialog, type BrowserWindow } from 'electron'
 import { promises as fs } from 'node:fs'
 import path from 'node:path'
-import type { OpenFileRequest, OpenFileResult, SaveFileRequest, SystemPort } from './types'
+import { getStorageLocationInfo, resetStorageLocation, setStorageLocation } from './storage-location'
+import type { DirectoryDialogRequest, OpenFileRequest, OpenFileResult, SaveFileRequest, SystemPort } from './types'
 
 const MAX_OPEN_BYTES = 600 * 1024 * 1024
 
@@ -59,5 +60,34 @@ export class NativeSystemPort implements SystemPort {
       await fs.rm(temporary, { force: true }).catch(() => undefined)
       throw error
     }
+  }
+
+  async selectDirectory(request: DirectoryDialogRequest = {}) {
+    const options = {
+      title: request.title || '选择 Cnote 本地数据位置',
+      defaultPath: request.defaultPath && path.isAbsolute(request.defaultPath) ? request.defaultPath : undefined,
+      properties: ['openDirectory', 'createDirectory'] as Array<'openDirectory' | 'createDirectory'>,
+    }
+    const parent = this.getParentWindow()
+    const result = parent ? await dialog.showOpenDialog(parent, options) : await dialog.showOpenDialog(options)
+    if (result.canceled || !result.filePaths[0]) return null
+    return path.resolve(result.filePaths[0])
+  }
+
+  async getStorageLocation() {
+    return getStorageLocationInfo()
+  }
+
+  async setStorageLocation(value: string) {
+    return setStorageLocation(value)
+  }
+
+  async resetStorageLocation() {
+    return resetStorageLocation()
+  }
+
+  async restart() {
+    app.relaunch()
+    app.exit(0)
   }
 }

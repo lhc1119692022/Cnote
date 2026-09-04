@@ -54,7 +54,6 @@ export function TemplatesManager() {
             <input value={searchQuery} onChange={(event) => setSearchQuery(event.target.value)} placeholder="搜索模板..." className="h-9 w-full rounded-lg border border-border bg-background pl-9 pr-3 text-[13px] text-foreground outline-none focus:border-primary focus:ring-2 focus:ring-ring/20" />
           </div>
           <div className="flex gap-2">
-            <Button variant="secondary" size="sm">使用指南</Button>
             <Button variant="secondary" size="sm">导入</Button>
           </div>
         </header>

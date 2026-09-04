@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import type { ContentParseInput, FileDialogFilter, JobRecord, JobUpdate, NativeJobRequest, NetworkRequest, NetworkResponse, ParsedPageContent, RuntimeInfo } from './runtime/types'
+import type { ContentParseInput, DirectoryDialogRequest, FileDialogFilter, JobRecord, JobUpdate, NativeJobRequest, NetworkRequest, NetworkResponse, ParsedPageContent, RuntimeInfo } from './runtime/types'
+import type { StorageLocationInfo } from './runtime/storage-location'
 
 const invoke = <T>(channel: string, ...args: unknown[]) => ipcRenderer.invoke(channel, ...args) as Promise<T>
 
@@ -31,6 +32,11 @@ const api = {
       invoke<{ name: string; data: Uint8Array } | null>('system:open-file', request),
     saveFile: (request: { title?: string; suggestedName: string; filters?: FileDialogFilter[]; data: Uint8Array }) =>
       invoke<boolean>('system:save-file', request),
+    selectDirectory: (request?: DirectoryDialogRequest) => invoke<string | null>('system:select-directory', request),
+    getStorageLocation: () => invoke<StorageLocationInfo>('system:get-storage-location'),
+    setStorageLocation: (value: string) => invoke<StorageLocationInfo>('system:set-storage-location', value),
+    resetStorageLocation: () => invoke<StorageLocationInfo>('system:reset-storage-location'),
+    restart: () => invoke<void>('system:restart'),
   },
   jobs: {
     list: () => invoke<JobRecord[]>('jobs:list'),

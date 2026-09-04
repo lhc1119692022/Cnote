@@ -325,7 +325,7 @@ async function populateNodeTextOutput(nodeId: string) {
           },
         })
         useFlowStore.getState().saveCurrentFlow()
-        return Boolean(capture.text.trim())
+        return Boolean((parsed.text || capture.text).trim())
       }
       const page = await getContentServiceClient('webPage').scrapeWeb(url, { timeoutMs: 5_000 })
       const current = useFlowStore.getState().nodes.find((node) => node.id === nodeId)

@@ -1,7 +1,8 @@
 import { generationAdapterForConfig, generationAdapterForModel, generationProtocolForChannel, type GenerationChannel, type GenerationModel } from '@/stores/use-generation-store'
+import { MEDIA_STORAGE_DEFAULTS, useMediaStorageStore } from '@/stores/use-media-storage-store'
 import type { GenerationReference, GenerationTaskState, GenerationVariantConfig } from '@/types/flow'
 import { normalizeGenerationReferences } from '@/lib/generation/defaults'
-import { loadLocalResourceUrl, storeLocalResource } from '@/lib/resource-storage'
+import { loadLocalResourceBlob, loadLocalResourceUrl, storeLocalResource } from '@/lib/resource-storage'
 import { desktopFetch } from '@/lib/desktop-fetch'
 
 export interface GenerationRequestContext {
@@ -16,6 +17,8 @@ export interface GenerationTaskResponse {
   resultUrls?: string[]
   resultResourceIds?: string[]
   resultMimeTypes?: string[]
+  /** Config after local video references have been converted to public URLs. */
+  preparedConfig?: GenerationVariantConfig
   raw?: unknown
 }
 
@@ -30,6 +33,7 @@ export interface GenerationRunOptions {
   timeoutMs: number
   signal?: AbortSignal
   onTaskUpdate?: (task: GenerationTaskState) => void
+  onConfigPrepared?: (config: GenerationVariantConfig) => void
   onCancel?: (taskId: string) => Promise<void> | void
 }
 
@@ -141,7 +145,12 @@ function imageSizeForConfig(config: GenerationVariantConfig, model: GenerationMo
 }
 
 async function referenceBlob(reference: GenerationReference) {
-  const url = referenceURL(reference) || (reference.resourceId ? await loadLocalResourceUrl(reference.resourceId) : '')
+  const directURL = referenceURL(reference)
+  if (reference.resourceId && !isRemoteMediaURL(directURL) && !/^data:/i.test(directURL)) {
+    const localBlob = await loadLocalResourceBlob(reference.resourceId)
+    if (localBlob) return { blob: localBlob, fileName: reference.fileName || `${reference.id}.${localBlob.type.split('/')[1] || 'bin'}` }
+  }
+  const url = directURL || (reference.resourceId ? await loadLocalResourceUrl(reference.resourceId) : '')
   if (!url) throw new Error(`参考文件“${reference.label || reference.id}”没有可读取的地址`)
   const response = await desktopFetch(url)
   if (!response.ok) throw new Error(`无法读取参考文件“${reference.label || reference.id}”`)
@@ -153,8 +162,20 @@ function isHttpsUrl(value: string) {
   return /^https:\/\//i.test(value)
 }
 
-function uploadedReferenceUrl(payload: any) {
+function isRemoteMediaURL(value: string) {
+  return /^https?:\/\//i.test(value)
+}
+
+function valueAtPath(payload: unknown, path: string) {
+  return path.split('.').filter(Boolean).reduce<unknown>((current, key) => {
+    if (!current || typeof current !== 'object') return undefined
+    return (current as Record<string, unknown>)[key]
+  }, payload)
+}
+
+function uploadedReferenceUrl(payload: any, responsePath = 'url') {
   return firstString(
+    valueAtPath(payload, responsePath),
     payload?.url,
     payload?.file_url,
     payload?.download_url,
@@ -164,43 +185,187 @@ function uploadedReferenceUrl(payload: any) {
   )
 }
 
-async function uploadReference(channel: GenerationChannel, reference: GenerationReference, uploadPath: string, signal?: AbortSignal, adapterId?: string) {
-  const { blob, fileName } = await referenceBlob(reference)
-  const form = new FormData()
-  form.append('file', blob, fileName)
-  form.append('purpose', 'generation')
-  const headers = Object.fromEntries(Object.entries(authHeaders(channel, adapterId)).filter(([name]) => name.toLowerCase() !== 'content-type'))
-  const response = await desktopFetch(joinVersionedEndpoint(channel.baseURL, uploadPath), {
+interface MediaUploadEndpoint {
+  mode: 'provider' | 'custom'
+  kind: 'multipart' | 'presign'
+  endpoint: string
+  fieldName: string
+  responsePath: string
+  token?: string
+  secretName?: string
+}
+
+function mediaUploadSettings(channel: GenerationChannel, adapterId?: string) {
+  const adapter = generationAdapterForConfig(channel, adapterId)
+  const protocol = protocolFor(channel, adapterId)
+  const providerPath = adapter?.mediaUploadPath || channel.mediaUploadPath || (protocol === '808-video' ? '/v1/media/uploads/presign' : undefined)
+  return {
+    transport: adapter?.mediaTransport || channel.mediaTransport || 'auto',
+    providerPath,
+    fieldName: adapter?.mediaUploadField || channel.mediaUploadField || MEDIA_STORAGE_DEFAULTS.fieldName,
+    responsePath: adapter?.mediaUploadResponsePath || channel.mediaUploadResponsePath || MEDIA_STORAGE_DEFAULTS.responsePath,
+    protocol,
+  }
+}
+
+function mediaUploadEndpoint(channel: GenerationChannel, adapterId?: string): MediaUploadEndpoint {
+  const settings = mediaUploadSettings(channel, adapterId)
+  if (settings.transport === 'public-url') {
+    throw new Error('当前渠道仅接受公网 HTTPS 地址，请改用“自动”“multipart”或“自定义”')
+  }
+  const mediaStorage = useMediaStorageStore.getState()
+  const customConfigured = Boolean(mediaStorage.baseURL || channel.mediaUploadURL)
+  if (settings.transport === 'custom' || (settings.transport === 'auto' && !settings.providerPath && customConfigured)) {
+    const endpoint = mediaStorage.baseURL
+      ? mediaStorage.getUploadEndpoint()
+      : String(channel.mediaUploadURL || '').trim()
+    if (!isHttpsUrl(endpoint)) throw new Error('请先在“本地存储”中配置 HTTPS 自定义上传地址')
+    return {
+      mode: 'custom',
+      kind: 'multipart',
+      endpoint,
+      fieldName: mediaStorage.baseURL ? mediaStorage.fieldName : settings.fieldName,
+      responsePath: mediaStorage.baseURL ? mediaStorage.responsePath : settings.responsePath,
+      token: mediaStorage.baseURL ? mediaStorage.getAccessToken() : channel.mediaUploadApiKey,
+      secretName: mediaStorage.baseURL ? mediaStorage.secretName : channel.mediaUploadSecretName,
+    }
+  }
+  const path = String(settings.providerPath || '').trim()
+  if (!path) throw new Error('当前视频渠道没有配置供应商上传路径，请填写路径或在“本地存储”中配置自定义服务')
+  return {
+    mode: 'provider',
+    kind: settings.protocol === '808-video' ? 'presign' : 'multipart',
+    endpoint: joinVersionedEndpoint(channel.baseURL, path),
+    fieldName: settings.fieldName,
+    responsePath: settings.responsePath,
+  }
+}
+
+function mediaUploadHeaders(channel: GenerationChannel, endpoint: MediaUploadEndpoint, adapterId?: string) {
+  if (endpoint.mode === 'provider') {
+    return Object.fromEntries(Object.entries(authHeaders(channel, adapterId)).filter(([name]) => name.toLowerCase() !== 'content-type'))
+  }
+  const useDesktopSecret = Boolean(typeof window !== 'undefined' && window.cnoteDesktop && endpoint.secretName)
+  return !useDesktopSecret && endpoint.token ? { Authorization: `Bearer ${endpoint.token}` } : {}
+}
+
+function mediaUploadSecretRefs(channel: GenerationChannel, endpoint: MediaUploadEndpoint, adapterId?: string) {
+  if (endpoint.mode === 'provider') return authSecretRefs(channel, adapterId)
+  if (!endpoint.secretName || typeof window === 'undefined' || !window.cnoteDesktop || !endpoint.token) return undefined
+  return { Authorization: endpoint.secretName }
+}
+
+async function assertMediaUploadSecretReady(endpoint: MediaUploadEndpoint) {
+  const desktop = typeof window !== 'undefined' ? window.cnoteDesktop : undefined
+  if (endpoint.mode !== 'custom' || !desktop?.secrets || !endpoint.token || !endpoint.secretName) return
+  if (!(await desktop.secrets.has(endpoint.secretName))) {
+    throw new Error('自定义上传服务令牌尚未保存到桌面安全存储，请到“本地存储”中重新保存。')
+  }
+}
+
+function presignedUploadValue(payload: any, key: 'upload' | 'public') {
+  const candidates = key === 'upload'
+    ? [payload?.upload_url, payload?.uploadUrl, payload?.presigned_url, payload?.presignedUrl, payload?.data?.upload_url, payload?.data?.uploadUrl, payload?.data?.presigned_url, payload?.data?.presignedUrl]
+    : [payload?.public_url, payload?.publicUrl, payload?.data?.public_url, payload?.data?.publicUrl]
+  return firstString(...candidates)
+}
+
+async function uploadWithPresign(channel: GenerationChannel, endpoint: MediaUploadEndpoint, blob: Blob, fileName: string, signal?: AbortSignal, adapterId?: string) {
+  const response = await desktopFetch(endpoint.endpoint, {
     method: 'POST',
-    headers,
-    body: form,
+    headers: { ...requestHeaders(channel, { 'Content-Type': 'application/json' }, adapterId) },
+    body: JSON.stringify({ filename: fileName, content_type: blob.type || 'application/octet-stream', size: blob.size }),
     signal,
   }, { secretRefs: authSecretRefs(channel, adapterId) })
   const payload = await parseResponse(response)
-  const url = uploadedReferenceUrl(payload)
+  const uploadURL = presignedUploadValue(payload, 'upload')
+  const publicURL = presignedUploadValue(payload, 'public')
+  if (!uploadURL || !isHttpsUrl(uploadURL)) throw new Error('供应商预签名接口没有返回 HTTPS upload_url')
+  if (!publicURL || !isHttpsUrl(publicURL)) throw new Error('供应商预签名接口没有返回可公开读取的 HTTPS public_url')
+  const uploadHeaders = payload?.upload_headers && typeof payload.upload_headers === 'object' ? payload.upload_headers : payload?.uploadHeaders && typeof payload.uploadHeaders === 'object' ? payload.uploadHeaders : {}
+  const uploadResponse = await desktopFetch(uploadURL, {
+    method: 'PUT',
+    headers: Object.fromEntries(Object.entries(uploadHeaders).filter((entry): entry is [string, string] => typeof entry[0] === 'string' && typeof entry[1] === 'string')) as Record<string, string>,
+    body: blob,
+    signal,
+  })
+  if (!uploadResponse.ok) throw new Error(`上传参考文件失败：HTTP ${uploadResponse.status}`)
+  return publicURL
+}
+
+async function uploadReference(channel: GenerationChannel, reference: GenerationReference, signal?: AbortSignal, adapterId?: string) {
+  const endpoint = mediaUploadEndpoint(channel, adapterId)
+  await assertMediaUploadSecretReady(endpoint)
+  const { blob, fileName } = await referenceBlob(reference)
+  if (endpoint.kind === 'presign') return uploadWithPresign(channel, endpoint, blob, fileName, signal, adapterId)
+  const form = new FormData()
+  form.append(endpoint.fieldName, blob, fileName)
+  form.append('purpose', 'generation')
+  if (reference.resourceId?.startsWith('sha256-')) form.append('checksum', reference.resourceId.slice('sha256-'.length))
+  const response = await desktopFetch(endpoint.endpoint, {
+    method: 'POST',
+    headers: mediaUploadHeaders(channel, endpoint, adapterId),
+    body: form,
+    signal,
+  }, { secretRefs: mediaUploadSecretRefs(channel, endpoint, adapterId) })
+  const payload = await parseResponse(response)
+  const url = uploadedReferenceUrl(payload, endpoint.responsePath)
   if (!url || !isHttpsUrl(url)) throw new Error(`上传参考文件“${reference.label || reference.id}”后没有得到公网 HTTPS 地址`)
   return url
 }
 
+/** Performs a small multipart upload without submitting a generation task. */
+export async function testGenerationMediaUpload(channel: GenerationChannel, adapterId?: string, signal?: AbortSignal) {
+  const endpoint = mediaUploadEndpoint(channel, adapterId)
+  await assertMediaUploadSecretReady(endpoint)
+  if (endpoint.kind === 'presign') {
+    const testBlob = new Blob(['cnote upload test'], { type: 'application/octet-stream' })
+    const url = await uploadWithPresign(channel, endpoint, testBlob, 'cnote-upload-test.bin', signal, adapterId)
+    return { url }
+  }
+  const form = new FormData()
+  const testBlob = new Blob(['cnote upload test'], { type: 'application/octet-stream' })
+  form.append(endpoint.fieldName, testBlob, 'cnote-upload-test.bin')
+  form.append('purpose', 'generation-test')
+  const response = await desktopFetch(endpoint.endpoint, {
+    method: 'POST',
+    headers: mediaUploadHeaders(channel, endpoint, adapterId),
+    body: form,
+    signal,
+  }, { secretRefs: mediaUploadSecretRefs(channel, endpoint, adapterId) })
+  const payload = await parseResponse(response)
+  const url = uploadedReferenceUrl(payload, endpoint.responsePath)
+  if (!url || !isHttpsUrl(url)) throw new Error('上传接口响应中没有可匿名访问的公网 HTTPS 地址')
+  return { url }
+}
+
 async function prepareReferenceConfig(context: GenerationRequestContext, signal?: AbortSignal) {
   const { channel, config, variant } = context
-  const protocol = protocolFor(channel, config.adapterId, context.model.id)
   const adapter = generationAdapterForModel(channel, context.model.id, config.adapterId)
-  const transport = adapter?.mediaTransport || channel.mediaTransport || 'auto'
-  const inlineProtocol = variant === 'image' && ['openai-images', 'openai-images-808', 'gemini-generate-content', 'zenmux-vertex'].includes(protocol)
   const references = normalizeGenerationReferences(config.references || [])
   const orderedConfig = { ...config, references }
+  // Image protocols receive local files directly in their request body. They
+  // must never be routed through a video-style public URL conversion step.
+  if (variant === 'image') return orderedConfig
   const needsRemote = references.some((reference) => !isHttpsUrl(referenceURL(reference)))
-  if (!needsRemote || inlineProtocol || (variant === 'image' && protocol === 'openai-images')) return orderedConfig
+  if (!needsRemote) return orderedConfig
+  const transport = adapter?.mediaTransport || channel.mediaTransport || 'auto'
   if (transport === 'public-url') {
     ensurePublicReferenceURLs(references)
     return orderedConfig
   }
 
-  const uploadPath = adapter?.mediaUploadPath || channel.mediaUploadPath || '/v1/files'
+  const uploadAdapterId = config.adapterId || adapter?.id
+  const uploads = new Map<string, Promise<string>>()
   const prepared = await Promise.all(references.map(async (reference) => {
     if (isHttpsUrl(referenceURL(reference))) return reference
-    const url = await uploadReference(channel, reference, uploadPath, signal, config.adapterId)
+    const uploadKey = reference.resourceId || referenceURL(reference) || reference.id
+    let upload = uploads.get(uploadKey)
+    if (!upload) {
+      upload = uploadReference(channel, reference, signal, uploadAdapterId)
+      uploads.set(uploadKey, upload)
+    }
+    const url = await upload
     return { ...reference, source: 'uploaded' as const, url, previewUrl: reference.previewUrl || url, status: 'ready' as const }
   }))
   return { ...orderedConfig, references: normalizeGenerationReferences(prepared) }
@@ -220,6 +385,22 @@ async function vertexImageObject(reference: GenerationReference) {
   let binary = ''
   data.forEach((byte) => { binary += String.fromCharCode(byte) })
   return { bytesBase64Encoded: btoa(binary), mimeType: blob.type || 'image/png' }
+}
+
+async function imageMultipartBody(config: GenerationVariantConfig, body: Record<string, unknown>) {
+  const references = config.references.filter((reference) => reference.type === 'image')
+  const localReferences = references.filter((reference) => !isRemoteMediaURL(referenceURL(reference)))
+  if (!localReferences.length) return { body: JSON.stringify(body), multipart: false }
+  const form = new FormData()
+  Object.entries(body).forEach(([key, value]) => {
+    if (value === undefined || value === null) return
+    form.append(key, Array.isArray(value) ? JSON.stringify(value) : String(value))
+  })
+  for (const reference of localReferences) {
+    const file = await referenceBlob(reference)
+    form.append('image', file.blob, file.fileName)
+  }
+  return { body: form, multipart: true }
 }
 
 async function materializeInlineResults(body: any) {
@@ -375,13 +556,13 @@ function ensurePublicReferenceURLs(references: GenerationReference[]) {
 export async function submitGenerationTask(context: GenerationRequestContext, signal?: AbortSignal): Promise<GenerationTaskResponse> {
   const { model, variant } = context
   const initialConfig = context.config
-  const config = await prepareReferenceConfig(context, signal)
   const channel: GenerationChannel = { ...context.channel, protocol: protocolFor(context.channel, initialConfig.adapterId, model.id) }
   await assertDesktopSecretReady(channel, initialConfig.adapterId)
-  const protocol = protocolFor(channel)
-  if (variant === 'video' || (variant === 'image' && !['openai-images', 'openai-images-808', 'gemini-generate-content', 'zenmux-vertex'].includes(protocol))) ensurePublicReferenceURLs(config.references)
   const baseURL = normalizeBaseURL(channel.baseURL)
   if (!baseURL || baseURL.startsWith('local://')) throw new Error('当前生成渠道没有可用的公网接口地址')
+  const config = await prepareReferenceConfig({ ...context, channel }, signal)
+  const protocol = protocolFor(channel)
+  if (variant === 'video') ensurePublicReferenceURLs(config.references)
 
   let body: Record<string, unknown> | undefined
   let requestURL = ''
@@ -390,6 +571,9 @@ export async function submitGenerationTask(context: GenerationRequestContext, si
 
   if (variant === 'image' && (protocol === 'openai-images' || protocol === 'openai-images-808')) {
     const operation = config.references.length ? 'edits' : 'generations'
+    const imageReferences = config.references.filter((item) => item.type === 'image')
+    const remoteImageUrls = imageReferences.map(referenceURL).filter(isRemoteMediaURL)
+    const localImageReferences = imageReferences.filter((reference) => !isRemoteMediaURL(referenceURL(reference)))
     body = {
       model: model.id,
       prompt: config.prompt,
@@ -398,15 +582,16 @@ export async function submitGenerationTask(context: GenerationRequestContext, si
       background: config.background || 'auto',
       output_format: config.outputFormat || 'png',
       ...(protocol === 'openai-images-808' ? { response_format: 'url' } : {}),
+      ...(remoteImageUrls.length ? { image_urls: remoteImageUrls } : {}),
     }
     requestURL = openAIImagesEndpoint(baseURL, operation)
     if (protocol === 'openai-images-808') requestURL += `${requestURL.includes('?') ? '&' : '?'}async=true`
-    if (config.references.length) {
+    if (localImageReferences.length) {
       const form = new FormData()
-      Object.entries(body).forEach(([key, value]) => form.append(key, String(value)))
-      for (const reference of config.references.filter((item) => item.type === 'image')) {
+      Object.entries(body).forEach(([key, value]) => form.append(key, Array.isArray(value) ? JSON.stringify(value) : String(value)))
+      for (const reference of localImageReferences) {
         const file = await referenceBlob(reference)
-        form.append('image', file.blob, file.fileName)
+        form.append(protocol === 'openai-images-808' ? 'image[]' : 'image', file.blob, file.fileName)
       }
       requestBody = form
       headers = { ...authHeaders(channel) }
@@ -489,6 +674,10 @@ export async function submitGenerationTask(context: GenerationRequestContext, si
       media_inputs: mediaInputs(config.references, 'newapi'),
     }
   } else if (variant === 'image') {
+    const remoteImageUrls = config.references
+      .filter((reference) => reference.type === 'image')
+      .map(referenceURL)
+      .filter(isRemoteMediaURL)
     body = {
       model: model.id,
       prompt: config.prompt,
@@ -496,7 +685,7 @@ export async function submitGenerationTask(context: GenerationRequestContext, si
       size: 'auto',
       aspect_ratio: config.aspectRatio,
       n: 1,
-      ...(config.references.length ? { image_urls: config.references.filter((reference) => reference.type === 'image').map(referenceURL) } : {}),
+      ...(remoteImageUrls.length ? { image_urls: remoteImageUrls } : {}),
     }
   } else {
     body = {
@@ -515,13 +704,15 @@ export async function submitGenerationTask(context: GenerationRequestContext, si
       requestURL = protocol === 'newapi' || channel.providerId === 'newapi'
         ? joinVersionedEndpoint(baseURL, '/v1/images/generations')
         : joinVersionedEndpoint(baseURL, '/v1/images')
-      requestBody = JSON.stringify(body || {})
+      const imageRequest = await imageMultipartBody(config, body || {})
+      requestBody = imageRequest.body
       headers = protocol === 'newapi' || channel.providerId === 'newapi'
         ? requestHeaders(channel, {
             Prefer: 'respond-async',
             'Idempotency-Key': globalThis.crypto?.randomUUID?.() || `cnote-${Date.now()}-${Math.random().toString(36).slice(2)}`,
           })
         : authHeaders(channel)
+      if (imageRequest.multipart) delete headers['Content-Type']
     } else {
       requestURL = joinVersionedEndpoint(baseURL, '/v1/videos')
       requestBody = JSON.stringify(body || {})
@@ -539,9 +730,9 @@ export async function submitGenerationTask(context: GenerationRequestContext, si
   const inlineResults = await materializeInlineResults(parsed)
   const immediateResultUrls = [...resultURLsFrom(parsed), ...inlineResults.map((result) => result.url)]
   const taskId = taskIdFrom(parsed)
-  if (!taskId && immediateResultUrls.length) return { taskId: `completed-${Date.now()}`, resultUrls: immediateResultUrls, resultResourceIds: inlineResults.map((result) => result.resourceId), resultMimeTypes: inlineResults.map((result) => result.mimeType), raw: parsed }
+  if (!taskId && immediateResultUrls.length) return { taskId: `completed-${Date.now()}`, resultUrls: immediateResultUrls, resultResourceIds: inlineResults.map((result) => result.resourceId), resultMimeTypes: inlineResults.map((result) => result.mimeType), preparedConfig: config, raw: parsed }
   if (!taskId) throw new Error('生成服务没有返回 task_id')
-  return { taskId, resultUrls: immediateResultUrls, raw: parsed }
+  return { taskId, resultUrls: immediateResultUrls, preparedConfig: config, raw: parsed }
 }
 
 export async function pollGenerationTask(context: GenerationRequestContext, taskId: string, signal?: AbortSignal): Promise<GenerationPollResponse> {
@@ -660,6 +851,7 @@ export async function runGenerationTask(
       elapsedMs: 0,
     })
     const submitted = await submitGenerationTask(context, options.signal)
+    options.onConfigPrepared?.(submitted.preparedConfig || context.config)
     taskId = submitted.taskId
     if (submitted.resultUrls?.length) {
       const completed: GenerationTaskState = {

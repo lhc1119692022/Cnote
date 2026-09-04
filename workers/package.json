@@ -2,14 +2,18 @@
   "name": "cnote-workers",
   "version": "1.0.0",
   "description": "Cloudflare Workers for Cnote API",
+  "author": "lhc1119692022",
+  "license": "MIT",
+  "repository": "https://github.com/lhc1119692022/Cnote",
   "scripts": {
-    "build:dashboard-scripts": "node scripts/build-dashboard-scripts.mjs",
     "dev": "wrangler dev --config wrangler.toml",
     "deploy": "wrangler deploy --config wrangler.toml",
+    "dev:media": "wrangler dev --config wrangler-media-upload.toml",
+    "deploy:media": "wrangler deploy --config wrangler-media-upload.toml",
     "dev:proxy": "wrangler dev --config wrangler-proxy.toml",
     "deploy:proxy": "wrangler deploy --config wrangler-proxy.toml",
-    "test:dashboard-scripts": "npm run build:dashboard-scripts && node scripts/verify-dashboard-scripts.mjs",
-    "test:contract": "npm run test:dashboard-scripts && node scripts/verify-content-service.mjs && node scripts/verify-ai-proxy.mjs"
+    "test:media": "node scripts/verify-media-upload.mjs",
+    "test:contract": "npm run test:media && node scripts/verify-content-service.mjs && node scripts/verify-ai-proxy.mjs"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20241218.0",

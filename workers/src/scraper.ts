@@ -8,14 +8,8 @@ interface Env {
   CN_CONTENT_TOKEN?: string
 }
 
-interface DashboardContentConfig {
-  CNOTE_CONTENT_TOKEN?: string
-}
-
-const dashboardContentConfig = globalThis as typeof globalThis & DashboardContentConfig
-
 function contentAccessToken(env: Env) {
-  return env.CN_CONTENT_TOKEN || dashboardContentConfig.CNOTE_CONTENT_TOKEN || ''
+  return env.CN_CONTENT_TOKEN || ''
 }
 
 interface ScrapeErrorShape {
@@ -1739,18 +1733,13 @@ async function fetchYouTubeContent(videoId: string): Promise<YouTubeTranscriptRe
 }
 
 function contentSetupResponse(url: URL, request: Request, env: Env) {
-  return new Response([
-    'Cnote 内容解析 Worker 已运行。',
-    '',
-    '请把下面完整地址复制到 Cnote → 设置 → 内容解析服务 → 服务地址：',
-    url.origin,
-    '',
-    '不要在地址后追加 /v1/health 或其他路径。',
-    contentAccessToken(env)
-      ? '访问令牌：填写 Worker 脚本顶部设置的同一串内容。'
-      : '访问令牌：当前未启用，建议回到脚本顶部填写后重新部署。',
-  ].join('\n'), {
-    headers: { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store', ...corsHeaders(request, env) },
+  return new Response(JSON.stringify({
+    ok: true,
+    service: SERVICE_INFO.service,
+    endpoint: url.origin,
+    authenticationConfigured: Boolean(contentAccessToken(env)),
+  }), {
+    headers: { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', ...corsHeaders(request, env) },
   })
 }
 

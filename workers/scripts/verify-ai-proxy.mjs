@@ -52,10 +52,12 @@ async function withMockedFetch(handler, run) {
 
 const setup = await request('/')
 assert.equal(setup.status, 200)
-const setupText = await setup.text()
-assert.match(setupText, /gemini: https:\/\/proxy\.example\.test\/proxy\/gemini/)
-assert.match(setupText, /openai: https:\/\/proxy\.example\.test\/proxy\/openai/)
-assert.match(setupText, /不要删掉 \/proxy\/线路名/)
+const setupPayload = await setup.json()
+assert.equal(setupPayload.configured, true)
+assert.deepEqual(setupPayload.routes, [
+  { name: 'gemini', address: 'https://proxy.example.test/proxy/gemini' },
+  { name: 'openai', address: 'https://proxy.example.test/proxy/openai' },
+])
 
 const health = await request('/health')
 assert.equal(health.status, 200)
@@ -82,35 +84,14 @@ const unauthorized = await request('/proxy/openai/v1/responses', {
 })
 assert.equal(unauthorized.status, 401)
 
-globalThis.CNOTE_PROXY_ROUTES = { dashboard: 'https://dashboard-upstream.example/v1' }
-globalThis.CNOTE_PROXY_HEADER_NAME = 'X-Dashboard-Access'
-globalThis.CNOTE_PROXY_HEADER_VALUE = 'dashboard-proxy-token'
-const dashboardSetup = await request('/', {}, {})
-assert.match(await dashboardSetup.text(), /https:\/\/proxy\.example\.test\/proxy\/dashboard/)
-const dashboardUnauthorized = await request('/proxy/dashboard/v1/models', {}, {})
-assert.equal(dashboardUnauthorized.status, 401)
-await withMockedFetch(async (input, init) => {
-  const forwarded = input instanceof Request ? input : new Request(input, init)
-  assert.equal(forwarded.url, 'https://dashboard-upstream.example/v1/models')
-  return new Response(JSON.stringify({ data: [] }), { headers: { 'Content-Type': 'application/json' } })
-}, async () => {
-  const response = await request('/proxy/dashboard/v1/models', {
-    headers: { 'X-Dashboard-Access': 'dashboard-proxy-token' },
-  }, {})
-  assert.equal(response.status, 200)
-})
-delete globalThis.CNOTE_PROXY_ROUTES
-delete globalThis.CNOTE_PROXY_HEADER_NAME
-delete globalThis.CNOTE_PROXY_HEADER_VALUE
-
 const emptySetup = await request('/', {}, {})
-assert.match(await emptySetup.text(), /尚未配置第三方 API 线路/)
+assert.equal((await emptySetup.json()).configured, false)
 const emptyRequest = await request('/v1/models', {}, {})
 assert.equal(emptyRequest.status, 404)
 
 const directPathWithMultipleRoutes = await request('/v1/models', { headers: accessHeaders })
 assert.equal(directPathWithMultipleRoutes.status, 404)
-assert.match((await directPathWithMultipleRoutes.json()).message, /Worker 地址\/proxy\/线路名/)
+assert.equal((await directPathWithMultipleRoutes.json()).message, '代理路径不存在')
 
 const missingRoute = await request('/proxy/missing/v1/models', { headers: accessHeaders })
 assert.equal(missingRoute.status, 404)
@@ -121,6 +102,20 @@ const blockedEndpoint = await request('/proxy/openai/v1/files', {
   headers: accessHeaders,
 })
 assert.equal(blockedEndpoint.status, 404)
+
+await withMockedFetch(async (input) => {
+  const forwarded = input instanceof Request ? input : new Request(input)
+  assert.equal(forwarded.url, 'https://api.openai.com/v1/media/uploads/presign')
+  assert.equal(forwarded.method, 'POST')
+  return new Response(JSON.stringify({ upload_url: 'https://upload.example.test/signed', public_url: 'https://cdn.example.test/media/file' }), { headers: { 'Content-Type': 'application/json' } })
+}, async () => {
+  const response = await request('/proxy/openai/v1/media/uploads/presign', {
+    method: 'POST',
+    headers: accessHeaders,
+    body: JSON.stringify({ filename: 'reference.mp4', content_type: 'video/mp4', size: 1 }),
+  })
+  assert.equal(response.status, 200)
+})
 
 const blockedGeminiOperation = await request('/proxy/gemini/v1beta/models/gemini-3-pro:delete', {
   method: 'POST',

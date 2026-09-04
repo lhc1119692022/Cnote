@@ -1,3 +1,4 @@
+import { net } from 'electron'
 import type { NetworkPort, NetworkRequest, NetworkResponse } from './types'
 
 function normalizeHeaders(headers: Headers) {
@@ -17,7 +18,11 @@ export class NativeNetworkPort implements NetworkPort {
     const timeout = setTimeout(() => controller.abort(), Math.max(1_000, input.timeoutMs ?? 30_000))
 
     try {
-      const response = await fetch(input.url, {
+      // Use Chromium's network stack so desktop requests follow the user's
+      // configured proxy and connection settings. Node's undici fetch ignores
+      // the system proxy on Windows, which makes otherwise reachable services
+      // fail with a generic `fetch failed` error.
+      const response = await net.fetch(input.url, {
         method: input.method ?? 'GET',
         headers: input.headers,
         body: (input.body instanceof Uint8Array ? Buffer.from(input.body) : input.body) as BodyInit | undefined,

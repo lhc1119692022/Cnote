@@ -91,14 +91,16 @@ function withUpstreamInputs<T extends { prompt?: string; references?: Generation
     .filter(Boolean)
     .join('\n\n')
   const existingKeys = new Set((config.references || []).map((reference) => reference.url || reference.resourceId).filter(Boolean))
-  const upstreamReferences = upstreamNodes.flatMap((node) => (['image', 'video'] as const).flatMap((kind) =>
+  const upstreamKinds = variant === 'image' ? (['image'] as const) : (['image', 'video'] as const)
+  const upstreamReferences = upstreamNodes.flatMap((node) => upstreamKinds.flatMap((kind) =>
     getNodeMediaItems(node, kind).map((item): GenerationReference => ({
-      id: `upstream-${node.id}-${kind}-${item.resource.url || item.resource.resourceId}`,
+      id: `upstream-${node.id}-${kind}-${item.resource.sourceUrl || item.resource.url || item.resource.resourceId}`,
       type: kind,
       role: defaultRole(kind, variant),
       label: item.label,
-      source: item.resource.url && /^https?:\/\//i.test(item.resource.url) ? 'url' : 'local',
-      url: item.resource.url || undefined,
+      source: (item.resource.sourceUrl || item.resource.url) && /^https?:\/\//i.test(item.resource.sourceUrl || item.resource.url) ? 'url' : 'local',
+      url: item.resource.sourceUrl || item.resource.url || undefined,
+      previewUrl: item.resource.url || undefined,
       resourceId: item.resource.resourceId,
       mimeType: item.resource.mimeType,
       order: 0,
@@ -305,6 +307,10 @@ export const RequestNode = memo(({ id, data, selected }: NodeProps<RequestNodeDa
           modelIds: liveChannel?.modelIds || [persisted.model],
           enabled: true,
           protocol: persisted.protocol as GenerationChannel['protocol'],
+          mediaTransport: persisted.mediaTransport,
+          mediaUploadPath: persisted.mediaUploadPath,
+          mediaUploadURL: persisted.mediaUploadURL,
+          mediaUploadSecretName: persisted.mediaUploadSecretName,
           adapters: liveChannel?.adapters,
         }
       : liveChannel
@@ -341,7 +347,17 @@ export const RequestNode = memo(({ id, data, selected }: NodeProps<RequestNodeDa
         updateTask({ status: 'submitting' })
         const submitted = await submitGenerationTask({ channel, model, config: runConfig, variant }, controller.signal)
         taskId = submitted.taskId
-        updateTask({ taskId, provider: channel.providerId, channelId: channel.id, model: model.id, status: 'queued', submittedAt, elapsedMs: 0, timeoutAt, error: undefined, requestSnapshot: { variant, channelId: channel.id, providerId: channel.providerId, protocol: channel.protocol, baseURL: channel.baseURL, secretName: channel.secretName, model: model.id, config: runConfig } })
+        const preparedConfig = submitted.preparedConfig || runConfig
+        if (submitted.preparedConfig?.references && variant === 'video') {
+          // Upstream media belongs to its source node. Persist only references
+          // that were already owned by this request node; the full prepared
+          // config remains in the immutable task snapshot for polling/resume.
+          const ownedReferenceIds = new Set((config?.references || []).map((reference) => reference.id))
+          const persistedReferences = submitted.preparedConfig.references.filter((reference) => ownedReferenceIds.has(reference.id))
+          const current = useFlowStore.getState().nodes.find((node) => node.id === id)
+          if (current && persistedReferences.length) updateNode(id, { data: { ...current.data, [variant]: { ...(current.data as RequestNodeData)[variant], references: persistedReferences } } })
+        }
+        updateTask({ taskId, provider: channel.providerId, channelId: channel.id, model: model.id, status: 'queued', submittedAt, elapsedMs: 0, timeoutAt, error: undefined, requestSnapshot: { variant, channelId: channel.id, providerId: channel.providerId, protocol: channel.protocol, baseURL: channel.baseURL, secretName: channel.secretName, mediaTransport: channel.mediaTransport, mediaUploadPath: channel.mediaUploadPath, mediaUploadURL: channel.mediaUploadURL, mediaUploadSecretName: channel.mediaUploadSecretName, model: model.id, config: preparedConfig } })
         if (submitted.resultUrls?.length) {
           updateTask({ status: 'completed', resultUrls: submitted.resultUrls, resultResourceIds: submitted.resultResourceIds, resultMimeTypes: submitted.resultMimeTypes, completedAt: Date.now(), elapsedMs: Date.now() - submittedAt })
           createResultNode(submitted.resultUrls, submitted.resultResourceIds, submitted.resultMimeTypes)
@@ -383,7 +399,7 @@ export const RequestNode = memo(({ id, data, selected }: NodeProps<RequestNodeDa
       pollingRef.current = false
       abortRef.current = null
     }
-  }, [config, createResultNode, id, timeoutMs, updateTask, variant])
+  }, [config, createResultNode, id, timeoutMs, updateNode, updateTask, variant])
 
   const runTaskRef = useRef(runTask)
   useEffect(() => { runTaskRef.current = runTask }, [runTask])
@@ -498,8 +514,18 @@ export const RequestNode = memo(({ id, data, selected }: NodeProps<RequestNodeDa
   const handleFile = async (file: File, type: GenerationReference['type']) => {
     if (variant === 'body') return
     const stored = await storeLocalResource(file)
+    const duplicate = orderedReferences.find((reference) => reference.type === type && reference.resourceId === stored.resourceId)
+    if (duplicate) {
+      // The same content already has a reference in this node. Keep one
+      // storage lease per logical reference and leave role/order untouched.
+      await deleteLocalResource(stored.resourceId)
+      revokeManagedObjectUrl(stored.url)
+      return
+    }
     const selectedAdapter = selectedChannel && config ? generationAdapterForModel(selectedChannel, config.model || '', config.adapterId) : undefined
-    const providerNeedsUpload = selectedAdapter?.protocol !== 'gemini-generate-content'
+    // Images are sent as local multipart/inline inputs. Only video references
+    // need a later public-URL conversion step.
+    const providerNeedsUpload = variant === 'video' && selectedAdapter?.protocol !== 'gemini-generate-content'
     addReference(createGenerationReference({
       type,
       role: defaultRole(type, variant),
@@ -511,6 +537,10 @@ export const RequestNode = memo(({ id, data, selected }: NodeProps<RequestNodeDa
       size: file.size,
       status: providerNeedsUpload ? 'pending-upload' : 'ready',
     }))
+    // The preview component creates and owns its own managed URL. Each
+    // reference still keeps the storage lease returned by storeLocalResource,
+    // so same-content files share bytes while remaining independently removable.
+    revokeManagedObjectUrl(stored.url)
   }
 
   const removeReference = async (reference: GenerationReference) => {
@@ -629,7 +659,6 @@ export const RequestNode = memo(({ id, data, selected }: NodeProps<RequestNodeDa
         <div className="flex max-h-[168px] flex-wrap items-center gap-x-3 gap-y-2 overflow-auto custom-scrollbar">
           {referenceTypes.map(renderReferences)}
         </div>
-        {selectedChannel && ['openai-images-808', '808-video'].includes(selectedChannel.protocol || '') && references.some((reference) => reference.source === 'local') && <div className="mt-2 text-[10px] leading-4 text-amber-700">当前 808 端点只接受公网 HTTPS 直链，本地素材需要先上传或替换为直链。</div>}
       </div>
 
       <div className="relative min-h-[156px] min-w-0 flex-1 px-3 pb-3 pt-1">

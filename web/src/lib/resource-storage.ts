@@ -4,6 +4,8 @@ const RESOURCE_PREFIX = 'resource:'
 const RESOURCE_META_PREFIX = 'resource-meta:'
 const managedObjectUrls = new Set<string>()
 
+export const MAX_BROWSER_STORAGE_BYTES = 10 * 1024 ** 3
+
 interface ResourceMeta {
   id: string
   checksum: string
@@ -51,12 +53,25 @@ async function getMeta(resourceId: string) {
   return localforage.getItem<ResourceMeta>(`${RESOURCE_META_PREFIX}${resourceId}`)
 }
 
+async function assertBrowserStorageCapacity(additionalBytes: number) {
+  if (additionalBytes <= 0 || typeof window === 'undefined' || window.cnoteDesktop) return
+  if (typeof navigator === 'undefined' || !navigator.storage?.estimate) return
+  const estimate = await navigator.storage.estimate()
+  const usage = estimate.usage || 0
+  if (usage + additionalBytes > MAX_BROWSER_STORAGE_BYTES) {
+    throw new Error('浏览器本地存储已达到 Cnote 的 10 GB 上限，请删除不再使用的本地素材后重试。')
+  }
+}
+
 export async function storeLocalResource(file: Blob) {
   return enqueueResourceMutation(async () => {
     const checksum = await checksumBlob(file)
     const resourceId = `sha256-${checksum}`
     const previous = await getMeta(resourceId)
-    if (!previous) await localforage.setItem(`${RESOURCE_PREFIX}${resourceId}`, file)
+    if (!previous) {
+      await assertBrowserStorageCapacity(file.size)
+      await localforage.setItem(`${RESOURCE_PREFIX}${resourceId}`, file)
+    }
     const meta: ResourceMeta = previous
       ? { ...previous, refCount: previous.refCount + 1 }
       : { id: resourceId, checksum, mimeType: file.type || 'application/octet-stream', size: file.size, refCount: 1, createdAt: Date.now() }
