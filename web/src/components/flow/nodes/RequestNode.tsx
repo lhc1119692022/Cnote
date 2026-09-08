@@ -677,7 +677,7 @@ export const RequestNode = memo(({ id, data, selected }: NodeProps<RequestNodeDa
       {(task.status === 'timeout' || (task.status === 'failed' && Boolean(task.error)) || task.status === 'completed') && <div className="shrink-0 px-3 pb-2 text-[10px]">
         {task.status === 'timeout' && <div className="rounded-lg bg-amber-50 px-2.5 py-2 text-amber-800"><div>任务已超时，任务 ID 已保留。</div>{task.taskId && <div className="mt-1 truncate font-mono" title={task.taskId}>{task.taskId}</div>}<button type="button" className="nodrag mt-1.5 font-semibold underline" onClick={() => void runTask(task.taskId)}>继续查询</button></div>}
         {task.status === 'failed' && task.error && <div className="rounded-lg bg-destructive/5 px-2.5 py-2 text-destructive">{task.error}</div>}
-        {task.status === 'completed' && <div className="rounded-lg bg-emerald-50 px-2.5 py-2 text-emerald-800">任务已完成{task.resultUrls?.length ? `，已收到 ${task.resultUrls.length} 个结果` : ''}</div>}
+        {task.status === 'completed' && <div className="rounded-lg bg-emerald-50 px-2.5 py-2 text-emerald-800">任务已完成{task.resultUrls?.length ? `，已收到 ${task.resultUrls.length} 个结果` : ''}，耗时 ${formatElapsed(task.elapsedMs || elapsed)}</div>}
       </div>}
 
       <div className="relative z-40 flex shrink-0 items-center gap-1.5 border-t border-border px-3 py-2.5" onPointerDown={(event) => event.stopPropagation()}>

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Check, ChevronDown, Film, Image as ImageIcon, KeyRound, Layers3, Pencil, Plus, Trash2, Video, X } from 'lucide-react'
+import { Check, ChevronDown, Film, Image as ImageIcon, KeyRound, Layers3, Pencil, Plus, RefreshCw, Trash2, Video, X } from 'lucide-react'
 import { AppShell } from '@/components/layout/AppShell'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
@@ -15,6 +15,7 @@ import {
   type GenerationProtocolId,
 } from '@/stores/use-generation-store'
 import { testGenerationMediaUpload } from '@/lib/generation/client'
+import { AIClient } from '@/lib/api/client'
 import { useMediaStorageStore } from '@/stores/use-media-storage-store'
 import { syncDesktopSecret } from '@/lib/desktop-secrets'
 
@@ -56,6 +57,9 @@ export function GenerationChannelsManager({ embedded = false, openNewRequest = 0
   const [apiKey, setAPIKey] = useState('')
   const [modelIds, setModelIds] = useState<string[]>([])
   const [customModelId, setCustomModelId] = useState('')
+  const [availableModelIds, setAvailableModelIds] = useState<string[]>([])
+  const [isFetchingModels, setIsFetchingModels] = useState(false)
+  const [modelFetchMessage, setModelFetchMessage] = useState('')
   const [supportsImage, setSupportsImage] = useState(true)
   const [supportsVideo, setSupportsVideo] = useState(false)
   const [mediaTransport, setMediaTransport] = useState<GenerationMediaTransport>('auto')
@@ -90,6 +94,9 @@ export function GenerationChannelsManager({ embedded = false, openNewRequest = 0
     setAPIKey('')
     setModelIds([])
     setCustomModelId('')
+    setAvailableModelIds([])
+    setIsFetchingModels(false)
+    setModelFetchMessage('')
     setSupportsImage(true)
     setSupportsVideo(false)
     setMediaTransport('auto')
@@ -122,6 +129,9 @@ export function GenerationChannelsManager({ embedded = false, openNewRequest = 0
     setAPIKey('')
     setModelIds(channel.modelIds || [])
     setCustomModelId('')
+    setAvailableModelIds([])
+    setIsFetchingModels(false)
+    setModelFetchMessage('')
     setSupportsImage(generationChannelSupportsVariant(channel, 'image'))
     setSupportsVideo(generationChannelSupportsVariant(channel, 'video'))
     const storedMediaTransport = channel.mediaTransport || channel.adapters?.find((adapter) => adapter.mediaTransport)?.mediaTransport || 'auto'
@@ -142,6 +152,8 @@ export function GenerationChannelsManager({ embedded = false, openNewRequest = 0
       : []
     setModelIds(knownModels)
     setCustomModelId('')
+    setAvailableModelIds([])
+    setModelFetchMessage('')
     setShowProtocolMenu(false)
     setSupportsImage(protocolSupportsImage(nextProtocol))
     setSupportsVideo(protocolSupportsVideo(nextProtocol))
@@ -149,6 +161,26 @@ export function GenerationChannelsManager({ embedded = false, openNewRequest = 0
     setMediaTestMessage('')
   }
 
+  const handleFetchModels = async () => {
+    const endpoint = normalizeEndpoint(baseURL)
+    const apiKeyValue = apiKey.trim() || (editingChannelId ? getAPIKey(editingChannelId) : '')
+    if (!endpoint) { setModelFetchMessage('请先填写接口地址。'); return }
+    if (!apiKeyValue) { setModelFetchMessage('请先填写 API Key，或先保存现有渠道。'); return }
+    setIsFetchingModels(true)
+    setModelFetchMessage('')
+    try {
+      const client = new AIClient({ id: 'generation-models', name: '生成渠道', baseURL: endpoint, protocol: 'chatCompletions', models: [] }, apiKeyValue)
+      const ids = await client.listModels()
+      setAvailableModelIds(ids)
+      setModelFetchMessage(ids.length ? '已拉取 ' + ids.length + ' 个模型，请选择需要启用的模型。' : '接口连接成功，但没有返回模型列表。')
+    } catch (error) {
+      setModelFetchMessage(error instanceof Error ? '拉取模型失败：' + error.message : '拉取模型失败。')
+    } finally { setIsFetchingModels(false) }
+  }
+
+  const toggleFetchedModel = (modelId: string) => {
+    setModelIds((current) => current.includes(modelId) ? current.filter((id) => id !== modelId) : [...current, modelId])
+  }
   const addCustomModel = () => {
     const modelId = customModelId.trim()
     if (!modelId || modelIds.includes(modelId)) return
@@ -350,7 +382,13 @@ export function GenerationChannelsManager({ embedded = false, openNewRequest = 0
           </div>}
 
           <div className="mt-4 text-[13px] text-muted-foreground"><span className="mb-2 flex items-center gap-1.5 font-medium"><KeyRound className="h-3.5 w-3.5" />API Key {editingChannelId && <span className="font-normal">（留空则保持不变）</span>}</span><input type="password" value={apiKey} onChange={(event) => setAPIKey(event.target.value)} placeholder={editingChannelId ? '留空保持现有密钥' : '输入 API Key'} className="h-10 w-full rounded-lg border border-border bg-background px-3 text-foreground outline-none focus:border-primary focus:ring-2 focus:ring-ring/20" /></div>
-          <div className="mt-5"><div><h3 className="text-[13px] font-medium">渠道模型</h3><p className="mt-1 text-[11px] text-muted-foreground">手动添加这个渠道实际开放的模型 ID。</p></div>
+          <div className="mt-5"><div className="flex items-center justify-between gap-3"><div><h3 className="text-[13px] font-medium">渠道模型</h3><p className="mt-1 text-[11px] text-muted-foreground">可从接口拉取模型；无法拉取时仍可手动添加模型 ID。</p></div><Button type="button" variant="secondary" size="sm" className="shrink-0 gap-1.5" disabled={isFetchingModels} onClick={() => void handleFetchModels()}><RefreshCw className={`h-3.5 w-3.5 ${isFetchingModels ? 'animate-spin' : ''}`} />拉取模型</Button></div>
+            {(availableModelIds.length > 0 || modelFetchMessage) && (
+              <div className={`mt-3 min-h-[52px] rounded-lg border px-3 py-3 text-[11px] ${availableModelIds.length ? 'border-border bg-background' : 'border-dashed border-border text-muted-foreground'}`}>
+                {modelFetchMessage && <p className="mb-2 leading-relaxed text-muted-foreground">{modelFetchMessage}</p>}
+                {availableModelIds.length > 0 && <div className="flex flex-wrap gap-2">{availableModelIds.map((modelId) => <button key={modelId} type="button" onClick={() => toggleFetchedModel(modelId)} className={`flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-[11px] transition-colors ${modelIds.includes(modelId) ? 'border-primary bg-primary/10 text-foreground' : 'border-border text-muted-foreground hover:border-primary/50'}`}>{modelIds.includes(modelId) && <Check className="h-3 w-3" />}{modelId}</button>)}</div>}
+              </div>
+            )}
             <div className="mt-3 min-h-[52px] rounded-lg border border-border bg-background px-3 py-3">{modelIds.length > 0 ? <div className="flex flex-wrap gap-2">{modelIds.map((modelId) => <button key={modelId} type="button" onClick={() => setModelIds((current) => current.filter((id) => id !== modelId))} className="flex items-center gap-1.5 rounded-lg border border-primary bg-primary/10 px-2.5 py-1.5 text-[11px] text-foreground" title="移除模型">{modelId}<X className="h-3 w-3" /></button>)}</div> : <p className="text-center text-[11px] text-muted-foreground">尚未添加模型 ID</p>}</div>
             <div className="mt-2 flex gap-2"><input value={customModelId} onChange={(event) => setCustomModelId(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); addCustomModel() } }} placeholder="手动输入模型 ID" className="h-9 min-w-0 flex-1 rounded-lg border border-border bg-background px-3 text-[12px] text-foreground outline-none focus:border-primary focus:ring-2 focus:ring-ring/20" /><Button variant="secondary" size="sm" onClick={addCustomModel}>添加模型</Button></div>
             {modelIds.length === 0 && <p className="mt-2 text-[11px] text-destructive">至少需要选择或添加一个模型 ID</p>}</div>

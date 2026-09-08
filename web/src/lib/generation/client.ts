@@ -421,14 +421,24 @@ async function materializeInlineResults(body: any, variant: 'image' | 'video') {
 
 async function materializeRemoteResults(urls: string[], variant: 'image' | 'video', signal?: AbortSignal) {
   const results: { url: string; resourceId: string; mimeType: string; fileName: string }[] = []
+  let lastError: unknown
   for (const url of urls) {
-    const response = await desktopFetch(url, { signal })
-    if (!response.ok) throw new Error(`无法下载生成结果（HTTP ${response.status}）`)
+    try {
+      const response = await desktopFetch(url, { signal })
+      if (!response.ok) {
+        lastError = new Error(`无法下载生成结果（HTTP ${response.status}）`)
+        continue
+      }
     const mimeType = response.headers.get('content-type')?.split(';', 1)[0]?.trim() || (variant === 'image' ? 'image/png' : 'video/mp4')
     const fileName = generationFileName(variant, results.length, mimeType)
     const stored = await storeLocalResource(await response.blob(), fileName, true)
-    results.push({ url: stored.url, resourceId: stored.resourceId, mimeType, fileName })
+      results.push({ url: stored.url, resourceId: stored.resourceId, mimeType, fileName })
+    } catch (error) {
+      if (error instanceof DOMException && error.name === 'AbortError') throw error
+      lastError = error
+    }
   }
+  if (!results.length && lastError) throw lastError
   return results
 }
 
