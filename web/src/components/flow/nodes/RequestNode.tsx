@@ -2,7 +2,7 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { NodeProps, Position } from 'reactflow'
 import { Check, ChevronDown, ChevronUp, Image as ImageIcon, LoaderCircle, Mic, Sparkles, Square, Upload, Video, X } from 'lucide-react'
 import { useFlowStore } from '@/stores/use-flow-store'
-import { generationAdapterForModel, generationChannelSupportsVariant, generationChannelUsesModelInference, useGenerationStore, type GenerationChannel, type GenerationModel } from '@/stores/use-generation-store'
+import { generationAdapterForModel, generationChannelSupportsVariant, generationChannelUsesModelInference, generationSecretName, useGenerationStore, type GenerationChannel, type GenerationModel } from '@/stores/use-generation-store'
 import { createGenerationReference, createRequestNodeData, normalizeGenerationReferences } from '@/lib/generation/defaults'
 import { cancelGenerationTask, pollGenerationTask, pollIntervalForModel, submitGenerationTask } from '@/lib/generation/client'
 import { createGenerationResultContentData } from '@/lib/generation/results'
@@ -297,27 +297,29 @@ export const RequestNode = memo(({ id, data, selected }: NodeProps<RequestNodeDa
     const previousTask = previousNodeData?.tasks?.[variant] || previousNodeData?.task
     const persisted = resumeTaskId ? previousTask?.requestSnapshot : undefined
     const liveChannel = config?.channelId ? generationStore.getChannel(config.channelId) : undefined
+    const persistedLiveChannel = persisted ? generationStore.getChannel(persisted.channelId) : liveChannel
     const channel: GenerationChannel | undefined = persisted
       ? {
           id: persisted.channelId,
           providerId: persisted.providerId as GenerationChannel['providerId'],
-          name: liveChannel?.name || '已提交渠道',
+          name: persistedLiveChannel?.name || '已提交渠道',
           baseURL: persisted.baseURL,
-          secretName: persisted.secretName || liveChannel?.secretName,
-          modelIds: liveChannel?.modelIds || [persisted.model],
+          apiKey: persistedLiveChannel ? generationStore.getAPIKey(persistedLiveChannel.id) || undefined : undefined,
+          secretName: persisted.secretName || persistedLiveChannel?.secretName || generationSecretName(persisted.channelId),
+          modelIds: persistedLiveChannel?.modelIds || [persisted.model],
           enabled: true,
           protocol: persisted.protocol as GenerationChannel['protocol'],
           mediaTransport: persisted.mediaTransport,
           mediaUploadPath: persisted.mediaUploadPath,
           mediaUploadURL: persisted.mediaUploadURL,
           mediaUploadSecretName: persisted.mediaUploadSecretName,
-          adapters: liveChannel?.adapters,
+          adapters: persistedLiveChannel?.adapters,
         }
       : liveChannel
     const runConfig = persisted?.config || (config ? withUpstreamInputs(id, variant, config) : config)
     const model = persisted
-      ? liveChannel?.id === persisted.channelId
-        ? generationStore.getModels(liveChannel.id).find((item) => item.id === persisted.model) || { id: persisted.model, name: persisted.model, capabilities: [] }
+        ? persistedLiveChannel?.id === persisted.channelId
+          ? generationStore.getModels(persistedLiveChannel.id).find((item) => item.id === persisted.model) || { id: persisted.model, name: persisted.model, capabilities: [] }
         : { id: persisted.model, name: persisted.model, capabilities: [] }
       : config?.model ? generationStore.getModels(config.channelId).find((item) => item.id === config.model) : undefined
     if (!channel || !model || !runConfig) {
@@ -525,7 +527,7 @@ export const RequestNode = memo(({ id, data, selected }: NodeProps<RequestNodeDa
     const selectedAdapter = selectedChannel && config ? generationAdapterForModel(selectedChannel, config.model || '', config.adapterId) : undefined
     // Images are sent as local multipart/inline inputs. Only video references
     // need a later public-URL conversion step.
-    const providerNeedsUpload = variant === 'video' && selectedAdapter?.protocol !== 'gemini-generate-content'
+    const providerNeedsUpload = variant === 'video' && selectedAdapter?.protocol !== 'google-images'
     addReference(createGenerationReference({
       type,
       role: defaultRole(type, variant),
@@ -730,7 +732,7 @@ export const RequestNode = memo(({ id, data, selected }: NodeProps<RequestNodeDa
               <div className="h-px bg-border" />
               <div className="flex items-center justify-between gap-3 px-2 py-1.5">
                 <span className="text-[10px] text-muted-foreground">时长（秒）</span>
-                <input type="number" min={selectedModel?.minDuration || 1} max={selectedModel?.maxDuration || 60} value={config?.seconds || 30} onChange={(event) => updateVariant({ seconds: Number(event.target.value) })} className="nodrag h-7 w-16 rounded-full border border-border bg-background/75 px-2 text-center text-[10px] text-foreground outline-none focus-visible:ring-1 focus-visible:ring-foreground/30" aria-label="时长（秒）" />
+                <input type="number" min={selectedModel?.minDuration || 1} max={selectedModel?.maxDuration || 60} value={config?.seconds || 5} onChange={(event) => updateVariant({ seconds: Number(event.target.value) })} className="nodrag h-7 w-16 rounded-full border border-border bg-background/75 px-2 text-center text-[10px] text-foreground outline-none focus-visible:ring-1 focus-visible:ring-foreground/30" aria-label="时长（秒）" />
               </div>
               <label className={`nodrag flex items-center justify-between gap-3 rounded-lg px-2 py-2 text-[11px] text-foreground hover:bg-muted/70 ${selectedModel && !selectedModel.capabilities.includes('generate-audio') ? 'opacity-45' : ''}`} title={selectedModel && !selectedModel.capabilities.includes('generate-audio') ? '当前模型不支持生成音频' : '生成音频'}>
                 <span className="flex items-center gap-2"><Mic className="h-3.5 w-3.5 text-muted-foreground" />生成音频</span>

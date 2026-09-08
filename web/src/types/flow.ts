@@ -241,7 +241,19 @@ export interface ContentNodeData extends BaseNodeData {
   manualSize?: boolean
 }
 
-export type AIMessage = { role: 'user' | 'assistant'; content: string; requestContent?: string; createdAt?: number }
+export type AIMessage = {
+  role: 'user' | 'assistant'
+  content: string
+  requestContent?: string
+  /** Request settings captured at send time so retry always replays the same request. */
+  channelId?: string
+  model?: string
+  webSearch?: AIWebSearchMode
+  reasoningLevel?: AIReasoningLevel
+  systemPrompt?: string
+  maxOutputTokens?: number
+  createdAt?: number
+}
 export type AIWebSearchMode = 'auto' | 'on' | 'off'
 export type AIReasoningLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max'
 export interface AISession { id: string; title: string; createdAt: number; updatedAt: number; messages: AIMessage[] }
@@ -408,7 +420,14 @@ export interface BrowserNodeData extends BaseNodeData {
   extractedContent?: string
   status: 'idle' | 'loading' | 'ready' | 'error'
 }
-export interface StickyNodeData extends BaseNodeData { content: string; color: 'yellow' | 'pink' | 'green' | 'blue' | 'purple'; background: 'solid' | 'none' }
+export type StickyNodeColor = 'yellow' | 'pink' | 'green' | 'blue' | 'purple'
+export interface StickyNodeData extends BaseNodeData {
+  content: string
+  color: StickyNodeColor
+  background: 'solid' | 'none'
+  /** A pinned sticky stays selectable and editable, but cannot be dragged. */
+  pinned?: boolean
+}
 export interface GroupNodeData extends BaseNodeData { memberCount: number; padding?: number }
 
 export interface Flow {

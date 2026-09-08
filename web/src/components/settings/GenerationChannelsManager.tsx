@@ -16,17 +16,7 @@ import {
 } from '@/stores/use-generation-store'
 import { testGenerationMediaUpload } from '@/lib/generation/client'
 import { useMediaStorageStore } from '@/stores/use-media-storage-store'
-
-const PROTOCOL_DEFAULT_URLS: Record<GenerationProtocolId, string> = {
-  'openai-images': 'https://api.openai.com/v1',
-  'gemini-generate-content': 'https://generativelanguage.googleapis.com',
-  'zenmux-vertex': 'https://zenmux.ai/api/vertex-ai',
-  'openai-images-808': '',
-  '808-video': 'https://api.808relay.com',
-  'meaicc-video': '',
-  'generic-video': '',
-  newapi: '',
-}
+import { syncDesktopSecret } from '@/lib/desktop-secrets'
 
 const PROTOCOL_GROUP_LABELS = {
   image: '图像端点',
@@ -34,8 +24,8 @@ const PROTOCOL_GROUP_LABELS = {
   'image-video': '图像与视频端点',
 } as const
 
-const protocolSupportsImage = (value: GenerationProtocolId) => !['808-video', 'meaicc-video', 'generic-video'].includes(value)
-const protocolSupportsVideo = (value: GenerationProtocolId) => ['808-video', 'meaicc-video', 'generic-video', 'newapi'].includes(value)
+const protocolSupportsImage = (value: GenerationProtocolId) => value !== 'video-api'
+const protocolSupportsVideo = (value: GenerationProtocolId) => value === 'video-api'
 
 interface GenerationChannelsManagerProps {
   embedded?: boolean
@@ -47,7 +37,7 @@ function normalizeEndpoint(baseURL: string) {
 }
 
 function defaultMediaUploadPath(protocol: GenerationProtocolId) {
-  return protocol === '808-video' ? '/v1/media/uploads/presign' : ''
+  return protocol === 'video-api' ? '/v1/media/uploads/presign' : ''
 }
 
 export function GenerationChannelsManager({ embedded = false, openNewRequest = 0 }: GenerationChannelsManagerProps = {}) {
@@ -62,7 +52,7 @@ export function GenerationChannelsManager({ embedded = false, openNewRequest = 0
   const [editingChannelId, setEditingChannelId] = useState<string | null>(null)
   const [channelName, setChannelName] = useState('')
   const [protocol, setProtocol] = useState<GenerationProtocolId>('openai-images')
-  const [baseURL, setBaseURL] = useState(PROTOCOL_DEFAULT_URLS['openai-images'])
+  const [baseURL, setBaseURL] = useState('')
   const [apiKey, setAPIKey] = useState('')
   const [modelIds, setModelIds] = useState<string[]>([])
   const [customModelId, setCustomModelId] = useState('')
@@ -96,7 +86,7 @@ export function GenerationChannelsManager({ embedded = false, openNewRequest = 0
     setEditingChannelId(null)
     setChannelName('')
     setProtocol('openai-images')
-    setBaseURL(PROTOCOL_DEFAULT_URLS['openai-images'])
+    setBaseURL('')
     setAPIKey('')
     setModelIds([])
     setCustomModelId('')
@@ -128,7 +118,7 @@ export function GenerationChannelsManager({ embedded = false, openNewRequest = 0
     setEditingChannelId(channel.id)
     setChannelName(channel.name)
     setProtocol(nextProtocol)
-    setBaseURL(channel.baseURL || PROTOCOL_DEFAULT_URLS[nextProtocol])
+    setBaseURL(channel.baseURL || '')
     setAPIKey('')
     setModelIds(channel.modelIds || [])
     setCustomModelId('')
@@ -145,9 +135,9 @@ export function GenerationChannelsManager({ embedded = false, openNewRequest = 0
 
   const selectProtocol = (nextProtocol: GenerationProtocolId) => {
     setProtocol(nextProtocol)
-    setBaseURL(PROTOCOL_DEFAULT_URLS[nextProtocol])
+    setBaseURL('')
     setMediaUploadPath(defaultMediaUploadPath(nextProtocol))
-    const knownModels = ['808-video', 'meaicc-video'].includes(nextProtocol)
+    const knownModels = nextProtocol === 'video-api'
       ? modelsForGenerationProtocol(nextProtocol).map((model) => model.id)
       : []
     setModelIds(knownModels)
@@ -196,7 +186,7 @@ export function GenerationChannelsManager({ embedded = false, openNewRequest = 0
     }
 
     const updates = {
-      providerId: 'custom' as const,
+      providerId: protocol === 'openai-images' ? 'openai' as const : protocol === 'google-images' ? 'google' as const : 'video' as const,
       protocol,
       name: normalizedName,
       baseURL: normalizedBaseURL,
@@ -220,7 +210,7 @@ export function GenerationChannelsManager({ embedded = false, openNewRequest = 0
     let savedChannel: GenerationChannel | undefined
     if (editingChannelId) {
       updateChannel(editingChannelId, { ...updates, ...(secretValue ? { apiKey: secretValue } : {}) })
-      savedChannel = channels.find((channel) => channel.id === editingChannelId)
+      savedChannel = useGenerationStore.getState().getChannel(editingChannelId)
     } else {
       savedChannel = addChannel({ ...updates, apiKey: secretValue })
     }
@@ -229,7 +219,7 @@ export function GenerationChannelsManager({ embedded = false, openNewRequest = 0
     // dialog so an immediate click on “生成” cannot race the secret write.
     if (secretValue && savedChannel?.secretName) {
       try {
-        await window.cnoteDesktop?.secrets.set(savedChannel.secretName, secretValue)
+        await syncDesktopSecret(savedChannel.secretName, secretValue)
       } catch {
         alert('API Key 未能保存到桌面安全存储，请重试。')
         return
@@ -351,7 +341,7 @@ export function GenerationChannelsManager({ embedded = false, openNewRequest = 0
           {supportsVideo && <div className="mt-4 grid gap-4 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] md:items-end">
             <label className="block text-[13px] text-muted-foreground"><span className="mb-2 block font-medium">素材传输方式</span><select value={mediaTransport === 'public-url' ? 'auto' : mediaTransport} onChange={(event) => { setMediaTransport(event.target.value as GenerationMediaTransport); setMediaTestState('idle'); setMediaTestMessage('') }} className="h-10 w-full rounded-lg border border-border bg-background px-3 text-foreground outline-none focus:border-primary focus:ring-2 focus:ring-ring/20"><option value="auto">自动</option><option value="multipart">multipart</option><option value="custom">自定义</option></select></label>
             {mediaTransport !== 'custom' ? (
-              <label className="block text-[13px] text-muted-foreground"><span className="mb-2 block font-medium">供应商上传路径</span><input value={mediaUploadPath} onChange={(event) => { setMediaUploadPath(event.target.value); setMediaTestState('idle'); setMediaTestMessage('') }} placeholder={protocol === '808-video' ? '/v1/media/uploads/presign' : '/v1/media/uploads'} className="h-10 w-full rounded-lg border border-border bg-background px-3 text-foreground outline-none focus:border-primary focus:ring-2 focus:ring-ring/20" /></label>
+              <label className="block text-[13px] text-muted-foreground"><span className="mb-2 block font-medium">供应商上传路径</span><input value={mediaUploadPath} onChange={(event) => { setMediaUploadPath(event.target.value); setMediaTestState('idle'); setMediaTestMessage('') }} placeholder={protocol === 'video-api' ? '/v1/media/uploads/presign' : '/v1/media/uploads'} className="h-10 w-full rounded-lg border border-border bg-background px-3 text-foreground outline-none focus:border-primary focus:ring-2 focus:ring-ring/20" /></label>
             ) : <div className="flex h-10 items-center text-[11px] leading-relaxed text-muted-foreground">自定义服务地址和令牌在“本地存储”中统一配置。</div>}
             <div className="flex min-w-0 flex-wrap items-center gap-2">
               <Button type="button" variant="outline" size="sm" className="gap-1.5" onClick={() => void handleTestMediaUpload()} disabled={mediaTestState === 'testing'}><Check className="h-3.5 w-3.5" />验证上传</Button>

@@ -64,7 +64,12 @@ export function textForAIContextNode(node: Node) {
           : undefined
     return uniqueText([sourceUrl, parsedContentText(data)])
   }
-  if (node.type === 'ai') return String((node.data as any)?.output || [...((node.data as any)?.messages || [])].reverse().find((message: { role?: string }) => message.role === 'assistant')?.content || '')
+  if (node.type === 'ai') {
+    const aiData = node.data as any
+    return String(aiData?.output !== undefined
+      ? aiData.output
+      : [...(aiData?.messages || [])].reverse().find((message: { role?: string }) => message.role === 'assistant')?.content || '')
+  }
   if (node.type === 'browser') {
     const browserData = node.data as any
     const url = String(browserData.confirmedUrl || browserData.url || '').trim()

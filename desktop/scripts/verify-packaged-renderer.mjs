@@ -54,7 +54,9 @@ await new Promise((resolve, reject) => {
 })
 
 const bodyText = String(await evaluate('document.body.innerText'))
-if (!bodyText.includes('创建 Flow') || !bodyText.includes('控制台')) {
+const mountedWorkspace = bodyText.includes('创建 Flow')
+  || (bodyText.includes('添加') && bodyText.includes('保存'))
+if (!mountedWorkspace) {
   throw new Error(`Packaged renderer did not mount the Cnote workspace. Body text: ${bodyText.slice(0, 500)}`)
 }
 

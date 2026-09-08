@@ -1,9 +1,10 @@
-import { generationAdapterForConfig, generationAdapterForModel, generationProtocolForChannel, type GenerationChannel, type GenerationModel } from '@/stores/use-generation-store'
+import { generationAdapterForConfig, generationAdapterForModel, generationMediaUploadSecretName, generationProtocolForChannel, generationSecretName, type GenerationChannel, type GenerationModel } from '@/stores/use-generation-store'
 import { MEDIA_STORAGE_DEFAULTS, useMediaStorageStore } from '@/stores/use-media-storage-store'
 import type { GenerationReference, GenerationTaskState, GenerationVariantConfig } from '@/types/flow'
 import { normalizeGenerationReferences } from '@/lib/generation/defaults'
 import { loadLocalResourceBlob, loadLocalResourceUrl, storeLocalResource } from '@/lib/resource-storage'
 import { desktopFetch } from '@/lib/desktop-fetch'
+import { ensureDesktopSecret, syncDesktopSecret } from '@/lib/desktop-secrets'
 
 export interface GenerationRequestContext {
   channel: GenerationChannel
@@ -42,16 +43,16 @@ function normalizeBaseURL(baseURL: string) {
 }
 
 function authHeaders(channel: GenerationChannel, adapterId?: string) {
-  const useDesktopSecret = Boolean(typeof window !== 'undefined' && window.cnoteDesktop && channel.secretName)
-  if (protocolFor(channel, adapterId) === 'gemini-generate-content') {
+  const apiKey = channel.apiKey?.trim().replace(/^Bearer\s+/i, '')
+  if (protocolFor(channel, adapterId) === 'google-images') {
     return {
       'Content-Type': 'application/json',
-      ...(!useDesktopSecret && channel.apiKey ? { 'x-goog-api-key': channel.apiKey } : {}),
+      ...(apiKey ? (/^sk-/i.test(apiKey) ? { Authorization: `Bearer ${apiKey}` } : { 'x-goog-api-key': apiKey }) : {}),
     }
   }
   return {
     'Content-Type': 'application/json',
-    ...(!useDesktopSecret && channel.apiKey ? { Authorization: `Bearer ${channel.apiKey}` } : {}),
+    ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
   }
 }
 
@@ -65,35 +66,38 @@ function protocolFor(channel: GenerationChannel, adapterId?: string, modelId?: s
 }
 
 function authSecretRefs(channel: GenerationChannel, adapterId?: string) {
-  if (!channel.secretName || typeof window === 'undefined' || !window.cnoteDesktop) return undefined
-  return { [protocolFor(channel, adapterId) === 'gemini-generate-content' ? 'x-goog-api-key' : 'Authorization']: channel.secretName }
+  if (typeof window === 'undefined' || !window.cnoteDesktop) return undefined
+  const secretName = channel.secretName || generationSecretName(channel.id)
+  return { [protocolFor(channel, adapterId) === 'google-images' && !/^sk-/i.test(channel.apiKey?.trim() || '') ? 'x-goog-api-key' : 'Authorization']: secretName }
 }
 
 async function assertDesktopSecretReady(channel: GenerationChannel, adapterId?: string) {
   const desktop = typeof window !== 'undefined' ? window.cnoteDesktop : undefined
   if (!desktop?.secrets) return
-  if (channel.apiKey && !channel.secretName) throw new Error('当前渠道仍使用旧的 API Key 配置，请在“渠道”中重新保存 API Key。')
+  const secretName = channel.secretName || generationSecretName(channel.id)
   const refs = authSecretRefs(channel, adapterId)
   if (!refs) return
-  const missing = (await Promise.all(Object.values(refs).map(async (name) => ({ name, present: await desktop.secrets.has(name) })))).find((item) => !item.present)
+  const currentKey = channel.apiKey?.trim().replace(/^Bearer\s+/i, '')
+  if (currentKey) {
+    const header = protocolFor(channel, adapterId) === 'google-images' && !/^sk-/i.test(currentKey || '') ? 'x-goog-api-key' : 'Authorization'
+    await syncDesktopSecret(secretName, header === 'Authorization' ? `Bearer ${currentKey}` : currentKey)
+    return
+  }
+  const missing = (await Promise.all(Object.values(refs).map(async (name) => ({ name, present: await ensureDesktopSecret(name) })))).find((item) => !item.present)
   if (missing) throw new Error('当前渠道的 API Key 尚未保存到桌面安全存储，请在“渠道”中重新保存 API Key。')
 }
 
-function is808VideoChannel(channel: GenerationChannel, variant: 'image' | 'video', protocol: ReturnType<typeof protocolFor>) {
-  return variant === 'video' && (
-    protocol === '808-video' ||
-    protocol === 'openai-images-808' ||
-    (protocol === 'generic-video' && channel.providerId === '808')
-  )
+function validateVideoConfig(model: GenerationModel, config: GenerationVariantConfig) {
+  const seconds = config.seconds || 5
+  if (model.minDuration && seconds < model.minDuration || model.maxDuration && seconds > model.maxDuration) throw new Error(`${model.name} 时长必须为 ${model.minDuration}-${model.maxDuration} 秒`)
+  if (model.resolutions?.length && config.resolution && !model.resolutions.includes(config.resolution)) throw new Error(`${model.name} 不支持 ${config.resolution}`)
+  if (model.aspectRatios?.length && config.aspectRatio && !model.aspectRatios.includes(config.aspectRatio)) throw new Error(`${model.name} 不支持 ${config.aspectRatio} 画幅`)
+  for (const [type, max] of [['image', model.maxImages], ['video', model.maxVideos], ['audio', model.maxAudios] ] as const) {
+    const count = config.references.filter((reference) => reference.type === type).length
+    if (max && count > max) throw new Error(`${model.name} 最多支持 ${max} 个${type}参考素材`)
+  }
+  if (model.id === 'gemini-omni-1.1' && config.references.some((reference) => reference.type === 'audio')) throw new Error('Gemini Omni 1.1 不支持参考音频')
 }
-
-function isMEAICCVideoChannel(channel: GenerationChannel, variant: 'image' | 'video', protocol: ReturnType<typeof protocolFor>) {
-  return variant === 'video' && (
-    protocol === 'meaicc-video' ||
-    (protocol === 'generic-video' && channel.providerId === 'meaicc')
-  )
-}
-
 function referenceURL(reference: GenerationReference) {
   return reference.url || reference.previewUrl || ''
 }
@@ -117,13 +121,6 @@ function geminiGenerateContentEndpoint(baseURL: string, model: string) {
   else if (!pathname.endsWith('/v1beta')) pathname += '/v1beta'
   parsed.pathname = `${pathname}/models/${encodeURIComponent(model.replace(/^models\//, ''))}:generateContent`
   return parsed.toString()
-}
-
-function zenmuxPredictEndpoint(baseURL: string, model: string) {
-  const [publisher, modelId] = model.split('/', 2)
-  if (!publisher || !modelId) throw new Error('Vertex / ZenMux 模型 ID 必须使用 provider/model 格式')
-  const base = normalizeBaseURL(baseURL).replace(/\/v1$/, '')
-  return `${base}/v1/publishers/${encodeURIComponent(publisher)}/models/${encodeURIComponent(modelId)}:predict`
 }
 
 function imageSizeForConfig(config: GenerationVariantConfig, model: GenerationModel) {
@@ -198,7 +195,7 @@ interface MediaUploadEndpoint {
 function mediaUploadSettings(channel: GenerationChannel, adapterId?: string) {
   const adapter = generationAdapterForConfig(channel, adapterId)
   const protocol = protocolFor(channel, adapterId)
-  const providerPath = adapter?.mediaUploadPath || channel.mediaUploadPath || (protocol === '808-video' ? '/v1/media/uploads/presign' : undefined)
+  const providerPath = adapter?.mediaUploadPath || channel.mediaUploadPath || (protocol === 'video-api' ? '/v1/media/uploads/presign' : undefined)
   return {
     transport: adapter?.mediaTransport || channel.mediaTransport || 'auto',
     providerPath,
@@ -227,14 +224,14 @@ function mediaUploadEndpoint(channel: GenerationChannel, adapterId?: string): Me
       fieldName: mediaStorage.baseURL ? mediaStorage.fieldName : settings.fieldName,
       responsePath: mediaStorage.baseURL ? mediaStorage.responsePath : settings.responsePath,
       token: mediaStorage.baseURL ? mediaStorage.getAccessToken() : channel.mediaUploadApiKey,
-      secretName: mediaStorage.baseURL ? mediaStorage.secretName : channel.mediaUploadSecretName,
+      secretName: mediaStorage.baseURL ? mediaStorage.secretName : channel.mediaUploadSecretName || generationMediaUploadSecretName(channel.id),
     }
   }
   const path = String(settings.providerPath || '').trim()
   if (!path) throw new Error('当前视频渠道没有配置供应商上传路径，请填写路径或在“本地存储”中配置自定义服务')
   return {
     mode: 'provider',
-    kind: settings.protocol === '808-video' ? 'presign' : 'multipart',
+    kind: settings.protocol === 'video-api' ? 'presign' : 'multipart',
     endpoint: joinVersionedEndpoint(channel.baseURL, path),
     fieldName: settings.fieldName,
     responsePath: settings.responsePath,
@@ -245,20 +242,23 @@ function mediaUploadHeaders(channel: GenerationChannel, endpoint: MediaUploadEnd
   if (endpoint.mode === 'provider') {
     return Object.fromEntries(Object.entries(authHeaders(channel, adapterId)).filter(([name]) => name.toLowerCase() !== 'content-type'))
   }
-  const useDesktopSecret = Boolean(typeof window !== 'undefined' && window.cnoteDesktop && endpoint.secretName)
-  return !useDesktopSecret && endpoint.token ? { Authorization: `Bearer ${endpoint.token}` } : {}
+  return endpoint.token ? { Authorization: `Bearer ${endpoint.token}` } : {}
 }
 
 function mediaUploadSecretRefs(channel: GenerationChannel, endpoint: MediaUploadEndpoint, adapterId?: string) {
   if (endpoint.mode === 'provider') return authSecretRefs(channel, adapterId)
-  if (!endpoint.secretName || typeof window === 'undefined' || !window.cnoteDesktop || !endpoint.token) return undefined
+  if (!endpoint.secretName || typeof window === 'undefined' || !window.cnoteDesktop) return undefined
   return { Authorization: endpoint.secretName }
 }
 
 async function assertMediaUploadSecretReady(endpoint: MediaUploadEndpoint) {
   const desktop = typeof window !== 'undefined' ? window.cnoteDesktop : undefined
-  if (endpoint.mode !== 'custom' || !desktop?.secrets || !endpoint.token || !endpoint.secretName) return
-  if (!(await desktop.secrets.has(endpoint.secretName))) {
+  if (endpoint.mode !== 'custom' || !desktop?.secrets || !endpoint.secretName) return
+  if (endpoint.token) {
+    await syncDesktopSecret(endpoint.secretName, endpoint.token)
+    return
+  }
+  if (!(await ensureDesktopSecret(endpoint.secretName))) {
     throw new Error('自定义上传服务令牌尚未保存到桌面安全存储，请到“本地存储”中重新保存。')
   }
 }
@@ -379,37 +379,20 @@ async function inlineImagePart(reference: GenerationReference) {
   return { inlineData: { mimeType: blob.type || 'image/png', data: btoa(binary) } }
 }
 
-async function vertexImageObject(reference: GenerationReference) {
-  const { blob } = await referenceBlob(reference)
-  const data = new Uint8Array(await blob.arrayBuffer())
-  let binary = ''
-  data.forEach((byte) => { binary += String.fromCharCode(byte) })
-  return { bytesBase64Encoded: btoa(binary), mimeType: blob.type || 'image/png' }
-}
-
-async function imageMultipartBody(config: GenerationVariantConfig, body: Record<string, unknown>) {
-  const references = config.references.filter((reference) => reference.type === 'image')
-  const localReferences = references.filter((reference) => !isRemoteMediaURL(referenceURL(reference)))
-  if (!localReferences.length) return { body: JSON.stringify(body), multipart: false }
-  const form = new FormData()
-  Object.entries(body).forEach(([key, value]) => {
-    if (value === undefined || value === null) return
-    form.append(key, Array.isArray(value) ? JSON.stringify(value) : String(value))
-  })
-  for (const reference of localReferences) {
-    const file = await referenceBlob(reference)
-    form.append('image', file.blob, file.fileName)
-  }
-  return { body: form, multipart: true }
-}
-
 async function materializeInlineResults(body: any) {
   const values: Array<{ data: string; mimeType?: string }> = []
+  const seen = new Set<string>()
   const collect = (value: any) => {
     if (!value || typeof value !== 'object') return
-    if (typeof value.b64_json === 'string') values.push({ data: value.b64_json, mimeType: value.mimeType || value.mime_type })
+    if (typeof value.b64_json === 'string' && !seen.has(value.b64_json)) {
+      seen.add(value.b64_json)
+      values.push({ data: value.b64_json, mimeType: value.mimeType || value.mime_type })
+    }
     const inline = value.inlineData || value.inline_data
-    if (inline && typeof inline.data === 'string') values.push({ data: inline.data, mimeType: inline.mimeType || inline.mime_type })
+    if (inline && typeof inline.data === 'string' && !seen.has(inline.data)) {
+      seen.add(inline.data)
+      values.push({ data: inline.data, mimeType: inline.mimeType || inline.mime_type })
+    }
     if (Array.isArray(value)) value.forEach(collect)
     else Object.values(value).forEach(collect)
   }
@@ -423,32 +406,6 @@ async function materializeInlineResults(body: any) {
     results.push({ url: stored.url, resourceId: stored.resourceId, mimeType })
   }
   return results
-}
-
-function providerMediaRole(reference: GenerationReference) {
-  if (reference.role === 'first_frame') return 'first_frame'
-  if (reference.role === 'last_frame') return 'last_frame'
-  if (reference.role === 'reference_voice' || reference.role === 'reference_audio') return 'audio_reference'
-  if (reference.role === 'reference_video') return 'source_video'
-  return 'reference'
-}
-
-function meaiccMediaRole(reference: GenerationReference) {
-  if (reference.role === 'first_frame') return 'first_frame'
-  if (reference.role === 'last_frame') return 'last_frame'
-  if (reference.type === 'video') return 'reference_video'
-  if (reference.type === 'audio') return 'reference_voice'
-  return 'reference_image'
-}
-
-function mediaInputs(references: GenerationReference[], format: 'generic' | 'newapi' | 'meaicc' = 'generic') {
-  return normalizeGenerationReferences(references).map((reference) => ({
-    ...(format === 'newapi'
-      ? { kind: reference.type, role: providerMediaRole(reference) }
-      : { type: format === 'meaicc' ? meaiccMediaRole(reference) : reference.type, role: reference.role }),
-    url: referenceURL(reference),
-    ...(format === 'generic' ? { name: reference.label || reference.fileName } : {}),
-  }))
 }
 
 async function parseResponse(response: Response) {
@@ -524,25 +481,17 @@ function errorFrom(body: any) {
   return String(body?.error?.message || body?.error_message || body?.error || body?.message || status || '生成服务返回失败')
 }
 
-function operationFor(context: GenerationRequestContext) {
-  if (context.variant === 'image') return undefined
-  if (context.config.capability === 'video-edit') return 'video_to_video'
-  if (context.config.references.length || context.config.capability === 'image-to-video' || context.config.capability === 'reference-to-video') return 'image_to_video'
-  return 'text_to_video'
-}
-
 function pollPath(context: GenerationRequestContext, taskId: string) {
   const { channel, variant } = context
   const protocol = protocolFor(channel, context.config.adapterId, context.model.id)
-  if (variant === 'image' && protocol === 'newapi') return `/v1/tasks/${encodeURIComponent(taskId)}`
-  if (variant === 'image' && protocol === 'openai-images-808') return `/images/tasks/${encodeURIComponent(taskId)}?response_format=url`
+  if (variant === 'image' && protocol === 'openai-images') return `/images/tasks/${encodeURIComponent(taskId)}?response_format=url`
   return `/v1/${variant === 'image' ? 'images' : 'videos'}/${encodeURIComponent(taskId)}`
 }
 
 function contentPath(context: GenerationRequestContext, taskId: string) {
   const { channel, variant } = context
   const protocol = protocolFor(channel, context.config.adapterId, context.model.id)
-  if (variant === 'image' && (protocol === 'newapi' || protocol === 'openai-images-808' || protocol === 'openai-images')) return undefined
+  if (variant === 'image' && (protocol === 'openai-images' || protocol === 'google-images')) return undefined
   return `/v1/${variant === 'image' ? 'images' : 'videos'}/${encodeURIComponent(taskId)}/content`
 }
 
@@ -562,18 +511,16 @@ export async function submitGenerationTask(context: GenerationRequestContext, si
   if (!baseURL || baseURL.startsWith('local://')) throw new Error('当前生成渠道没有可用的公网接口地址')
   const config = await prepareReferenceConfig({ ...context, channel }, signal)
   const protocol = protocolFor(channel)
-  if (variant === 'video') ensurePublicReferenceURLs(config.references)
+  if (variant === 'video') { ensurePublicReferenceURLs(config.references); validateVideoConfig(model, config) }
 
   let body: Record<string, unknown> | undefined
   let requestURL = ''
   let requestBody: BodyInit = JSON.stringify({})
-  let headers: Record<string, string> = authHeaders(channel)
+  const headers: Record<string, string> = authHeaders(channel, initialConfig.adapterId)
 
-  if (variant === 'image' && (protocol === 'openai-images' || protocol === 'openai-images-808')) {
-    const operation = config.references.length ? 'edits' : 'generations'
-    const imageReferences = config.references.filter((item) => item.type === 'image')
-    const remoteImageUrls = imageReferences.map(referenceURL).filter(isRemoteMediaURL)
-    const localImageReferences = imageReferences.filter((reference) => !isRemoteMediaURL(referenceURL(reference)))
+  if (variant === 'image' && protocol === 'openai-images') {
+    const imageReferences = config.references.filter((reference) => reference.type === 'image')
+    const operation = imageReferences.length ? 'edits' : 'generations'
     body = {
       model: model.id,
       prompt: config.prompt,
@@ -581,28 +528,23 @@ export async function submitGenerationTask(context: GenerationRequestContext, si
       quality: config.quality === 'standard' ? 'medium' : config.quality || 'medium',
       background: config.background || 'auto',
       output_format: config.outputFormat || 'png',
-      ...(protocol === 'openai-images-808' ? { response_format: 'url' } : {}),
-      ...(remoteImageUrls.length ? { image_urls: remoteImageUrls } : {}),
     }
     requestURL = openAIImagesEndpoint(baseURL, operation)
-    if (protocol === 'openai-images-808') requestURL += `${requestURL.includes('?') ? '&' : '?'}async=true`
-    if (localImageReferences.length) {
+    if (!imageReferences.length) {
+      requestBody = JSON.stringify(body)
+    } else {
       const form = new FormData()
-      Object.entries(body).forEach(([key, value]) => form.append(key, Array.isArray(value) ? JSON.stringify(value) : String(value)))
-      for (const reference of localImageReferences) {
+      Object.entries(body).forEach(([key, value]) => form.append(key, String(value)))
+      for (const reference of imageReferences) {
         const file = await referenceBlob(reference)
-        form.append(protocol === 'openai-images-808' ? 'image[]' : 'image', file.blob, file.fileName)
+        form.append('image[]', file.blob, file.fileName)
       }
       requestBody = form
-      headers = { ...authHeaders(channel) }
       delete headers['Content-Type']
-    } else {
-      requestBody = JSON.stringify(body)
-      headers = authHeaders(channel)
     }
-    if (protocol === 'openai-images-808') headers['Idempotency-Key'] = globalThis.crypto?.randomUUID?.() || `cnote-${Date.now()}-${Math.random().toString(36).slice(2)}`
-  } else if (variant === 'image' && protocol === 'gemini-generate-content') {
-    const parts: Array<Record<string, unknown>> = [{ text: config.prompt }]
+  } else if (variant === 'image' && protocol === 'google-images') {
+    const parts: Array<Record<string, unknown>> = []
+    if (config.prompt.trim()) parts.push({ text: config.prompt })
     for (const reference of config.references.filter((item) => item.type === 'image')) parts.push(await inlineImagePart(reference))
     body = {
       contents: [{ role: 'user', parts }],
@@ -617,109 +559,30 @@ export async function submitGenerationTask(context: GenerationRequestContext, si
     }
     requestURL = geminiGenerateContentEndpoint(baseURL, model.id)
     requestBody = JSON.stringify(body)
-    headers = authHeaders(channel)
-  } else if (variant === 'image' && protocol === 'zenmux-vertex') {
-    const references = config.references.filter((item) => item.type === 'image')
-    const images = await Promise.all(references.map((reference) => vertexImageObject(reference)))
-    const instance: Record<string, unknown> = { prompt: config.prompt }
-    if (images.length === 1) instance.image = images[0]
-    if (images.length > 1) instance.referenceImages = images.map((image, index) => ({ referenceId: index + 1, referenceImage: image }))
+  } else if (variant === 'video' && protocol === 'video-api') {
+    const firstFrame = config.references.find((reference) => reference.role === 'first_frame')
+    const lastFrame = config.references.find((reference) => reference.role === 'last_frame')
+    const images = config.references.filter((reference) => reference.type === 'image' && !['first_frame', 'last_frame'].includes(reference.role || '')).map(referenceURL)
+    const videos = config.references.filter((reference) => reference.type === 'video').map(referenceURL)
+    const audios = config.references.filter((reference) => reference.type === 'audio').map(referenceURL)
     body = {
-      instances: [instance],
-      parameters: {
-        sampleCount: 1,
-        aspectRatio: config.aspectRatio || '1:1',
-        sampleImageSize: config.resolution || '2K',
-        outputOptions: { mimeType: config.outputFormat === 'jpeg' ? 'image/jpeg' : config.outputFormat === 'webp' ? 'image/webp' : 'image/png' },
-      },
-    }
-    requestURL = zenmuxPredictEndpoint(baseURL, model.id)
-    requestBody = JSON.stringify(body)
-    headers = authHeaders(channel)
-  } else if (is808VideoChannel(channel, variant, protocol)) {
-    body = {
-      model: model.id || 'sd2-5-720p',
-      seconds: config.seconds || 30,
+      model: model.id,
+      seconds: config.seconds || 5,
       resolution: config.resolution || '720p',
       aspect_ratio: config.aspectRatio || '16:9',
-      mode: 'reference-to-video',
       prompt: config.prompt,
-      image_urls: config.references.filter((reference) => reference.type === 'image').map(referenceURL),
-      video_urls: config.references.filter((reference) => reference.type === 'video').map(referenceURL),
-      audio_urls: config.references.filter((reference) => reference.type === 'audio').map(referenceURL),
-      generate_audio: config.generateAudio,
+      ...(firstFrame ? { input_reference: referenceURL(firstFrame) } : {}),
+      ...(lastFrame ? { image_end: referenceURL(lastFrame) } : {}),
+      ...(images.length ? { reference_images: images } : {}),
+      ...(videos.length ? { reference_videos: videos } : {}),
+      ...(audios.length ? { reference_audios: audios } : {}),
+      sound_effects: Boolean(config.generateAudio),
     }
-  } else if (isMEAICCVideoChannel(channel, variant, protocol)) {
-    body = {
-      model: model.id || 'sd-2-c1',
-      input: {
-        prompt: config.prompt,
-        media: mediaInputs(config.references, 'meaicc'),
-      },
-      parameters: {
-        resolution: config.resolution || '720p',
-        ratio: config.aspectRatio || '16:9',
-        duration: config.seconds || 15,
-      },
-    }
-  } else if ((protocol === 'newapi' || channel.providerId === 'newapi') && variant === 'video') {
-    body = {
-      version: 'video.v1',
-      model: model.id,
-      operation: operationFor(context),
-      prompt: config.prompt,
-      duration_seconds: config.seconds,
-      resolution: config.resolution,
-      aspect_ratio: config.aspectRatio,
-      media_inputs: mediaInputs(config.references, 'newapi'),
-    }
-  } else if (variant === 'image') {
-    const remoteImageUrls = config.references
-      .filter((reference) => reference.type === 'image')
-      .map(referenceURL)
-      .filter(isRemoteMediaURL)
-    body = {
-      model: model.id,
-      prompt: config.prompt,
-      resolution: config.resolution,
-      size: 'auto',
-      aspect_ratio: config.aspectRatio,
-      n: 1,
-      ...(remoteImageUrls.length ? { image_urls: remoteImageUrls } : {}),
-    }
+    requestURL = joinVersionedEndpoint(baseURL, '/v1/videos')
+    requestBody = JSON.stringify(body)
   } else {
-    body = {
-      model: model.id,
-      prompt: config.prompt,
-      media_inputs: mediaInputs(config.references),
-      seconds: config.seconds,
-      resolution: config.resolution,
-      aspect_ratio: config.aspectRatio,
-      generate_audio: config.generateAudio,
-    }
+    throw new Error('当前生成渠道未配置受支持的图片或视频协议')
   }
-
-  if (!requestURL) {
-    if (variant === 'image') {
-      requestURL = protocol === 'newapi' || channel.providerId === 'newapi'
-        ? joinVersionedEndpoint(baseURL, '/v1/images/generations')
-        : joinVersionedEndpoint(baseURL, '/v1/images')
-      const imageRequest = await imageMultipartBody(config, body || {})
-      requestBody = imageRequest.body
-      headers = protocol === 'newapi' || channel.providerId === 'newapi'
-        ? requestHeaders(channel, {
-            Prefer: 'respond-async',
-            'Idempotency-Key': globalThis.crypto?.randomUUID?.() || `cnote-${Date.now()}-${Math.random().toString(36).slice(2)}`,
-          })
-        : authHeaders(channel)
-      if (imageRequest.multipart) delete headers['Content-Type']
-    } else {
-      requestURL = joinVersionedEndpoint(baseURL, '/v1/videos')
-      requestBody = JSON.stringify(body || {})
-      headers = authHeaders(channel)
-    }
-  }
-
   const response = await desktopFetch(requestURL, {
     method: 'POST',
     headers,
@@ -730,7 +593,7 @@ export async function submitGenerationTask(context: GenerationRequestContext, si
   const inlineResults = await materializeInlineResults(parsed)
   const immediateResultUrls = [...resultURLsFrom(parsed), ...inlineResults.map((result) => result.url)]
   const taskId = taskIdFrom(parsed)
-  if (!taskId && immediateResultUrls.length) return { taskId: `completed-${Date.now()}`, resultUrls: immediateResultUrls, resultResourceIds: inlineResults.map((result) => result.resourceId), resultMimeTypes: inlineResults.map((result) => result.mimeType), preparedConfig: config, raw: parsed }
+  if (!taskId && immediateResultUrls.length) return { taskId: `completed-${crypto.randomUUID()}`, resultUrls: immediateResultUrls, resultResourceIds: inlineResults.map((result) => result.resourceId), resultMimeTypes: inlineResults.map((result) => result.mimeType), preparedConfig: config, raw: parsed }
   if (!taskId) throw new Error('生成服务没有返回 task_id')
   return { taskId, resultUrls: immediateResultUrls, preparedConfig: config, raw: parsed }
 }
@@ -741,7 +604,7 @@ export async function pollGenerationTask(context: GenerationRequestContext, task
   const baseURL = normalizeBaseURL(channel.baseURL)
   const response = await desktopFetch(joinVersionedEndpoint(baseURL, pollPath(context, taskId)), {
     method: 'GET',
-    headers: authHeaders(channel),
+    headers: authHeaders(channel, context.config.adapterId),
     signal,
   }, { secretRefs: authSecretRefs(channel, context.config.adapterId) })
   const parsed = await parseResponse(response)
@@ -766,7 +629,7 @@ export async function pollGenerationTask(context: GenerationRequestContext, task
     try {
       const contentResponse = await desktopFetch(joinVersionedEndpoint(baseURL, resultPath), {
         method: 'GET',
-        headers: authHeaders(channel),
+        headers: authHeaders(channel, context.config.adapterId),
         signal,
       }, { secretRefs: authSecretRefs(channel, context.config.adapterId) })
       if (contentResponse.ok && contentResponse.headers.get('content-type')?.includes('application/json')) {
@@ -805,7 +668,7 @@ export async function cancelGenerationTask(context: GenerationRequestContext, ta
     await assertDesktopSecretReady(channel, context.config.adapterId)
     const response = await desktopFetch(endpoint, {
       method: 'DELETE',
-      headers: authHeaders(channel),
+      headers: authHeaders(channel, context.config.adapterId),
       signal,
     }, { secretRefs: authSecretRefs(channel, context.config.adapterId) })
     return response.ok || response.status === 404 || response.status === 405

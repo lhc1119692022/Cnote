@@ -15,10 +15,12 @@ export function Dialog({ open, onOpenChange, children }: DialogProps) {
       className="fixed inset-0 z-50 flex items-center justify-center"
       onClick={() => onOpenChange?.(false)}
     >
-      <div className="fixed inset-0 bg-black/50" />
+      <div className="pointer-events-none fixed inset-0 bg-black/50" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties} />
       <div
-        className="relative z-50"
+        className="cnote-dialog-content relative z-50 pointer-events-auto"
+        style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
         onClick={(e) => e.stopPropagation()}
+        onPointerDown={(e) => e.stopPropagation()}
       >
         {children}
       </div>

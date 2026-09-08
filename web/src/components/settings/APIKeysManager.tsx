@@ -23,7 +23,7 @@ import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { ContentServiceSettings } from '@/components/settings/ContentServiceSettings'
 import { GenerationChannelsManager } from '@/components/settings/GenerationChannelsManager'
-import { AIClient, PROVIDERS, getProvider, inferProviderId, validateAPIKey, type ProtocolType } from '@/lib/api'
+import { AIClient, PROVIDERS, getProvider, inferProviderId, type ProtocolType } from '@/lib/api'
 import { localForageStorage } from '@/lib/localforage-storage'
 import { MAX_BROWSER_STORAGE_BYTES } from '@/lib/resource-storage'
 import { useAIStore, type APIChannel, type APIChannelInput } from '@/stores/use-ai-store'
@@ -32,6 +32,7 @@ import { useGenerationStore } from '@/stores/use-generation-store'
 import { MEDIA_STORAGE_DEFAULTS, useMediaStorageStore, type MediaStorageObject } from '@/stores/use-media-storage-store'
 import { useSourceStore } from '@/stores/use-source-store'
 import { useTemplateStore } from '@/stores/use-template-store'
+import { deleteDesktopSecret, syncDesktopSecret } from '@/lib/desktop-secrets'
 
 type SettingsTab = 'channels' | 'generation' | 'content-service' | 'storage'
 
@@ -409,6 +410,15 @@ export function APIKeysManager() {
 
     const inferredProviderId = inferProviderId(providerId, endpoint, modelIds, protocol)
     const inferredProvider = getProvider(inferredProviderId) || selectedProvider
+    let secretName = existingChannel?.secretName
+    if (isDesktopRuntime && window.cnoteDesktop && key) {
+      if (!secretName) secretName = `cnote:ai:temp-model-fetch-${Date.now()}`
+      try {
+        await syncDesktopSecret(secretName, key)
+      } catch {
+        throw new Error('API Key 未能保存到桌面安全存储，请重试。')
+      }
+    }
     const client = new AIClient({
       id: inferredProviderId,
       name: inferredProvider.name,
@@ -418,8 +428,14 @@ export function APIKeysManager() {
       extraHeaders: proxyHeaderName.trim() && (proxyHeaderValue || (editingChannelId ? getProxyHeaderValue(editingChannelId) : ''))
         ? { [proxyHeaderName.trim()]: proxyHeaderValue || getProxyHeaderValue(editingChannelId || '') || '' }
         : undefined,
-    }, key, existingChannel?.secretName)
-    return client.listModels()
+    }, key, secretName)
+    try {
+      return await client.listModels()
+    } finally {
+      if (secretName?.startsWith('cnote:ai:temp-model-fetch-')) {
+        await deleteDesktopSecret(secretName).catch(() => undefined)
+      }
+    }
   }
 
   const handleFetchModels = async () => {
@@ -443,7 +459,7 @@ export function APIKeysManager() {
     }
   }
 
-  const handleSaveChannel = () => {
+  const handleSaveChannel = async () => {
     const normalizedBaseURL = baseURL.trim().replace(/\/$/, '')
     const normalizedProviderId = inferProviderId(providerId, normalizedBaseURL, modelIds, protocol)
     const normalizedName = channelName.trim() || `${getProvider(normalizedProviderId)?.name || '自定义'} 渠道`
@@ -457,10 +473,6 @@ export function APIKeysManager() {
       alert('请输入 API Key')
       return
     }
-    if (apiKey.trim() && !validateAPIKey(normalizedProviderId, apiKey.trim())) {
-      alert('API Key 格式无效')
-      return
-    }
     if (!editingChannelId && normalizedProxyHeaderName && !proxyHeaderValue) {
       alert('请输入代理请求头值')
       return
@@ -470,6 +482,7 @@ export function APIKeysManager() {
       return
     }
 
+    let savedChannelId = editingChannelId
     if (editingChannelId) {
       updateAPIKey(editingChannelId, {
         providerId: normalizedProviderId,
@@ -482,13 +495,23 @@ export function APIKeysManager() {
         ...(apiKey.trim() ? { apiKey: apiKey.trim() } : {}),
       })
     } else {
-      addAPIKey(normalizedProviderId, apiKey.trim(), normalizedName, {
+      savedChannelId = addAPIKey(normalizedProviderId, apiKey.trim(), normalizedName, {
         baseURL: normalizedBaseURL,
         modelIds,
         protocol,
         proxyHeaderName: normalizedProxyHeaderName || undefined,
         proxyHeaderValue,
       })
+    }
+    const savedChannel = savedChannelId ? useAIStore.getState().apiKeys.find((channel) => channel.id === savedChannelId) : undefined
+    if (isDesktopRuntime && window.cnoteDesktop && savedChannel) {
+      try {
+        if (apiKey.trim() && savedChannel.secretName) await syncDesktopSecret(savedChannel.secretName, apiKey.trim())
+        if (normalizedProxyHeaderName && proxyHeaderValue && savedChannel.proxySecretName) await syncDesktopSecret(savedChannel.proxySecretName, proxyHeaderValue)
+      } catch {
+        alert('密钥未能保存到桌面安全存储，请重试。')
+        return
+      }
     }
     resetChannelDialog()
   }
@@ -536,6 +559,17 @@ export function APIKeysManager() {
       }
       if (apiKeys.length > 0 && !confirm('导入配置会替换当前全部渠道，是否继续？')) return
       replaceAPIKeys(channels)
+      if (isDesktopRuntime && window.cnoteDesktop) {
+        const importedChannels = useAIStore.getState().apiKeys
+        await Promise.all(importedChannels.map(async (channel, index) => {
+          const source = channels.find((item) => item.id === channel.id) || channels[index]
+          if (!source?.apiKey || !channel.secretName) return
+          await syncDesktopSecret(channel.secretName, source.apiKey)
+          if (source.proxyHeaderValue && channel.proxySecretName) {
+            await syncDesktopSecret(channel.proxySecretName, source.proxyHeaderValue)
+          }
+        }))
+      }
       alert(`已导入 ${channels.length} 个渠道`)
     } catch {
       alert('配置文件无效或无法读取')

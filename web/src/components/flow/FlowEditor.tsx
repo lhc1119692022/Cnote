@@ -889,13 +889,24 @@ function FlowEditorInner() {
   }, []);
 
   const handleNodesChange = useCallback((changes: Parameters<typeof onNodesChange>[0]) => {
+    const pinnedStickyIds = new Set(
+      useFlowStore.getState().nodes
+        .filter((node) => node.type === 'sticky' && Boolean(node.data?.pinned))
+        .map((node) => node.id),
+    );
+    const allowedChanges = changes.filter((change) => {
+      if (change.type !== 'position' || !pinnedStickyIds.has(change.id)) return true;
+      const current = useFlowStore.getState().nodes.find((node) => node.id === change.id);
+      if (current) useFlowStore.getState().updateNode(change.id, { position: current.position, dragging: false });
+      return false;
+    });
     const activeAltDrag = altDragRef.current;
     if (!activeAltDrag) {
-      onNodesChange(changes);
+      if (allowedChanges.length) onNodesChange(allowedChanges);
       return;
     }
     const translatedChanges: NodeChange[] = [];
-    changes.forEach((change) => {
+    allowedChanges.forEach((change) => {
       if (!("id" in change)) {
         translatedChanges.push(change);
         return;
@@ -938,6 +949,7 @@ function FlowEditorInner() {
   }, [onNodesChange]);
 
   const handleNodeDragStart = useCallback((event: ReactMouseEvent, node: Node, draggedNodes: Node[]) => {
+    if (node.type === 'sticky' && node.data?.pinned) return;
     if (!event.altKey || node.type === "group" || altDragRef.current) return;
     const selected = draggedNodes.filter((item) => item.type !== "group");
     if (!selected.length) return;
@@ -1536,7 +1548,7 @@ function FlowEditorInner() {
         data: { label: "浏览器节点", url: "https://www.google.com/", confirmedUrl: "https://www.google.com/", outputMode: "url", syncStatus: "synced", status: "loading" },
       });
     } else if (type === "sticky") {
-      addNode({ type: "sticky", position, data: { label: "贴纸", text: "" } });
+      addNode({ type: "sticky", position, data: { label: "贴纸", content: "", text: "", color: "yellow", background: "solid", pinned: false } });
     } else {
       addNode({
         type: "content",

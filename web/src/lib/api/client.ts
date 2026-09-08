@@ -11,6 +11,7 @@ import type {
 } from './types'
 import { adaptReasoningLevel, getAIModelCapabilities } from './capabilities'
 import { desktopFetch } from '@/lib/desktop-fetch'
+import { syncDesktopSecret } from '@/lib/desktop-secrets'
 
 /**
  * AI API 客户端
@@ -23,7 +24,7 @@ export class AIClient {
 
   constructor(provider: ProviderConfig, apiKey: string, secretName?: string) {
     this.provider = provider
-    this.apiKey = apiKey
+    this.apiKey = apiKey.trim().replace(/^Bearer\s+/i, '')
     this.secretName = secretName
   }
 
@@ -47,26 +48,26 @@ export class AIClient {
       return {
         ...this.provider.extraHeaders,
         'Content-Type': 'application/json',
-        ...(this.secretName ? {} : { 'x-goog-api-key': this.apiKey }),
+        ...(this.apiKey ? { 'x-goog-api-key': this.apiKey } : {}),
       }
     }
     if (this.provider.protocol === 'messages') {
       return {
         ...this.provider.extraHeaders,
         'Content-Type': 'application/json',
-        ...(this.secretName ? {} : { 'x-api-key': this.apiKey }),
+        ...(this.apiKey ? { 'x-api-key': this.apiKey } : {}),
         'anthropic-version': '2023-06-01',
       }
     }
     return {
       ...this.provider.extraHeaders,
       'Content-Type': 'application/json',
-      ...(this.secretName ? {} : { Authorization: `Bearer ${this.apiKey}` }),
+      ...(this.apiKey ? { Authorization: `Bearer ${this.apiKey}` } : {}),
     }
   }
 
   private getSecretRefs() {
-    if (!this.secretName) return undefined
+    if (!this.secretName || typeof window === 'undefined' || !window.cnoteDesktop) return undefined
     const header = this.provider.protocol === 'gemini'
       ? 'x-goog-api-key'
       : this.provider.protocol === 'messages'
@@ -75,8 +76,22 @@ export class AIClient {
     return { [header]: this.secretName }
   }
 
-  private request(input: RequestInfo | URL, init: RequestInit = {}) {
-    return desktopFetch(input, { ...init, headers: init.headers || this.getHeaders() }, { secretRefs: this.getSecretRefs() })
+  private async request(input: RequestInfo | URL, init: RequestInit = {}) {
+    const desktop = typeof window !== 'undefined' ? window.cnoteDesktop : undefined
+    if (desktop?.secrets && this.secretName && this.apiKey) {
+      const header = this.provider.protocol === 'gemini'
+        ? 'x-goog-api-key'
+        : this.provider.protocol === 'messages'
+          ? 'x-api-key'
+          : 'Authorization'
+      await syncDesktopSecret(this.secretName, header === 'Authorization' ? `Bearer ${this.apiKey}` : this.apiKey)
+    }
+    // Headers are case-insensitive. Merging plain objects here can leave both
+    // `Authorization` and `authorization`, which Electron sends as duplicate
+    // values and some providers reject as an invalid credential.
+    const mergedHeaders = new Headers(this.getHeaders())
+    new Headers(init.headers).forEach((value, key) => mergedHeaders.set(key, value))
+    return desktopFetch(input, { ...init, headers: mergedHeaders }, { secretRefs: this.getSecretRefs() })
   }
 
   private messageText(content: ChatMessage['content']) {

@@ -1,10 +1,15 @@
 /** Web Scraper 客户端：统一承载远程解析和稳定错误码。 */
 
 import type { SocialPayload } from '@/types/flow'
+import { desktopFetch } from '@/lib/desktop-fetch'
+import { syncDesktopSecret } from '@/lib/desktop-secrets'
+
+export const CONTENT_SERVICE_SECRET = 'cnote:content-service'
 
 export interface ScraperConfig {
   baseURL: string
   accessToken?: string
+  secretName?: string
 }
 
 export interface ContentServiceCapabilities {
@@ -67,10 +72,12 @@ export interface YouTubeSubtitles {
 export class ScraperClient {
   private baseURL: string
   private accessToken?: string
+  private secretName?: string
 
   constructor(config: ScraperConfig) {
     this.baseURL = config.baseURL.replace(/\/$/, '')
-    this.accessToken = config.accessToken?.trim() || undefined
+    this.accessToken = config.accessToken?.trim().replace(/^Bearer\s+/i, '') || undefined
+    this.secretName = config.secretName
   }
 
   private async request<T>(path: string, init?: RequestInit, timeoutMs = 45_000, externalSignal?: AbortSignal): Promise<T> {
@@ -82,7 +89,10 @@ export class ScraperClient {
     try {
       const headers = new Headers(init?.headers)
       if (this.accessToken) headers.set('Authorization', `Bearer ${this.accessToken}`)
-      const response = await fetch(`${this.baseURL}${path}`, { ...init, headers, signal: controller.signal })
+      if (this.accessToken) await syncDesktopSecret(this.secretName, `Bearer ${this.accessToken}`)
+      const response = await desktopFetch(`${this.baseURL}${path}`, { ...init, headers, signal: controller.signal }, {
+        secretRefs: this.secretName ? { Authorization: this.secretName } : undefined,
+      })
       const body = await response.text()
       let parsed: T | ScraperErrorBody | null = null
       try { parsed = body ? JSON.parse(body) as T | ScraperErrorBody : null } catch { parsed = null }
@@ -130,7 +140,10 @@ export class ScraperClient {
     try {
       const headers = new Headers()
       if (this.accessToken) headers.set('Authorization', `Bearer ${this.accessToken}`)
-      const response = await fetch(`${this.baseURL}/v1/media/xiaohongshu?url=${encodeURIComponent(url)}`, { headers, signal: controller.signal })
+      if (this.accessToken) await syncDesktopSecret(this.secretName, `Bearer ${this.accessToken}`)
+      const response = await desktopFetch(`${this.baseURL}/v1/media/xiaohongshu?url=${encodeURIComponent(url)}`, { headers, signal: controller.signal }, {
+        secretRefs: this.secretName ? { Authorization: this.secretName } : undefined,
+      })
       if (!response.ok) {
         let message = `图片读取失败（${response.status}）`
         try {

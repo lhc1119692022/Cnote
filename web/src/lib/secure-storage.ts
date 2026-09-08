@@ -59,28 +59,12 @@ export function decryptAPIKey(encryptedKey: string): string {
 }
 
 /**
- * 验证 API Key 格式
+ * Credential validity is established by the provider request. Compatible
+ * endpoints are free to issue keys in a different shape from the official
+ * service, so local validation only rejects an empty value.
  */
-export function validateAPIKey(apiKey: string, provider: string): boolean {
-  if (!apiKey || apiKey.trim().length === 0) {
-    return false
-  }
-
-  // 基础格式验证
-  const patterns: Record<string, RegExp> = {
-    openai: /^sk-[A-Za-z0-9-_]{32,}$/,
-    anthropic: /^sk-ant-[A-Za-z0-9-_]{32,}$/,
-    google: /^[A-Za-z0-9-_]{32,}$/,
-    deepseek: /^sk-[A-Za-z0-9]{32,}$/,
-  }
-
-  const pattern = patterns[provider.toLowerCase()]
-  if (pattern) {
-    return pattern.test(apiKey)
-  }
-
-  // 对于自定义提供商，只检查长度
-  return apiKey.length >= 20
+export function validateAPIKey(apiKey: string, _provider: string): boolean {
+  return Boolean(apiKey?.trim())
 }
 
 /**

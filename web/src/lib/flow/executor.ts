@@ -39,7 +39,7 @@ import { AIClient } from '@/lib/api'
 import { ScraperClient } from '@/lib/scraper'
 import { cancelGenerationTask, runGenerationTask } from '@/lib/generation/client'
 import { normalizeGenerationReferences } from '@/lib/generation/defaults'
-import { generationChannelSupportsVariant, useGenerationStore, type GenerationChannel } from '@/stores/use-generation-store'
+import { generationChannelSupportsVariant, generationSecretName, useGenerationStore, type GenerationChannel } from '@/stores/use-generation-store'
 import type { GenerationReference, GenerationTaskState } from '@/types/flow'
 
 function extractInputTexts(value: unknown): string[] {
@@ -505,17 +505,23 @@ export class FlowExecutor {
     const liveChannel = config.channelId
       ? generationStore.getChannel(config.channelId)
       : generationStore.channels.find((item) => item.enabled && generationChannelSupportsVariant(item, variant))
+    const persistedLiveChannel = persisted ? generationStore.getChannel(persisted.channelId) : liveChannel
     const channel: GenerationChannel | undefined = persisted
       ? {
           id: persisted.channelId,
           providerId: persisted.providerId as GenerationChannel['providerId'],
-          name: liveChannel?.name || '已提交渠道',
+          name: persistedLiveChannel?.name || '已提交渠道',
           baseURL: persisted.baseURL,
-          secretName: persisted.secretName || liveChannel?.secretName,
-          modelIds: liveChannel?.modelIds || [persisted.model],
+          apiKey: persistedLiveChannel ? generationStore.getAPIKey(persistedLiveChannel.id) || undefined : undefined,
+          secretName: persisted.secretName || persistedLiveChannel?.secretName || generationSecretName(persisted.channelId),
+          modelIds: persistedLiveChannel?.modelIds || [persisted.model],
           enabled: true,
           protocol: persisted.protocol as GenerationChannel['protocol'],
-          adapters: liveChannel?.adapters,
+          mediaTransport: persisted.mediaTransport,
+          mediaUploadPath: persisted.mediaUploadPath,
+          mediaUploadURL: persisted.mediaUploadURL,
+          mediaUploadSecretName: persisted.mediaUploadSecretName,
+          adapters: persistedLiveChannel?.adapters,
         }
       : liveChannel
     const baseConfig = persisted?.config || config

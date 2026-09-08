@@ -9,6 +9,7 @@ import type { BrowserNodeData, ContentCategory, ContentNodeData, ContentSource, 
 import type { Node } from 'reactflow'
 import { getNodeMediaItems, type ContentMediaKind } from '@/lib/content-media'
 import { captureBrowserWebview, type DesktopParsedPage } from '@/lib/browser-webview'
+import { desktopFetch } from '@/lib/desktop-fetch'
 
 const categoryLabels: Record<ContentCategory, string> = {
   text: '文本', video: '视频', social: '社媒', document: '文档', data: '数据', presentation: '演示文稿', mindmap: '思维导图', image: '图片',
@@ -30,7 +31,7 @@ async function fetchPublicYouTubeMetadata(videoId: string, sourceUrl: string) {
   try {
     const endpoint = new URL('https://noembed.com/embed')
     endpoint.searchParams.set('url', sourceUrl)
-    const response = await fetch(endpoint, { signal: controller.signal })
+    const response = await desktopFetch(endpoint, { signal: controller.signal })
     if (!response.ok) return undefined
     const payload = await response.json() as { title?: unknown; author_name?: unknown; thumbnail_url?: unknown }
     const title = typeof payload.title === 'string' ? payload.title.trim() : ''
@@ -109,7 +110,13 @@ export function extractTextFromNode(node?: Node): string {
     if (source?.kind === 'text') return source.text
     return ''
   }
-  if (node.type === 'ai') return data.output || [...(data.messages || [])].reverse().find((message: { role?: string }) => message.role === 'assistant')?.content || ''
+  if (node.type === 'ai') {
+    // An explicit empty output is meaningful while an AI request is being retried.
+    // Only fall back to legacy message history when output has never been set.
+    return data.output !== undefined
+      ? data.output
+      : [...(data.messages || [])].reverse().find((message: { role?: string }) => message.role === 'assistant')?.content || ''
+  }
   if (node.type === 'browser') {
     const browserData = data as BrowserNodeData
     const url = String(browserData.confirmedUrl || browserData.url || '').trim()
@@ -266,7 +273,15 @@ export function textNodeNeedsUpstreamRefresh(nodeId: string) {
   if (target?.type !== 'content' || target.data?.category !== 'text') return false
 
   const upstream = getUpstreamText(nodeId)
-  if (!upstream.text.trim()) return false
+  if (!upstream.text.trim()) {
+    // Empty AI output is intentional while retry removes the previous reply.
+    // Do not let the automatic sync effect race the explicit clear operation.
+    const hasExplicitlyEmptyAI = edges
+      .filter((edge) => edge.target === nodeId)
+      .map((edge) => nodes.find((node) => node.id === edge.source))
+      .some((source) => source?.type === 'ai' && source.data?.output === '')
+    return hasExplicitlyEmptyAI && Boolean(extractTextFromNode(target).trim())
+  }
   const currentText = extractTextFromNode(target).trim()
   if (!currentText || !target.data?.upstreamSync) return true
 
@@ -366,7 +381,14 @@ async function refreshTextFromUpstreamInternal(nodeId: string) {
       .map((edge) => edge.source)
     await Promise.all(sourceIds.map((sourceId) => populateNodeTextOutput(sourceId)))
     const upstream = getUpstreamText(nodeId)
-    if (!upstream.text) return false
+    if (!upstream.text) {
+      const { nodes, edges } = useFlowStore.getState()
+      const hasExplicitlyEmptyAI = edges
+        .filter((edge) => edge.target === nodeId)
+        .map((edge) => nodes.find((node) => node.id === edge.source))
+        .some((source) => source?.type === 'ai' && source.data?.output === '')
+      if (!hasExplicitlyEmptyAI) return false
+    }
 
     // Refresh is an explicit downstream sync action. It must replace existing
     // text instead of being mistaken for an in-progress manual edit.
@@ -443,6 +465,21 @@ export async function refreshDownstreamTextNodes(sourceId: string) {
       }),
   ))
   await Promise.all(targetIds.map((targetId) => refreshTextFromUpstream(targetId)))
+}
+
+/** Clear directly connected text nodes before an upstream request replaces its output. */
+export async function clearDownstreamTextNodes(sourceId: string) {
+  const { nodes, edges } = useFlowStore.getState()
+  const targetIds = Array.from(new Set(
+    edges
+      .filter((edge) => edge.source === sourceId)
+      .map((edge) => edge.target)
+      .filter((targetId) => {
+        const target = nodes.find((node) => node.id === targetId)
+        return target?.type === 'content' && target.data?.category === 'text'
+      }),
+  ))
+  await Promise.all(targetIds.map((targetId) => saveTextContentToNode(targetId, '', false, { overwrite: true })))
 }
 
 function refreshDownstreamMediaNodes(sourceId: string) {

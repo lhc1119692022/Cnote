@@ -77,7 +77,12 @@ const content = {
     return { url: input.url || '', title: input.title || 'Native', text: input.html.replace(/<[^>]+>/g, ''), headings: [], links: [], parserId: 'fake', parserVersion: '1', warnings: [] }
   },
 }
-const secrets = { get: async (name) => name === 'api-key' ? 'super-secret' : null }
+const secrets = {
+  get: async (name) => ({
+    'api-key': 'super-secret',
+    'cnote:generation-media-upload:test': 'media-secret',
+  }[name] || null),
+}
 const runner = new NativeJobRunner(store, network, content, secrets)
 
 // Simulate a job persisted before the application was started again.
@@ -97,6 +102,16 @@ const networkJob = await runner.enqueue({ kind: 'native:network-request', input:
 await waitFor(store, networkJob.id, 'completed')
 assert.equal(seenHeaders.Authorization, 'super-secret')
 assert.doesNotMatch(JSON.stringify(store.jobs.get(networkJob.id).checkpoint), /super-secret/)
+
+const bearerSecretJob = await runner.enqueue({ kind: 'native:network-request', input: {
+  url: 'https://example.test/data',
+  headers: { Authorization: 'Bearer stale-inline-value' },
+  secretRefs: { Authorization: 'cnote:generation-media-upload:test' },
+} })
+await waitFor(store, bearerSecretJob.id, 'completed')
+assert.equal(seenHeaders.Authorization, 'Bearer media-secret')
+assert.doesNotMatch(JSON.stringify(store.jobs.get(bearerSecretJob.id).checkpoint), /stale-inline-value/)
+assert.doesNotMatch(JSON.stringify(store.jobs.get(bearerSecretJob.id).checkpoint), /media-secret/)
 
 const slowJob = await runner.enqueue({ kind: 'native:network-request', input: { url: 'https://example.test/slow' } })
 await new Promise((resolve) => setTimeout(resolve, 20))

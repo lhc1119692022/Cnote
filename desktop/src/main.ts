@@ -11,6 +11,7 @@ let runtime: DesktopRuntime | null = null
 let mainWindow: BrowserWindow | null = null
 let rendererHealthTimer: NodeJS.Timeout | null = null
 let emergencyRendererShown = false
+const hasSingleInstanceLock = app.requestSingleInstanceLock()
 
 const ALLOWED_WEBVIEW_PROTOCOLS = new Set(['http:', 'https:', 'about:'])
 const PERSISTENT_BROWSER_PARTITION = 'persist:cnote-browser'
@@ -296,18 +297,7 @@ function registerIpcHandlers() {
   ipcMain.handle('content:parse-html', (_event, input: unknown) => getRuntime().ports.content.parseHtml(assertContentParseInput(input)))
   ipcMain.handle('network:request', async (_event, input: unknown) => {
     const request = assertNativeNetworkRequest(input)
-    const secretValues: Record<string, string> = {}
-    for (const secretName of Object.values(request.secretRefs || {})) {
-      const value = await getRuntime().ports.secrets.get(secretName)
-      if (value) secretValues[secretName] = value
-    }
-    const headers = { ...(request.headers || {}) }
-    Object.entries(request.secretRefs || {}).forEach(([header, secretName]) => {
-      const value = secretValues[secretName]
-      if (!value) throw new Error(`SecretStore 中未找到请求头密钥：${secretName}`)
-      Object.keys(headers).filter((name) => name.toLowerCase() === header.toLowerCase()).forEach((name) => delete headers[name])
-      headers[header] = value
-    })
+    const headers = await resolveSecretHeaders(request, false)
     return getRuntime().ports.network.request({ ...request, headers })
   })
   ipcMain.handle('system:open-file', (_event, request: unknown) => getRuntime().ports.system.openFile(assertOpenFileRequest(request)))
@@ -378,31 +368,7 @@ function assertNativeJobRequest(value: unknown): NativeJobRequest {
   if (request.method !== undefined && (typeof request.method !== 'string' || !/^[A-Za-z]+$/.test(request.method))) {
     throw new Error('Native network method is invalid')
   }
-  const headers = normalizeHeadersInput(request.headers)
-  const secretRefs = normalizeSecretRefs(request.secretRefs)
-  const secretRefHeaders = new Set(Object.keys(secretRefs).map((header) => header.toLowerCase()))
-  const sensitiveHeader = Object.keys(headers || {}).find((header) => /^(authorization|proxy-authorization|cookie|set-cookie|x-api-key|api-key)$/i.test(header) && !secretRefHeaders.has(header.toLowerCase()))
-  if (sensitiveHeader) throw new Error(`敏感请求头“${sensitiveHeader}”必须通过 SecretStore 引用。`)
-  if (request.body !== undefined && typeof request.body !== 'string' && !(request.body instanceof Uint8Array)) {
-    throw new Error('Native network body is invalid')
-  }
-  if (request.body !== undefined && (typeof request.body === 'string' ? Buffer.byteLength(request.body, 'utf8') : request.body.byteLength) > 256 * 1024 * 1024) {
-    throw new Error('Native network body 超过 256 MiB。')
-  }
-  if (request.timeoutMs !== undefined && (typeof request.timeoutMs !== 'number' || !Number.isFinite(request.timeoutMs))) {
-    throw new Error('Native network timeout is invalid')
-  }
-  return {
-    kind: 'native:network-request',
-    input: {
-      url: parsed.toString(),
-      method: typeof request.method === 'string' ? request.method.toUpperCase() : undefined,
-      headers,
-      secretRefs,
-      body: request.body as string | Uint8Array | undefined,
-      timeoutMs: typeof request.timeoutMs === 'number' ? Math.max(1_000, Math.min(300_000, request.timeoutMs)) : undefined,
-    },
-  }
+  return { kind: 'native:network-request', input: normalizeNativeNetworkRequest(request, parsed, false) }
 }
 
 function normalizeHeadersInput(value: unknown) {
@@ -411,6 +377,7 @@ function normalizeHeadersInput(value: unknown) {
   const result: Record<string, string> = {}
   Object.entries(value as Record<string, unknown>).forEach(([name, headerValue]) => {
     if (!name.trim() || typeof headerValue !== 'string') throw new Error('Native network headers are invalid')
+    Object.keys(result).filter((existing) => existing.toLowerCase() === name.toLowerCase()).forEach((existing) => delete result[existing])
     result[name] = headerValue
   })
   return result
@@ -446,6 +413,61 @@ function assertOpenFileRequest(value: unknown) {
     title: typeof input.title === 'string' ? input.title : undefined,
     filters: normalizeDialogFilters(input.filters),
   }
+}
+
+function normalizeNativeNetworkRequest(request: Record<string, unknown>, parsed: URL, allowInlineSensitiveHeaders: boolean): NativeNetworkJobRequest {
+  const headers = normalizeHeadersInput(request.headers)
+  const secretRefs = normalizeSecretRefs(request.secretRefs)
+  const secretRefHeaders = new Set(Object.keys(secretRefs).map((header) => header.toLowerCase()))
+  const sensitiveHeader = Object.keys(headers || {}).find((header) => /^(authorization|proxy-authorization|cookie|set-cookie|x-api-key|api-key)$/i.test(header) && !secretRefHeaders.has(header.toLowerCase()))
+  if (sensitiveHeader && !allowInlineSensitiveHeaders) throw new Error(`敏感请求头“${sensitiveHeader}”必须通过 SecretStore 引用。`)
+  if (request.body !== undefined && typeof request.body !== 'string' && !(request.body instanceof Uint8Array)) {
+    throw new Error('Native network body is invalid')
+  }
+  if (request.body !== undefined && (typeof request.body === 'string' ? Buffer.byteLength(request.body, 'utf8') : request.body.byteLength) > 256 * 1024 * 1024) {
+    throw new Error('Native network body 超过 256 MiB。')
+  }
+  if (request.timeoutMs !== undefined && (typeof request.timeoutMs !== 'number' || !Number.isFinite(request.timeoutMs))) {
+    throw new Error('Native network timeout is invalid')
+  }
+  const persistedHeaders = { ...(headers || {}) }
+  if (!allowInlineSensitiveHeaders) {
+    for (const header of Object.keys(persistedHeaders)) {
+      if (secretRefHeaders.has(header.toLowerCase())) delete persistedHeaders[header]
+    }
+  }
+  return {
+    url: parsed.toString(),
+    method: typeof request.method === 'string' ? request.method.toUpperCase() : undefined,
+    headers: persistedHeaders,
+    secretRefs,
+    body: request.body as string | Uint8Array | undefined,
+    timeoutMs: typeof request.timeoutMs === 'number' ? Math.max(1_000, Math.min(300_000, request.timeoutMs)) : undefined,
+  }
+}
+
+function normalizeSecretHeaderValue(header: string, value: string, secretName: string) {
+  if (header.toLowerCase() !== 'authorization' || !/^cnote:(?:ai|generation)(?::|-)/i.test(secretName)) return value
+  return /^[A-Za-z][A-Za-z0-9_-]*\s+/.test(value.trim()) ? value : `Bearer ${value}`
+}
+
+async function resolveSecretHeaders(request: NativeNetworkJobRequest, requireSecrets: boolean) {
+  const headers = { ...(request.headers || {}) }
+  const secrets = getRuntime().ports.secrets
+  for (const [header, secretName] of Object.entries(request.secretRefs || {})) {
+    const value = await secrets.get(secretName)
+    const existingHeader = Object.keys(headers).find((name) => name.toLowerCase() === header.toLowerCase() && Boolean(headers[name]?.trim()))
+    // Direct renderer requests may carry a freshly edited in-memory key. Keep
+    // it when the stored value is stale; Native Jobs never allow this path.
+    if (existingHeader && !requireSecrets) continue
+    if (!value) {
+      if (requireSecrets || !existingHeader) throw new Error(`SecretStore 中未找到请求头密钥：${secretName}`)
+      continue
+    }
+    Object.keys(headers).filter((name) => name.toLowerCase() === header.toLowerCase()).forEach((name) => delete headers[name])
+    headers[header] = normalizeSecretHeaderValue(header, value, secretName)
+  }
+  return headers
 }
 
 function assertDirectoryDialogRequest(value: unknown) {
@@ -519,7 +541,15 @@ async function loadRenderer(window: BrowserWindow) {
 }
 
 function assertNativeNetworkRequest(value: unknown): NativeNetworkJobRequest {
-  return (assertNativeJobRequest({ kind: 'native:network-request', input: value }) as Extract<NativeJobRequest, { kind: 'native:network-request' }>).input
+  if (!value || typeof value !== 'object') throw new Error('Native network request is required')
+  const request = value as Record<string, unknown>
+  if (typeof request.url !== 'string' || !request.url.trim()) throw new Error('Native network URL is required')
+  const parsed = new URL(request.url)
+  if (!['http:', 'https:'].includes(parsed.protocol)) throw new Error('Native network only supports HTTP(S)')
+  if (request.method !== undefined && (typeof request.method !== 'string' || !/^[A-Za-z]+$/.test(request.method))) {
+    throw new Error('Native network method is invalid')
+  }
+  return normalizeNativeNetworkRequest(request, parsed, true)
 }
 
 async function createMainWindow() {
@@ -550,7 +580,10 @@ async function createMainWindow() {
   mainWindow.on('restore', sendWindowState)
   mainWindow.webContents.on('did-finish-load', () => scheduleRendererHealthCheck(mainWindow!))
   mainWindow.webContents.on('did-fail-load', (_event, errorCode, errorDescription, _validatedURL, isMainFrame) => {
-    if (!isMainFrame || window.isDestroyed()) return
+    // Electron reports ERR_ABORTED (-3) for navigations that are superseded
+    // by a newer load. It is not a renderer failure and must not replace a
+    // working desktop page with the emergency renderer.
+    if (!isMainFrame || window.isDestroyed() || errorCode === -3) return
     void showEmergencyRenderer(window, `${errorDescription} (${errorCode})`)
   })
   mainWindow.webContents.on('render-process-gone', (_event, details) => {
@@ -575,18 +608,29 @@ async function createMainWindow() {
   })
 }
 
-app.whenReady().then(async () => {
-  configurePersistentBrowserPartition()
-  runtime = new DesktopRuntime()
-  registerIpcHandlers()
-  await getRuntime().ports.jobs.list()
-  await getRuntime().ports.nativeJobs.start()
-  await createMainWindow()
-
-  app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) void createMainWindow()
+if (hasSingleInstanceLock) {
+  app.on('second-instance', () => {
+    if (!mainWindow || mainWindow.isDestroyed()) return
+    if (mainWindow.isMinimized()) mainWindow.restore()
+    mainWindow.show()
+    mainWindow.focus()
   })
-})
+
+  app.whenReady().then(async () => {
+    configurePersistentBrowserPartition()
+    runtime = new DesktopRuntime()
+    registerIpcHandlers()
+    await getRuntime().ports.jobs.list()
+    await getRuntime().ports.nativeJobs.start()
+    await createMainWindow()
+
+    app.on('activate', () => {
+      if (BrowserWindow.getAllWindows().length === 0) void createMainWindow()
+    })
+  })
+} else {
+  app.quit()
+}
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()

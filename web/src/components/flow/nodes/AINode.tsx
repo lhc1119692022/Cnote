@@ -1,9 +1,9 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { NodeProps, Position } from 'reactflow'
-import { ArrowUp, Brain, ChevronDown, Copy, FileCog, GitBranch, History, LoaderCircle, MessageSquarePlus, Search, Settings, Sparkles, Square, SquarePen, Trash2, X } from 'lucide-react'
+import { ArrowUp, Brain, ChevronDown, Copy, FileCog, GitBranch, History, LoaderCircle, MessageSquarePlus, RotateCcw, Search, Settings, Sparkles, Square, SquarePen, Trash2, X } from 'lucide-react'
 import { useAIStore } from '@/stores/use-ai-store'
 import { useFlowStore } from '@/stores/use-flow-store'
-import { refreshDownstreamTextNodes, saveTextContentToNode } from '@/lib/content-import-controller'
+import { clearDownstreamTextNodes, refreshDownstreamTextNodes, saveTextContentToNode } from '@/lib/content-import-controller'
 import { emptyContentData } from '@/lib/content-import'
 import { adaptReasoningLevel, getAIModelCapabilities, getProvider, type ChatCompletionRequest, type ChatContentPart } from '@/lib/api'
 import { AI_NODE_DEFAULT_SIZE, AI_NODE_MAX_AUTO_HEIGHT, AI_NODE_MIN_SIZE } from '@/lib/flow/node-dimensions'
@@ -121,6 +121,27 @@ function closeOpenMenus(root: ParentNode | null, except?: HTMLDetailsElement | n
   })
 }
 
+async function copyText(value: string) {
+  if (navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(value)
+      return
+    } catch {
+      // Fall back to the document command for older or restricted desktop shells.
+    }
+  }
+  const textarea = document.createElement('textarea')
+  textarea.value = value
+  textarea.setAttribute('readonly', '')
+  textarea.style.position = 'fixed'
+  textarea.style.opacity = '0'
+  document.body.appendChild(textarea)
+  textarea.select()
+  const copied = document.execCommand('copy')
+  textarea.remove()
+  if (!copied) throw new Error('clipboard-unavailable')
+}
+
 function AINodeDragGutters() {
   return <div className="ai-node-drag-gutters" aria-hidden="true">
     <span data-side="top" />
@@ -148,19 +169,19 @@ export const AINode = memo(({ id, data, selected }: NodeProps<AINodeData>) => {
   const [isSending, setIsSending] = useState(false)
   const [streamingReply, setStreamingReply] = useState('')
   const [requestError, setRequestError] = useState<string | null>(null)
-  const [hoveredReplyIndex, setHoveredReplyIndex] = useState<number | null>(null)
-  const [replyActionsTop, setReplyActionsTop] = useState<number | null>(null)
-  const [copiedReplyIndex, setCopiedReplyIndex] = useState<number | null>(null)
+  const [hoveredMessage, setHoveredMessage] = useState<{ role: AIMessage['role']; index: number } | null>(null)
+  const [messageActionsPosition, setMessageActionsPosition] = useState<{ top: number; left: number; align: 'left' | 'right' } | null>(null)
+  const [copiedMessageKey, setCopiedMessageKey] = useState<string | null>(null)
   const nodeRef = useRef<HTMLDivElement>(null)
   const toolbarRef = useRef<HTMLDivElement>(null)
   const historyRef = useRef<HTMLDivElement>(null)
   const messageContentRef = useRef<HTMLDivElement>(null)
   const composerAreaRef = useRef<HTMLDivElement>(null)
   const composerRef = useRef<HTMLDivElement>(null)
-  const replyElementRefs = useRef(new Map<number, HTMLDivElement>())
+  const messageElementRefs = useRef(new Map<number, HTMLDivElement>())
   const lastAutoSizeRef = useRef<{ width: number; height: number } | null>(null)
   const manuallyResizedRef = useRef(false)
-  const replyHoverTimerRef = useRef<number | null>(null)
+  const messageActionsHoverTimerRef = useRef<number | null>(null)
   const requestControllerRef = useRef<AbortController | null>(null)
 
   const availableChannels = useMemo(
@@ -184,6 +205,10 @@ export const AINode = memo(({ id, data, selected }: NodeProps<AINodeData>) => {
   const sessions = useMemo(() => data.sessions || [], [data.sessions])
   const activeSession = sessions.find((session) => session.id === data.activeSessionId)
   const messages = useMemo(() => activeSession?.messages || data.messages || [], [activeSession?.messages, data.messages])
+  const lastUserMessageIndex = useMemo(
+    () => messages.reduce((lastIndex, message, index) => message.role === 'user' ? index : lastIndex, -1),
+    [messages],
+  )
   const webSearch = data.webSearch || 'auto'
   const reasoningLevel = data.reasoningLevel || 'medium'
   const effectiveReasoningLevel = adaptReasoningLevel(modelCapabilities, reasoningLevel)
@@ -252,7 +277,7 @@ export const AINode = memo(({ id, data, selected }: NodeProps<AINodeData>) => {
   }, [prompt, upstreamEntries])
 
   useEffect(() => () => {
-    if (replyHoverTimerRef.current !== null) window.clearTimeout(replyHoverTimerRef.current)
+    if (messageActionsHoverTimerRef.current !== null) window.clearTimeout(messageActionsHoverTimerRef.current)
     requestControllerRef.current?.abort()
   }, [])
 
@@ -369,29 +394,39 @@ export const AINode = memo(({ id, data, selected }: NodeProps<AINodeData>) => {
     setPrompt('')
   }
 
-  const updateReplyActionsPosition = useCallback((index: number, element?: HTMLDivElement | null) => {
+  const updateMessageActionsPosition = useCallback((role: AIMessage['role'], index: number, element?: HTMLDivElement | null) => {
     const node = nodeRef.current
     const composerArea = composerAreaRef.current
-    const reply = element || replyElementRefs.current.get(index)
-    if (!node || !composerArea || !reply) return
+    const message = element || messageElementRefs.current.get(index)
+    if (!node || !composerArea || !message) return
     const nodeRect = node.getBoundingClientRect()
-    const replyRect = reply.getBoundingClientRect()
+    const messageRect = message.getBoundingClientRect()
     const composerRect = composerArea.getBoundingClientRect()
+    const scaleX = node.offsetWidth > 0 ? nodeRect.width / node.offsetWidth : 1
     const scaleY = node.offsetHeight > 0 ? nodeRect.height / node.offsetHeight : 1
-    const preferredTop = (replyRect.bottom - nodeRect.top) / scaleY + 6
+    const preferredTop = (messageRect.bottom - nodeRect.top) / scaleY + 6
     const lowestTop = (composerRect.top - nodeRect.top) / scaleY - 38
-    setReplyActionsTop(Math.max(8, Math.min(preferredTop, lowestTop)))
+    const leftEdge = (role === 'user' ? messageRect.right : messageRect.left) - nodeRect.left
+    const left = Math.max(8, Math.min(leftEdge / scaleX, node.offsetWidth - 8))
+    setMessageActionsPosition({
+      top: Math.max(8, Math.min(preferredTop, Math.max(8, lowestTop))),
+      left,
+      align: role === 'user' ? 'right' : 'left',
+    })
   }, [])
 
-  const showReplyActions = (index: number, element: HTMLDivElement) => {
-    if (replyHoverTimerRef.current !== null) window.clearTimeout(replyHoverTimerRef.current)
-    setHoveredReplyIndex(index)
-    updateReplyActionsPosition(index, element)
+  const showMessageActions = (role: AIMessage['role'], index: number, element: HTMLDivElement) => {
+    if (messageActionsHoverTimerRef.current !== null) window.clearTimeout(messageActionsHoverTimerRef.current)
+    setHoveredMessage({ role, index })
+    updateMessageActionsPosition(role, index, messageElementRefs.current.get(index) || element)
   }
 
-  const hideReplyActions = () => {
-    if (replyHoverTimerRef.current !== null) window.clearTimeout(replyHoverTimerRef.current)
-    replyHoverTimerRef.current = window.setTimeout(() => setHoveredReplyIndex(null), 140)
+  const hideMessageActions = () => {
+    if (messageActionsHoverTimerRef.current !== null) window.clearTimeout(messageActionsHoverTimerRef.current)
+    messageActionsHoverTimerRef.current = window.setTimeout(() => {
+      setHoveredMessage(null)
+      setMessageActionsPosition(null)
+    }, 140)
   }
 
   const branchReply = (index: number) => {
@@ -428,16 +463,19 @@ export const AINode = memo(({ id, data, selected }: NodeProps<AINodeData>) => {
         userPrompt: '',
       },
     })
-    setHoveredReplyIndex(null)
+    setHoveredMessage(null)
+    setMessageActionsPosition(null)
   }
 
-  const copyReply = async (index: number) => {
-    const reply = messages[index]
-    if (!reply) return
+  const copyMessage = async (index: number) => {
+    const message = messages[index]
+    if (!message) return
+    const key = `${message.role}:${index}`
+    const value = message.role === 'user' ? promptWithVariableLabels(message.content, upstreamEntries) : message.content
     try {
-      await navigator.clipboard.writeText(reply.content)
-      setCopiedReplyIndex(index)
-      window.setTimeout(() => setCopiedReplyIndex((current) => current === index ? null : current), 1200)
+      await copyText(value)
+      setCopiedMessageKey(key)
+      window.setTimeout(() => setCopiedMessageKey((current) => current === key ? null : current), 1200)
     } catch {
       setRequestError('复制失败，请检查浏览器剪贴板权限。')
     }
@@ -456,29 +494,82 @@ export const AINode = memo(({ id, data, selected }: NodeProps<AINodeData>) => {
     })
     void saveTextContentToNode(created.id, reply.content, true, { overwrite: true })
     addEdge({ source: id, target: created.id, sourceHandle: 'out', targetHandle: 'in', type: 'interactive' })
-    setHoveredReplyIndex(null)
+    setHoveredMessage(null)
+    setMessageActionsPosition(null)
   }
 
   const stopSending = useCallback(() => {
     requestControllerRef.current?.abort()
   }, [])
 
-  const sendMessage = async () => {
-    const displayContent = prompt.trim()
+  const sendMessage = async ({ retryIndex }: { retryIndex?: number } = {}) => {
+    const isRetry = retryIndex !== undefined
+    const retryTarget = isRetry ? messages[retryIndex] : undefined
+    if (isRetry && (!retryTarget || retryTarget.role !== 'user' || retryIndex !== lastUserMessageIndex)) return
+    const displayContent = (retryTarget?.content || prompt).trim()
     if (!promptHasUsableContent(displayContent) || isSending) return
-    if (!selectedModel) {
+    const requestModel = isRetry && retryTarget?.channelId && retryTarget.model
+      ? {
+          channelId: retryTarget.channelId,
+          model: retryTarget.model,
+          channelName: apiKeys.find((channel) => channel.id === retryTarget.channelId)?.name || retryTarget.channelId,
+        }
+      : selectedModel
+    const requestChannel = requestModel ? apiKeys.find((channel) => channel.id === requestModel.channelId) : undefined
+    if (!requestModel) {
       setRequestError('请先在悬浮菜单中选择一个已配置的模型。')
       return
     }
-    const client = createClientForChannel(selectedModel.channelId)
+    const client = createClientForChannel(requestModel.channelId)
     if (!client) {
       setRequestError('当前模型渠道尚未正确配置，请检查 API Key、服务地址和模型列表。')
       return
     }
-    const requestContent = compileAiPrompt(displayContent, upstreamEntries)
-    const userMessage: AIMessage = { role: 'user', content: displayContent, requestContent, createdAt: Date.now() }
-    const session = activeSession || createSession(sessions.length)
-    const nextMessages = [...session.messages, userMessage]
+    const requestContent = retryTarget?.requestContent || compileAiPrompt(displayContent, upstreamEntries)
+    const requestProvider = requestChannel ? getProvider(requestChannel.providerId) : selectedProvider
+    const requestCapabilities = requestChannel
+      ? getAIModelCapabilities(requestChannel.providerId, requestChannel.protocol || requestProvider?.protocol || 'chatCompletions', requestModel.model, requestChannel.baseURL)
+      : modelCapabilities
+    const requestReasoningLevel = isRetry
+      ? adaptReasoningLevel(requestCapabilities, retryTarget?.reasoningLevel || reasoningLevel)
+      : effectiveReasoningLevel
+    const requestWebSearch = isRetry ? retryTarget?.webSearch || webSearch : webSearch
+    const requestSystemPrompt = isRetry
+      ? retryTarget?.systemPrompt || systemPromptDraft || '你是一个有用的助手。'
+      : systemPromptDraft || '你是一个有用的助手。'
+    const requestMaxOutputTokens = isRetry
+      ? retryTarget?.maxOutputTokens || data.maxOutputTokens || 8192
+      : data.maxOutputTokens || 8192
+    const userMessage: AIMessage = retryTarget
+      ? {
+          ...retryTarget,
+          requestContent,
+          // Legacy messages did not capture request settings. Backfill them
+          // during the first retry so later retries stay on the same request.
+          channelId: retryTarget.channelId || requestModel.channelId,
+          model: retryTarget.model || requestModel.model,
+          webSearch: retryTarget.webSearch || requestWebSearch,
+          reasoningLevel: retryTarget.reasoningLevel || requestReasoningLevel,
+          systemPrompt: retryTarget.systemPrompt || requestSystemPrompt,
+          maxOutputTokens: retryTarget.maxOutputTokens || requestMaxOutputTokens,
+        }
+      : {
+          role: 'user',
+          content: displayContent,
+          requestContent,
+          channelId: requestModel.channelId,
+          model: requestModel.model,
+          webSearch,
+          reasoningLevel: effectiveReasoningLevel,
+          systemPrompt: requestSystemPrompt,
+          maxOutputTokens: requestMaxOutputTokens,
+          createdAt: Date.now(),
+        }
+    const session = activeSession || (isRetry ? { ...createSession(sessions.length), messages } : createSession(sessions.length))
+    if (isRetry && retryIndex >= session.messages.length) return
+    const nextMessages = isRetry
+      ? [...session.messages.slice(0, retryIndex), userMessage]
+      : [...session.messages, userMessage]
     const nextSession = {
       ...session,
       title: session.messages.length ? session.title : promptWithVariableLabels(displayContent, upstreamEntries).slice(0, 24),
@@ -488,13 +579,23 @@ export const AINode = memo(({ id, data, selected }: NodeProps<AINodeData>) => {
     const nextSessions = activeSession
       ? sessions.map((item) => item.id === session.id ? nextSession : item)
       : [...sessions, nextSession]
-    persist({ sessions: nextSessions, activeSessionId: session.id, messages: nextMessages, prompt: '', userPrompt: '' })
+    persist({
+      sessions: nextSessions,
+      activeSessionId: session.id,
+      messages: nextMessages,
+      prompt: '',
+      userPrompt: '',
+      ...(isRetry ? { output: '' } : {}),
+    })
     setPrompt('')
     setRequestError(null)
+    setHoveredMessage(null)
+    setMessageActionsPosition(null)
     setIsSending(true)
     const controller = new AbortController()
     requestControllerRef.current = controller
     try {
+      if (isRetry) await clearDownstreamTextNodes(id)
       const resolvedEntries = await buildAIContextEntries(useFlowStore.getState().nodes, upstreamSourceIds)
       const resolvedById = new Map(resolvedEntries.map((entry) => [entry.nodeId, entry]))
       const multimodalEntries = upstreamEntries.map((entry) => ({ ...entry, images: resolvedById.get(entry.nodeId)?.images }))
@@ -520,9 +621,9 @@ export const AINode = memo(({ id, data, selected }: NodeProps<AINodeData>) => {
         requestMessages = retained
       }
       const request: ChatCompletionRequest = {
-        model: selectedModel.model,
+        model: requestModel.model,
         messages: [
-          { role: 'system', content: systemPromptDraft || '你是一个有用的助手。' },
+          { role: 'system', content: requestSystemPrompt },
           ...(requestMessages.length < nextMessages.length ? [{ role: 'system' as const, content: '较早的会话内容已在达到上下文 70% 后自动压缩；以下保留最近的完整消息。' }] : []),
           ...requestMessages.map((message, index) => ({
             role: message.role,
@@ -532,9 +633,9 @@ export const AINode = memo(({ id, data, selected }: NodeProps<AINodeData>) => {
           })),
         ],
         temperature: 1,
-        max_tokens: data.maxOutputTokens || 8192,
-        web_search: modelCapabilities.webSearch === 'unsupported' ? 'off' : webSearch,
-        reasoning_effort: effectiveReasoningLevel,
+        max_tokens: requestMaxOutputTokens,
+        web_search: requestCapabilities.webSearch === 'unsupported' ? 'off' : requestWebSearch,
+        reasoning_effort: requestReasoningLevel,
       }
       let response = ''
       for await (const delta of client.completeStream(request, controller.signal)) {
@@ -548,9 +649,15 @@ export const AINode = memo(({ id, data, selected }: NodeProps<AINodeData>) => {
       if (!currentNode) return
       const currentData = currentNode.data as AINodeData
       const currentSessions = currentData.sessions || []
-      const responseSessions = currentSessions.map((item) => item.id === session.id
-        ? { ...item, updatedAt: Date.now(), messages: [...item.messages, assistantMessage] }
-        : item)
+      const responseSessions = currentSessions.some((item) => item.id === session.id)
+        ? currentSessions.map((item) => {
+            if (item.id !== session.id) return item
+            const retainedMessages = isRetry
+              ? [...item.messages.slice(0, retryIndex), userMessage]
+              : item.messages
+            return { ...item, updatedAt: Date.now(), messages: [...retainedMessages, assistantMessage] }
+          })
+        : [...currentSessions, { ...nextSession, updatedAt: Date.now(), messages: [...nextMessages, assistantMessage] }]
       const responseSession = responseSessions.find((item) => item.id === session.id)
       updateNode(id, {
         data: {
@@ -561,9 +668,8 @@ export const AINode = memo(({ id, data, selected }: NodeProps<AINodeData>) => {
         },
       })
       useFlowStore.getState().addToHistory()
+      await refreshDownstreamTextNodes(id)
       useFlowStore.getState().saveCurrentFlow()
-      // 下游文本节点自动承接最新回复，无需手动刷新。
-      void refreshDownstreamTextNodes(id)
     } catch (error) {
       if (controller.signal.aborted || (error instanceof DOMException && error.name === 'AbortError')) {
         setRequestError(null)
@@ -575,6 +681,11 @@ export const AINode = memo(({ id, data, selected }: NodeProps<AINodeData>) => {
       setStreamingReply('')
       setIsSending(false)
     }
+  }
+
+  const retryMessage = (index: number) => {
+    if (isSending || index !== lastUserMessageIndex) return
+    void sendMessage({ retryIndex: index })
   }
 
   const cycleWebSearch = () => {
@@ -650,7 +761,9 @@ export const AINode = memo(({ id, data, selected }: NodeProps<AINodeData>) => {
 
       <div
         ref={historyRef}
-        onScroll={() => { if (hoveredReplyIndex !== null) updateReplyActionsPosition(hoveredReplyIndex) }}
+        onScroll={() => {
+          if (hoveredMessage) updateMessageActionsPosition(hoveredMessage.role, hoveredMessage.index)
+        }}
         onPointerDown={(event) => event.stopPropagation()}
         onWheel={(event) => event.stopPropagation()}
         className={`nodrag nopan nowheel select-text overscroll-contain min-h-0 flex-1 overflow-auto custom-scrollbar px-5 pt-5 ${showEmptyState ? 'flex items-center justify-center pb-5' : ''}`}
@@ -661,7 +774,29 @@ export const AINode = memo(({ id, data, selected }: NodeProps<AINodeData>) => {
           <p className="mt-3 text-base leading-7 text-muted-foreground">可以直接聊天，也可以让我分析上游的内容。善用变量胶囊能更好的帮你描述问题</p>
         </div>}
         {messages.length > 0 && <div className="space-y-3 pb-3">
-          {messages.map((message, index) => <div key={`${message.createdAt || index}-${index}`} data-ai-message-role={message.role} data-ai-message-index={index} ref={(element) => { if (element && message.role === 'assistant') replyElementRefs.current.set(index, element); else replyElementRefs.current.delete(index) }} onMouseEnter={(event) => message.role === 'assistant' && showReplyActions(index, event.currentTarget)} onMouseLeave={() => message.role === 'assistant' && hideReplyActions()} className={`max-w-[86%] rounded-2xl px-4 py-3 text-base leading-7 ${message.role === 'user' ? 'ml-auto whitespace-pre-wrap bg-muted text-foreground' : 'bg-transparent text-foreground'}`}>{message.role === 'assistant' ? <MarkdownPreview source={message.content} /> : promptWithVariableLabels(message.content, upstreamEntries)}</div>)}
+          {messages.map((message, index) => {
+            const isUserMessage = message.role === 'user'
+            return (
+              <div
+                key={`${message.createdAt || index}-${index}`}
+                className={`ai-message-row ${isUserMessage ? 'ai-user-message-row' : 'ai-assistant-message-row'}`}
+              >
+                <div
+                  data-ai-message-role={message.role}
+                  data-ai-message-index={index}
+                  ref={(element) => {
+                    if (element) messageElementRefs.current.set(index, element)
+                    else messageElementRefs.current.delete(index)
+                  }}
+                  onMouseEnter={(event) => showMessageActions(message.role, index, event.currentTarget)}
+                  onMouseLeave={hideMessageActions}
+                  className={`ai-message-bubble max-w-[86%] rounded-2xl px-4 py-3 text-base leading-7 ${isUserMessage ? 'whitespace-pre-wrap bg-muted text-foreground' : 'bg-transparent text-foreground'}`}
+                >
+                  {isUserMessage ? promptWithVariableLabels(message.content, upstreamEntries) : <MarkdownPreview source={message.content} />}
+                </div>
+              </div>
+            )
+          })}
         </div>}
         {isSending && !streamingReply && <div className="mb-3 flex max-w-[86%] items-center gap-2 px-4 py-2 text-sm text-muted-foreground"><LoaderCircle className="h-4 w-4 animate-spin" />正在请求模型…</div>}
         {streamingReply && <div className="mb-3 max-w-[86%] px-4 py-3 text-base leading-7 text-foreground"><MarkdownPreview source={streamingReply} /></div>}
@@ -669,10 +804,36 @@ export const AINode = memo(({ id, data, selected }: NodeProps<AINodeData>) => {
         </div>
       </div>
 
-      {hoveredReplyIndex !== null && replyActionsTop !== null && messages[hoveredReplyIndex]?.role === 'assistant' && <div className="ai-reply-actions nodrag nowheel" style={{ top: replyActionsTop }} onMouseEnter={() => { if (replyHoverTimerRef.current !== null) window.clearTimeout(replyHoverTimerRef.current) }} onMouseLeave={hideReplyActions} onPointerDown={(event) => event.stopPropagation()}>
-          <button type="button" onClick={() => branchReply(hoveredReplyIndex)} title="分支" aria-label="分支"><GitBranch className="h-4 w-4" /></button>
-          <button type="button" onClick={() => editReplyAsTextNode(hoveredReplyIndex)} title="编辑为文本节点" aria-label="编辑为文本节点"><SquarePen className="h-4 w-4" /></button>
-          <button type="button" onClick={() => void copyReply(hoveredReplyIndex)} title="复制" aria-label="复制"><Copy className="h-4 w-4" />{copiedReplyIndex === hoveredReplyIndex && <span className="sr-only">已复制</span>}</button>
+      {hoveredMessage && messageActionsPosition && <div
+        className={`ai-message-actions nodrag nowheel ${messageActionsPosition.align === 'right' ? 'ai-message-actions-right' : 'ai-message-actions-left'}`}
+        style={{ top: messageActionsPosition.top, left: messageActionsPosition.left }}
+        role="toolbar"
+        aria-label={hoveredMessage.role === 'user' ? '用户消息操作' : '回复操作'}
+        data-ai-message-actions={hoveredMessage.role}
+        data-ai-message-index={hoveredMessage.index}
+        onMouseEnter={() => {
+          if (messageActionsHoverTimerRef.current !== null) window.clearTimeout(messageActionsHoverTimerRef.current)
+        }}
+        onMouseLeave={hideMessageActions}
+        onPointerDown={(event) => event.stopPropagation()}
+      >
+        {hoveredMessage.role === 'user' ? (
+          <>
+            <button type="button" data-ai-copy-message onClick={() => void copyMessage(hoveredMessage.index)} title="复制" aria-label="复制用户消息">
+              <Copy className="h-4 w-4" />
+              {copiedMessageKey === `user:${hoveredMessage.index}` && <span className="sr-only">已复制</span>}
+            </button>
+            {hoveredMessage.index === lastUserMessageIndex && <button type="button" data-ai-retry-message disabled={isSending} onClick={() => retryMessage(hoveredMessage.index)} title="重试" aria-label="重试最后一条用户消息">
+              <RotateCcw className="h-4 w-4" />
+            </button>}
+          </>
+        ) : (
+          <>
+            <button type="button" onClick={() => branchReply(hoveredMessage.index)} title="分支" aria-label="分支"><GitBranch className="h-4 w-4" /></button>
+            <button type="button" onClick={() => editReplyAsTextNode(hoveredMessage.index)} title="编辑为文本节点" aria-label="编辑为文本节点"><SquarePen className="h-4 w-4" /></button>
+            <button type="button" data-ai-copy-message onClick={() => void copyMessage(hoveredMessage.index)} title="复制" aria-label="复制回复"><Copy className="h-4 w-4" />{copiedMessageKey === `assistant:${hoveredMessage.index}` && <span className="sr-only">已复制</span>}</button>
+          </>
+        )}
       </div>}
       <div ref={composerAreaRef} className="ai-composer-area relative z-30 p-3 pt-1">
         <div className="flex items-center gap-2 rounded-2xl border border-border bg-card p-2 shadow-sm focus-within:border-foreground/30 focus-within:ring-1 focus-within:ring-foreground/10">

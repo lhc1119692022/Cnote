@@ -8,6 +8,7 @@ type EncryptedSecrets = Record<string, string>
 export class SafeStorageSecretStore implements SecretPort {
   private readonly filePath: string
   private loaded: EncryptedSecrets | null = null
+  private mutationQueue: Promise<void> = Promise.resolve()
 
   constructor() {
     this.filePath = path.join(app.getPath('userData'), 'secrets.json')
@@ -40,6 +41,16 @@ export class SafeStorageSecretStore implements SecretPort {
     await fs.writeFile(this.filePath, JSON.stringify(secrets, null, 2), 'utf8')
   }
 
+  private mutate(mutator: (secrets: EncryptedSecrets) => void) {
+    const operation = this.mutationQueue.then(async () => {
+      const secrets = await this.read()
+      mutator(secrets)
+      await this.flush(secrets)
+    })
+    this.mutationQueue = operation.catch(() => undefined)
+    return operation
+  }
+
   async has(name: string) {
     const secrets = await this.read()
     return typeof secrets[name] === 'string'
@@ -50,9 +61,9 @@ export class SafeStorageSecretStore implements SecretPort {
     if (!safeStorage.isEncryptionAvailable()) {
       throw new Error('OS secure storage is unavailable')
     }
-    const secrets = await this.read()
-    secrets[name] = safeStorage.encryptString(value).toString('base64')
-    await this.flush(secrets)
+    await this.mutate((secrets) => {
+      secrets[name] = safeStorage.encryptString(value).toString('base64')
+    })
   }
 
   async get(name: string) {
@@ -68,9 +79,8 @@ export class SafeStorageSecretStore implements SecretPort {
   }
 
   async delete(name: string) {
-    const secrets = await this.read()
-    if (!(name in secrets)) return
-    delete secrets[name]
-    await this.flush(secrets)
+    await this.mutate((secrets) => {
+      if (name in secrets) delete secrets[name]
+    })
   }
 }

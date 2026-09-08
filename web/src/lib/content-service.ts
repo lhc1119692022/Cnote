@@ -21,7 +21,7 @@ export function getContentServiceClient(capability?: ContentServiceCapability) {
       retryable: false,
     })
   }
-  return new ScraperClient({ baseURL, accessToken: settings.accessToken })
+  return new ScraperClient({ baseURL, accessToken: settings.accessToken, secretName: settings.enabled ? settings.secretName : undefined })
 }
 
 export function tryGetContentServiceClient() {

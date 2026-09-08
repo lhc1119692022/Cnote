@@ -727,6 +727,32 @@
   box-shadow: 0 4px 14px rgb(15 23 42 / 0.065);
 }
 
+.sticky-color-button {
+  --sticky-dot-color: #fbbf24;
+  position: relative;
+  width: 24px;
+  height: 24px;
+  flex: 0 0 24px;
+  border-radius: 999px;
+  transition: background-color 140ms ease, box-shadow 140ms ease;
+}
+
+.sticky-color-button::before {
+  content: '';
+  position: absolute;
+  inset: 6px;
+  border-radius: inherit;
+  background: var(--sticky-dot-color);
+}
+
+.sticky-color-button:hover {
+  background: var(--muted);
+}
+
+.sticky-color-button.is-active {
+  box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--sticky-dot-color) 75%, transparent);
+}
+
 .react-flow__node:hover .node-hover-toolbar,
 .react-flow__node:focus-within .node-hover-toolbar {
   opacity: 1;
@@ -962,9 +988,27 @@
   background: color-mix(in oklch, var(--primary) 88%, black);
 }
 
-.ai-reply-actions {
+.ai-message-row {
+  position: relative;
+  display: flex;
+  width: 100%;
+  flex-direction: column;
+}
+
+.ai-user-message-row {
+  align-items: flex-end;
+}
+
+.ai-assistant-message-row {
+  align-items: flex-start;
+}
+
+.ai-message-bubble {
+  width: fit-content;
+}
+
+.ai-message-actions {
   position: absolute;
-  right: 12px;
   z-index: 20;
   display: flex;
   overflow: hidden;
@@ -974,7 +1018,15 @@
   box-shadow: 0 4px 14px rgb(15 23 42 / 0.08);
 }
 
-.ai-reply-actions button {
+.ai-message-actions-left {
+  transform: translateY(0);
+}
+
+.ai-message-actions-right {
+  transform: translateX(-100%);
+}
+
+.ai-message-actions button {
   display: flex;
   width: 34px;
   height: 32px;
@@ -983,9 +1035,14 @@
   color: var(--muted-foreground);
 }
 
-.ai-reply-actions button:hover {
+.ai-message-actions button:hover:not(:disabled) {
   background: var(--muted);
   color: var(--foreground);
+}
+
+.ai-message-actions button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
 }
 
 .react-flow__handle {

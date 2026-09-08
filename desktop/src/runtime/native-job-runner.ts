@@ -32,13 +32,28 @@ type PersistedNativeJobCheckpoint = Omit<NativeJobCheckpoint, 'request'> & {
   request: PersistedNativeJobRequest | NativeJobRequest
 }
 
-function serializeRequest(request: NativeJobRequest): PersistedNativeJobRequest | NativeJobRequest {
-  if (request.kind !== 'native:network-request' || !(request.input.body instanceof Uint8Array)) return request
+function stripReferencedHeaders(request: NativeJobRequest): NativeJobRequest {
+  if (request.kind !== 'native:network-request') return request
+  const referenced = new Set(Object.keys(request.input.secretRefs || {}).map((header) => header.toLowerCase()))
+  if (!referenced.size || !request.input.headers) return request
+  const headers = Object.fromEntries(Object.entries(request.input.headers).filter(([header]) => !referenced.has(header.toLowerCase())))
   return {
     kind: request.kind,
     input: {
       ...request.input,
-      body: { __cnoteBinaryBase64: encodeBytes(request.input.body) },
+      headers: Object.keys(headers).length ? headers : undefined,
+    },
+  }
+}
+
+function serializeRequest(request: NativeJobRequest): PersistedNativeJobRequest | NativeJobRequest {
+  const sanitized = stripReferencedHeaders(request)
+  if (sanitized.kind !== 'native:network-request' || !(sanitized.input.body instanceof Uint8Array)) return sanitized
+  return {
+    kind: sanitized.kind,
+    input: {
+      ...sanitized.input,
+      body: { __cnoteBinaryBase64: encodeBytes(sanitized.input.body) },
     },
   }
 }
@@ -104,9 +119,14 @@ function mergeSecretHeaders(input: NativeNetworkJobRequest, secrets: Record<stri
     const value = secrets[secretName]
     if (!value) throw new Error(`SecretStore 中未找到请求头密钥：${secretName}`)
     Object.keys(headers).filter((name) => name.toLowerCase() === header.toLowerCase()).forEach((name) => delete headers[name])
-    headers[header] = value
+    headers[header] = normalizeSecretHeaderValue(header, value, secretName)
   })
   return headers
+}
+
+function normalizeSecretHeaderValue(header: string, value: string, secretName: string) {
+  if (header.toLowerCase() !== 'authorization' || !/^cnote:(?:ai|generation)(?::|-)/i.test(secretName)) return value
+  return /^[A-Za-z][A-Za-z0-9_-]*\s+/.test(value.trim()) ? value : `Bearer ${value}`
 }
 
 export class NativeJobRunner implements NativeJobPort {

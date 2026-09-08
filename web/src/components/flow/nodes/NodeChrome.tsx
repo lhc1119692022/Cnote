@@ -11,6 +11,7 @@ import { getContentFileAccept } from '@/lib/content-import'
 import { cloneFlowValue } from '@/lib/flow/clone'
 import { getNodeMediaItems } from '@/lib/content-media'
 import { extensionForMimeType, saveBlobToFile } from '@/lib/file-save'
+import { desktopFetch } from '@/lib/desktop-fetch'
 
 interface NodeHandleProps {
   type: 'target' | 'source'
@@ -207,7 +208,7 @@ export function NodeHoverToolbar({ nodeId, children }: { nodeId: string; childre
       const blob = resourceId
         ? await loadLocalResourceBlob(resourceId)
         : media?.resource.url
-          ? await fetch(media.resource.url).then((response) => {
+          ? await desktopFetch(media.resource.url).then((response) => {
               if (!response.ok) throw new Error(`图片下载失败（${response.status}）`)
               return response.blob()
             })
@@ -273,7 +274,7 @@ export function NodeHoverToolbar({ nodeId, children }: { nodeId: string; childre
         {resourceLost
           ? <button type="button" className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-red-600 transition-colors hover:bg-red-50" aria-label="刷新丢失资源" title="刷新丢失资源" onClick={(event) => { event.stopPropagation(); void refreshResource() }}><RefreshCw className="h-4 w-4" /></button>
           : <><button type="button" className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground" aria-label="复制节点" title="复制节点" onClick={(event) => { event.stopPropagation(); duplicateNode(nodeId) }}><Copy className="h-4 w-4" /></button>
-            <button type="button" className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground ${isSaved ? 'text-amber-500' : ''}`} aria-label={isSaved ? '取消收藏' : '收藏节点'} title={isSaved ? '取消收藏' : '收藏节点'} onClick={(event) => { event.stopPropagation(); toggleFavorite() }}><Bookmark className={`h-4 w-4 ${isSaved ? 'fill-current' : ''}`} /></button></>}
+            {node.type === 'content' && <button type="button" className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground ${isSaved ? 'text-amber-500' : ''}`} aria-label={isSaved ? '取消收藏' : '收藏节点'} title={isSaved ? '取消收藏' : '收藏节点'} onClick={(event) => { event.stopPropagation(); toggleFavorite() }}><Bookmark className={`h-4 w-4 ${isSaved ? 'fill-current' : ''}`} /></button>}</>}
         <button type="button" className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-destructive" aria-label="关闭并删除节点" title="关闭并删除节点" onClick={(event) => { event.stopPropagation(); deleteNode(nodeId) }}><X className="h-4 w-4" /></button>
         <input ref={refreshInputRef} type="file" className="hidden" tabIndex={-1} aria-hidden="true" onChange={handleResourceSelected} />
       </div>

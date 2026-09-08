@@ -162,22 +162,10 @@ export function getProviderModels(providerId: string) {
 }
 
 /**
- * 验证 API Key 格式
+ * Only validate that a credential was supplied. Cnote supports compatible
+ * third-party endpoints whose credential shapes do not match the official
+ * provider, even when they use the provider's native wire protocol.
  */
-export function validateAPIKey(providerId: string, apiKey: string): boolean {
-  if (!apiKey || apiKey.trim().length === 0) return false
-
-  switch (providerId) {
-    case 'openai':
-    case 'deepseek':
-      return apiKey.startsWith('sk-')
-    case 'anthropic':
-      return apiKey.startsWith('sk-ant-')
-    case 'google':
-      return apiKey.length === 39 // Google API keys are typically 39 chars
-    case 'custom':
-      return true // Custom endpoints can have any format
-    default:
-      return true // 手工填写的 provider 使用服务商自己的密钥格式
-  }
+export function validateAPIKey(_providerId: string, apiKey: string): boolean {
+  return Boolean(apiKey?.trim())
 }

@@ -3,10 +3,11 @@ import { createJSONStorage, persist } from 'zustand/middleware'
 import { nanoid } from 'nanoid'
 import { localForageStorage } from '@/lib/localforage-storage'
 import { decryptAPIKey, encryptAPIKey } from '@/lib/secure-storage'
+import { deleteDesktopSecret, syncDesktopSecretInBackground } from '@/lib/desktop-secrets'
 import type { GenerationCapability } from '@/types/flow'
 
-export type GenerationProviderId = '808' | 'newapi' | 'meaicc' | 'fmage' | 'custom'
-export type GenerationProtocolId = 'openai-images' | 'gemini-generate-content' | 'zenmux-vertex' | 'openai-images-808' | '808-video' | 'meaicc-video' | 'generic-video' | 'newapi'
+export type GenerationProviderId = 'openai' | 'google' | 'video' | 'custom'
+export type GenerationProtocolId = 'openai-images' | 'google-images' | 'video-api'
 /** How local video references become provider-readable inputs. */
 export type GenerationMediaTransport = 'auto' | 'multipart' | 'custom' | 'public-url'
 export type GenerationNodeVariant = 'image' | 'video'
@@ -80,44 +81,22 @@ export interface GenerationAdapter {
 }
 
 export const GENERATION_PROVIDER_LABELS: Record<GenerationProviderId, string> = {
-  '808': '808 Relay',
-  newapi: '卡藏 / NewAPI',
-  meaicc: 'MEAICC',
-  fmage: 'Fmage',
-  custom: '自定义生成渠道',
+  openai: 'OpenAI', google: 'Google', video: '视频 API', custom: '自定义生成渠道',
 }
 
 export const GENERATION_PROTOCOL_LABELS: Record<GenerationProtocolId, string> = {
-  'openai-images': 'OpenAI Images / 兼容图像端点',
-  'gemini-generate-content': 'Gemini generateContent',
-  'zenmux-vertex': 'Vertex / ZenMux Predict',
-  'openai-images-808': '808 OpenAI Images（异步）',
-  '808-video': '808 视频任务端点',
-  'meaicc-video': 'MEAICC 视频端点',
-  'generic-video': '通用视频任务端点',
-  newapi: 'NewAPI 图像 / 视频端点',
+  'openai-images': 'OpenAI 图像生成 / 编辑',
+  'google-images': 'Google Gemini 图像生成 / 编辑',
+  'video-api': '视频 API（文档协议）',
 }
 
-export type GenerationProtocolGroup = 'image' | 'video' | 'image-video'
-
-export interface GenerationProtocolOption {
-  value: GenerationProtocolId
-  label: string
-  description: string
-  group: GenerationProtocolGroup
-}
-
+export type GenerationProtocolGroup = 'image' | 'video'
+export interface GenerationProtocolOption { value: GenerationProtocolId; label: string; description: string; group: GenerationProtocolGroup }
 export const GENERATION_PROTOCOL_OPTIONS: GenerationProtocolOption[] = [
-  { value: 'openai-images', label: 'OpenAI Images', description: 'OpenAI Images 兼容的图像生成与编辑端点', group: 'image' },
-  { value: 'gemini-generate-content', label: 'Gemini generateContent', description: 'Gemini / Nano Banana 图像请求体', group: 'image' },
-  { value: 'zenmux-vertex', label: 'Vertex / ZenMux Predict', description: 'Vertex 风格的 instances / parameters 请求体', group: 'image' },
-  { value: 'openai-images-808', label: '808 OpenAI Images（异步）', description: '808 Relay 的异步图像端点', group: 'image' },
-  { value: '808-video', label: '808 视频任务端点', description: '808 Relay 的 /v1/videos 任务端点', group: 'video' },
-  { value: 'meaicc-video', label: 'MEAICC 视频端点', description: 'MEAICC 独立的视频请求体与任务端点', group: 'video' },
-  { value: 'generic-video', label: '通用视频任务端点', description: '提交任务并轮询结果的兼容视频接口', group: 'video' },
-  { value: 'newapi', label: 'NewAPI 图像 / 视频端点', description: 'NewAPI 图像与视频请求体', group: 'image-video' },
+  { value: 'openai-images', label: 'OpenAI 图像', description: '原生 OpenAI Images 生成与编辑接口', group: 'image' },
+  { value: 'google-images', label: 'Google 图像', description: '原生 Gemini generateContent 图像接口', group: 'image' },
+  { value: 'video-api', label: '视频 API', description: '视频调用文档定义的异步任务接口', group: 'video' },
 ]
-
 const IMAGE_MODELS: GenerationModel[] = [
   {
     id: 'gpt-image-2',
@@ -189,203 +168,34 @@ const IMAGE_MODELS: GenerationModel[] = [
 ]
 
 const VIDEO_MODELS: GenerationModel[] = [
-  {
-    id: 'seedance-2.0',
-    name: 'Seedance S-2.0',
-    capabilities: ['text-to-video', 'image-to-video', 'reference-to-video', 'first-last-frame', 'video-reference'],
-    inputTypes: ['image', 'video'],
-    pollIntervalMs: 10000,
-    resolutions: ['720p', '1080p'],
-    aspectRatios: ['16:9', '9:16'],
-  },
-  {
-    id: 'seedance-2.0-fast',
-    name: 'Seedance S-2.0 Fast',
-    capabilities: ['text-to-video', 'image-to-video', 'reference-to-video'],
-    inputTypes: ['image', 'video'],
-    pollIntervalMs: 10000,
-    resolutions: ['720p'],
-    aspectRatios: ['16:9', '9:16'],
-  },
-  {
-    id: 'seedance-2.5',
-    name: 'Seedance S-2.5',
-    capabilities: ['text-to-video', 'image-to-video', 'reference-to-video', 'first-last-frame', 'video-reference', 'audio-reference', 'video-edit', 'generate-audio'],
-    inputTypes: ['image', 'video', 'audio'],
-    pollIntervalMs: 10000,
-    resolutions: ['720p', '1080p'],
-    aspectRatios: ['16:9', '9:16', '1:1'],
-  },
-  {
-    id: 'seedance-2.5-fast',
-    name: 'Seedance S-2.5 Fast',
-    capabilities: ['text-to-video', 'image-to-video', 'reference-to-video'],
-    inputTypes: ['image', 'video'],
-    pollIntervalMs: 10000,
-    resolutions: ['720p', '1080p'],
-    aspectRatios: ['16:9', '9:16'],
-  },
-  {
-    id: 'S-2.0-9图版',
-    name: 'S-2.0-9图版',
-    capabilities: ['image-to-video', 'reference-to-video', 'first-last-frame', 'video-reference'],
-    inputTypes: ['image', 'video'],
-    maxImages: 9,
-    maxVideos: 3,
-    minDuration: 4,
-    maxDuration: 15,
-    pollIntervalMs: 10000,
-    resolutions: ['720p'],
-    aspectRatios: ['16:9', '9:16'],
-  },
-  {
-    id: 'S-2.5特惠15s-线路六',
-    name: 'S-2.5 特惠 15s · 线路六',
-    capabilities: ['text-to-video', 'image-to-video', 'reference-to-video', 'video-reference', 'audio-reference'],
-    inputTypes: ['image', 'video', 'audio'],
-    maxImages: 30,
-    maxVideos: 3,
-    maxAudios: 10,
-    minDuration: 4,
-    maxDuration: 15,
-    pollIntervalMs: 10000,
-    resolutions: ['480p', '720p', '1080p'],
-    aspectRatios: ['16:9', '9:16', '21:9', '4:3', '1:1', '3:4'],
-  },
-  {
-    id: 'S-2.0满血-线路六',
-    name: 'S-2.0 满血 · 线路六',
-    capabilities: ['text-to-video', 'image-to-video', 'reference-to-video', 'video-reference', 'audio-reference'],
-    inputTypes: ['image', 'video', 'audio'],
-    maxImages: 9,
-    maxVideos: 3,
-    maxAudios: 3,
-    minDuration: 4,
-    maxDuration: 15,
-    pollIntervalMs: 10000,
-    resolutions: ['480p', '720p', '1080p'],
-    aspectRatios: ['16:9', '9:16', '21:9', '4:3', '1:1', '3:4'],
-  },
-  {
-    id: 'S-2.0满血mini',
-    name: 'S-2.0 满血 mini',
-    capabilities: ['text-to-video', 'generate-audio'],
-    minDuration: 4,
-    maxDuration: 15,
-    pollIntervalMs: 10000,
-    resolutions: ['480p', '720p'],
-    aspectRatios: ['21:9', '16:9', '4:3', '1:1', '3:4', '9:16'],
-  },
-  {
-    id: 'S-2.5-10s',
-    name: 'S-2.5 · 10s',
-    capabilities: ['text-to-video', 'image-to-video', 'reference-to-video', 'audio-reference'],
-    inputTypes: ['image', 'audio'],
-    maxImages: 30,
-    maxAudios: 10,
-    minDuration: 4,
-    maxDuration: 10,
-    pollIntervalMs: 10000,
-    aspectRatios: ['16:9', '9:16', '1:1'],
-  },
-  {
-    id: 'minimax_h3',
-    name: 'MiniMax H3',
-    capabilities: ['text-to-video', 'image-to-video', 'first-last-frame', 'reference-to-video', 'video-reference', 'audio-reference'],
-    inputTypes: ['image', 'video', 'audio'],
-    maxImages: 9,
-    maxVideos: 3,
-    maxAudios: 3,
-    minDuration: 4,
-    maxDuration: 15,
-    pollIntervalMs: 20000,
-    resolutions: ['768', '1080p', '2K', '4K'],
-    aspectRatios: ['21:9', '16:9', '4:3', '1:1', '3:4', '9:16'],
-  },
-  {
-    id: 'MiniMax-H3-漫剧优化',
-    name: 'MiniMax-H3-漫剧优化',
-    capabilities: ['text-to-video', 'image-to-video', 'first-last-frame', 'reference-to-video', 'video-reference', 'audio-reference'],
-    inputTypes: ['image', 'video', 'audio'],
-    maxImages: 9,
-    maxVideos: 3,
-    maxAudios: 3,
-    minDuration: 4,
-    maxDuration: 15,
-    pollIntervalMs: 20000,
-    resolutions: ['768', '2K', '4K'],
-    aspectRatios: ['21:9', '16:9', '4:3', '1:1', '3:4', '9:16'],
-  },
-  {
-    id: 'MiniMax-H3-量化版',
-    name: 'MiniMax-H3-量化版',
-    capabilities: ['text-to-video', 'image-to-video', 'reference-to-video'],
-    inputTypes: ['image', 'video'],
-    minDuration: 4,
-    maxDuration: 15,
-    pollIntervalMs: 20000,
-    resolutions: ['768', '2K', '4K'],
-    aspectRatios: ['21:9', '16:9', '4:3', '1:1', '3:4', '9:16'],
-  },
+  { id: 'seedance-2-pro', name: 'Seedance 2 Pro', capabilities: ['text-to-video', 'image-to-video', 'reference-to-video', 'first-last-frame', 'video-reference', 'audio-reference', 'generate-audio'], inputTypes: ['image', 'video', 'audio'], maxImages: 9, maxVideos: 3, maxAudios: 3, minDuration: 4, maxDuration: 15, pollIntervalMs: 10000, resolutions: ['480p', '720p', '1080p', '4k'], aspectRatios: ['21:9', '16:9', '4:3', '1:1', '3:4', '9:16'] },
+  { id: 'seedance-2-fast', name: 'Seedance 2 Fast', capabilities: ['text-to-video', 'image-to-video', 'reference-to-video', 'video-reference', 'generate-audio'], inputTypes: ['image', 'video', 'audio'], maxImages: 9, maxVideos: 3, maxAudios: 3, minDuration: 5, maxDuration: 10, pollIntervalMs: 10000, resolutions: ['480p', '720p'], aspectRatios: ['21:9', '16:9', '4:3', '1:1', '3:4', '9:16'] },
+  { id: 'seedance-2-mini', name: 'Seedance 2 Mini', capabilities: ['text-to-video', 'image-to-video', 'reference-to-video', 'video-reference', 'generate-audio'], inputTypes: ['image', 'video', 'audio'], maxImages: 9, maxVideos: 3, maxAudios: 3, minDuration: 5, maxDuration: 10, pollIntervalMs: 10000, resolutions: ['480p', '720p'], aspectRatios: ['21:9', '16:9', '4:3', '1:1', '3:4', '9:16'] },
+  { id: 'seedance-2.5-pro', name: 'Seedance 2.5 Pro', capabilities: ['text-to-video', 'image-to-video', 'reference-to-video', 'first-last-frame', 'video-reference', 'audio-reference', 'video-edit', 'generate-audio'], inputTypes: ['image', 'video', 'audio'], maxImages: 30, maxVideos: 10, maxAudios: 10, minDuration: 4, maxDuration: 30, pollIntervalMs: 10000, resolutions: ['480p', '720p', '1080p'], aspectRatios: ['21:9', '16:9', '4:3', '1:1', '3:4', '9:16'] },
+  { id: 'wan-3', name: 'Wan 3', capabilities: ['text-to-video', 'image-to-video', 'reference-to-video', 'video-reference', 'audio-reference', 'generate-audio'], inputTypes: ['image', 'video', 'audio'], maxImages: 10, maxVideos: 5, maxAudios: 5, minDuration: 2, maxDuration: 30, pollIntervalMs: 10000, resolutions: ['480p', '720p', '1080p'], aspectRatios: ['16:9', '9:16'] },
+  { id: 'gemini-omni-1.1', name: 'Gemini Omni 1.1', capabilities: ['text-to-video', 'image-to-video', 'reference-to-video', 'video-reference', 'generate-audio'], inputTypes: ['image', 'video'], maxImages: 8, maxVideos: 3, minDuration: 3, maxDuration: 10, pollIntervalMs: 10000, resolutions: ['360p', '720p', '1080p', '4k'], aspectRatios: ['16:9', '9:16'] },
 ]
 
-const LEGACY_808_VIDEO_MODEL: GenerationModel = {
-  id: 'sd2-5-720p',
-  name: 'sd2-5-720p',
-  capabilities: ['reference-to-video', 'generate-audio'],
-  inputTypes: ['image', 'video', 'audio'],
-  maxDuration: 30,
-  minDuration: 1,
-  pollIntervalMs: 10000,
-  resolutions: ['720p'],
-  aspectRatios: ['16:9', '9:16', '1:1'],
-}
-
-const LEGACY_MEAICC_MODEL: GenerationModel = {
-  id: 'sd-2-c1',
-  name: 'MiniMax H3 / sd-2-c1',
-  capabilities: ['text-to-video', 'image-to-video', 'first-last-frame', 'reference-to-video', 'video-reference', 'audio-reference'],
-  inputTypes: ['image', 'video', 'audio'],
-  maxImages: 9,
-  maxVideos: 3,
-  maxAudios: 3,
-  minDuration: 4,
-  maxDuration: 15,
-  pollIntervalMs: 20000,
-  resolutions: ['768', '2K', '4K'],
-  aspectRatios: ['21:9', '16:9', '4:3', '1:1', '3:4', '9:16'],
-}
-
 export const GENERATION_MODEL_CATALOG: Record<GenerationProviderId, GenerationModel[]> = {
-  '808': [LEGACY_808_VIDEO_MODEL],
-  newapi: [...IMAGE_MODELS.slice(3, 5), ...VIDEO_MODELS],
-  meaicc: [LEGACY_MEAICC_MODEL],
-  fmage: [IMAGE_MODELS[0], IMAGE_MODELS[3], IMAGE_MODELS[4], IMAGE_MODELS[6]],
+  openai: IMAGE_MODELS.filter((model) => model.id.startsWith('gpt-')),
+  google: IMAGE_MODELS.filter((model) => model.id.includes('gemini') || model.id.includes('banana')),
+  video: VIDEO_MODELS,
   custom: [],
 }
 
 export const GENERATION_PROTOCOL_MODEL_CATALOG: Record<GenerationProtocolId, GenerationModel[]> = {
-  'openai-images': IMAGE_MODELS.filter((model) => ['gpt-image-2', 'gpt-image-2-token', 'dall-e-3'].includes(model.id)),
-  'gemini-generate-content': IMAGE_MODELS.filter((model) => ['nano-banana-2', 'nano-banana-pro', 'gemini-3.1-flash-image', 'gemini-3-pro-image'].includes(model.id)),
-  'zenmux-vertex': IMAGE_MODELS.filter((model) => model.id.startsWith('google/')),
-  'openai-images-808': IMAGE_MODELS.filter((model) => ['gpt-image-2', 'gpt-image-2-token'].includes(model.id)),
-  '808-video': [LEGACY_808_VIDEO_MODEL],
-  'meaicc-video': [LEGACY_MEAICC_MODEL],
-  'generic-video': VIDEO_MODELS,
-  newapi: GENERATION_MODEL_CATALOG.newapi,
+  'openai-images': IMAGE_MODELS.filter((model) => model.id.startsWith('gpt-') || model.id === 'dall-e-3'),
+  'google-images': IMAGE_MODELS.filter((model) => model.id.includes('gemini') || model.id.includes('banana')),
+  'video-api': VIDEO_MODELS,
 }
-
 export function defaultGenerationProtocol(providerId: GenerationProviderId): GenerationProtocolId {
-  if (providerId === 'fmage') return 'openai-images'
-  if (providerId === 'newapi') return 'newapi'
-  if (providerId === 'meaicc') return 'meaicc-video'
-  if (providerId === '808') return '808-video'
-  return 'generic-video'
+  if (providerId === 'openai') return 'openai-images'
+  if (providerId === 'google') return 'google-images'
+  if (providerId === 'video') return 'video-api'
+  return 'video-api'
 }
 
 export function generationProtocolForChannel(channel: Pick<GenerationChannel, 'protocol' | 'providerId'>): GenerationProtocolId {
-  if (channel.protocol === 'generic-video' && channel.providerId === '808') return '808-video'
-  if (channel.protocol === 'generic-video' && channel.providerId === 'meaicc') return 'meaicc-video'
   return channel.protocol || defaultGenerationProtocol(channel.providerId)
 }
 
@@ -424,17 +234,16 @@ export function generationAdapterForModel(channel: GenerationChannel, modelId: s
   return generationAdaptersForChannel(channel).find((adapter) => modelsForGenerationProtocol(adapter.protocol).some((model) => model.id === modelId)) || generationAdapterForConfig(channel)
 }
 
-function desktopSecretName(channelId: string) {
+export function generationSecretName(channelId: string) {
   return `cnote:generation:${channelId}`
 }
 
-function desktopMediaUploadSecretName(channelId: string) {
+export function generationMediaUploadSecretName(channelId: string) {
   return `cnote:generation-media-upload:${channelId}`
 }
 
 function saveDesktopSecret(name: string, value: string | undefined) {
-  if (!value || typeof window === 'undefined') return
-  void window.cnoteDesktop?.secrets.set(name, value).catch(() => undefined)
+  syncDesktopSecretInBackground(name, value)
 }
 
 export function modelsForGenerationProtocol(protocol: GenerationProtocolId) {
@@ -445,8 +254,8 @@ export function inferGenerationModelCapabilities(modelId: string, protocol: Gene
   const value = modelId.trim().toLowerCase()
   if (/image|banana|dall-e|gemini.*flash|gemini.*pro|seedream|flux|imagen/.test(value)) return ['text-to-image', 'image-to-image']
   if (/video|seedance|minimax|h3|kling|wan|veo|sora/.test(value)) return ['text-to-video', 'image-to-video', 'reference-to-video']
-  if (protocol === 'generic-video' || protocol === '808-video' || protocol === 'meaicc-video') return ['text-to-video', 'image-to-video', 'reference-to-video']
-  if (protocol === 'openai-images' || protocol === 'gemini-generate-content' || protocol === 'zenmux-vertex' || protocol === 'openai-images-808') return ['text-to-image', 'image-to-image']
+  if (protocol === 'video-api') return ['text-to-video', 'image-to-video', 'reference-to-video']
+  if (protocol === 'openai-images' || protocol === 'google-images') return ['text-to-image', 'image-to-image']
   return []
 }
 
@@ -488,8 +297,8 @@ function normalizeChannel(channel: GenerationChannel): GenerationChannel {
     ...channel,
     protocol,
     modelIds,
-    secretName: channel.secretName,
-    mediaUploadSecretName: channel.mediaUploadSecretName || desktopMediaUploadSecretName(channel.id),
+    secretName: channel.secretName || generationSecretName(channel.id),
+    mediaUploadSecretName: channel.mediaUploadSecretName || generationMediaUploadSecretName(channel.id),
     adapters: [{
       ...(selectedAdapter || {}),
       id: selectedAdapter?.id || protocol,
@@ -527,10 +336,10 @@ export const useGenerationStore = create<GenerationState>()(
           apiKey: input.apiKey || '',
           modelIds: input.modelIds || catalog.map((model) => model.id),
           enabled: input.enabled ?? true,
-          supportsImage: input.supportsImage ?? !['808-video', 'meaicc-video', 'generic-video'].includes(protocol),
-          supportsVideo: input.supportsVideo ?? ['808-video', 'meaicc-video', 'generic-video', 'newapi'].includes(protocol),
-          secretName: input.secretName || desktopSecretName(id),
-          mediaUploadSecretName: input.mediaUploadSecretName || desktopMediaUploadSecretName(id),
+          supportsImage: input.supportsImage ?? protocol !== 'video-api',
+          supportsVideo: input.supportsVideo ?? protocol === 'video-api',
+          secretName: input.secretName || generationSecretName(id),
+          mediaUploadSecretName: input.mediaUploadSecretName || generationMediaUploadSecretName(id),
           mediaTransport: input.mediaTransport,
           mediaUploadPath: input.mediaUploadPath,
           mediaUploadURL: input.mediaUploadURL,
@@ -539,8 +348,8 @@ export const useGenerationStore = create<GenerationState>()(
           mediaUploadApiKey: input.mediaUploadApiKey,
           adapters: input.adapters,
         })
-        saveDesktopSecret(channel.secretName || desktopSecretName(id), input.apiKey)
-        saveDesktopSecret(channel.mediaUploadSecretName || desktopMediaUploadSecretName(id), input.mediaUploadApiKey)
+        saveDesktopSecret(channel.secretName || generationSecretName(id), input.apiKey)
+        saveDesktopSecret(channel.mediaUploadSecretName || generationMediaUploadSecretName(id), input.mediaUploadApiKey)
         set((state) => ({ channels: [...state.channels, channel] }))
         return channel
       },
@@ -549,25 +358,24 @@ export const useGenerationStore = create<GenerationState>()(
           if (channel.id !== id) return channel
           const keyUpdates = updates.apiKey === undefined
             ? {}
-            : { encryptedKey: updates.apiKey ? encryptAPIKey(updates.apiKey) : undefined, secretName: channel.secretName || desktopSecretName(id) }
+            : { encryptedKey: updates.apiKey ? encryptAPIKey(updates.apiKey) : undefined, secretName: channel.secretName || generationSecretName(id) }
           const mediaKeyUpdates = updates.mediaUploadApiKey === undefined
             ? {}
             : {
                 encryptedMediaUploadKey: updates.mediaUploadApiKey ? encryptAPIKey(updates.mediaUploadApiKey) : undefined,
-                mediaUploadSecretName: channel.mediaUploadSecretName || desktopMediaUploadSecretName(id),
+                mediaUploadSecretName: channel.mediaUploadSecretName || generationMediaUploadSecretName(id),
               }
-          if (updates.apiKey) saveDesktopSecret(keyUpdates.secretName || desktopSecretName(id), updates.apiKey)
-          if (updates.mediaUploadApiKey) saveDesktopSecret(mediaKeyUpdates.mediaUploadSecretName || desktopMediaUploadSecretName(id), updates.mediaUploadApiKey)
-          if (updates.mediaUploadApiKey === '' && channel.mediaUploadSecretName && typeof window !== 'undefined') {
-            void window.cnoteDesktop?.secrets.delete(channel.mediaUploadSecretName).catch(() => undefined)
-          }
+          if (updates.apiKey) saveDesktopSecret(keyUpdates.secretName || generationSecretName(id), updates.apiKey)
+          if (updates.mediaUploadApiKey) saveDesktopSecret(mediaKeyUpdates.mediaUploadSecretName || generationMediaUploadSecretName(id), updates.mediaUploadApiKey)
+          if (updates.apiKey === '' && channel.secretName) void deleteDesktopSecret(channel.secretName).catch(() => undefined)
+          if (updates.mediaUploadApiKey === '' && channel.mediaUploadSecretName) void deleteDesktopSecret(channel.mediaUploadSecretName).catch(() => undefined)
           return normalizeChannel({ ...channel, ...updates, ...keyUpdates, ...mediaKeyUpdates })
         }),
       })),
       removeChannel: (id) => set((state) => {
         const channel = state.channels.find((item) => item.id === id)
-        if (channel?.secretName && typeof window !== 'undefined') void window.cnoteDesktop?.secrets.delete(channel.secretName).catch(() => undefined)
-        if (channel?.mediaUploadSecretName && typeof window !== 'undefined') void window.cnoteDesktop?.secrets.delete(channel.mediaUploadSecretName).catch(() => undefined)
+        void deleteDesktopSecret(channel?.secretName).catch(() => undefined)
+        void deleteDesktopSecret(channel?.mediaUploadSecretName).catch(() => undefined)
         return { channels: state.channels.filter((item) => item.id !== id) }
       }),
       getChannel: (id) => get().channels.find((channel) => channel.id === id),
@@ -608,6 +416,8 @@ export const useGenerationStore = create<GenerationState>()(
           encryptedMediaUploadKey: channel.mediaUploadApiKey ? encryptAPIKey(channel.mediaUploadApiKey) : channel.encryptedMediaUploadKey,
         })),
       }),
+      version: 2,
+      migrate: () => ({ channels: [] }),
       merge: (persisted, current) => {
         const stored = persisted as Partial<GenerationState> | undefined
         return {

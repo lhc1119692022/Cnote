@@ -3,6 +3,7 @@ import { createJSONStorage, persist } from 'zustand/middleware'
 import { localForageStorage } from '@/lib/localforage-storage'
 import { AIClient, getProvider, inferProviderId, type ProviderConfig, type ProtocolType } from '@/lib/api'
 import { encryptAPIKey, decryptAPIKey } from '@/lib/secure-storage'
+import { deleteDesktopSecret, syncDesktopSecretInBackground } from '@/lib/desktop-secrets'
 
 export interface APIChannel {
   id: string
@@ -77,8 +78,7 @@ function desktopProxySecretName(channelId: string) {
 }
 
 function saveDesktopSecret(name: string, value: string | undefined) {
-  if (!value || typeof window === 'undefined') return
-  void window.cnoteDesktop?.secrets.set(name, value).catch(() => undefined)
+  syncDesktopSecretInBackground(name, value)
 }
 
 export const useAIStore = create<AIState>()(
@@ -127,10 +127,8 @@ export const useAIStore = create<AIState>()(
       // 删除 API Key
       removeAPIKey: (id) => {
         const channel = get().apiKeys.find((item) => item.id === id)
-        if (typeof window !== 'undefined') {
-          if (channel?.secretName) void window.cnoteDesktop?.secrets.delete(channel.secretName).catch(() => undefined)
-          if (channel?.proxySecretName) void window.cnoteDesktop?.secrets.delete(channel.proxySecretName).catch(() => undefined)
-        }
+        void deleteDesktopSecret(channel?.secretName).catch(() => undefined)
+        void deleteDesktopSecret(channel?.proxySecretName).catch(() => undefined)
         set((state) => ({
           apiKeys: state.apiKeys.filter((k) => k.id !== id),
           currentAPIKeyId: state.currentAPIKeyId === id ? null : state.currentAPIKeyId,
@@ -144,6 +142,8 @@ export const useAIStore = create<AIState>()(
         const proxySecretName = channel?.proxySecretName || desktopProxySecretName(id)
         if (updates.apiKey) saveDesktopSecret(secretName, updates.apiKey)
         if (updates.proxyHeaderValue) saveDesktopSecret(proxySecretName, updates.proxyHeaderValue)
+        if (updates.apiKey === '' && channel?.secretName) void deleteDesktopSecret(channel.secretName).catch(() => undefined)
+        if (updates.proxyHeaderValue === '' && channel?.proxySecretName) void deleteDesktopSecret(channel.proxySecretName).catch(() => undefined)
         set((state) => ({
           apiKeys: state.apiKeys.map((k) =>
             k.id === id
@@ -201,6 +201,7 @@ export const useAIStore = create<AIState>()(
               providerId,
               name,
               encryptedKey: encryptAPIKey(''),
+              secretName: desktopSecretName(id),
               baseURL: provider?.baseURL,
               modelIds: [],
               protocol: provider?.protocol,
@@ -373,6 +374,19 @@ export const useAIStore = create<AIState>()(
         defaultsInitialized: state.defaultsInitialized,
         defaultsVersion: state.defaultsVersion,
       }),
+      merge: (persisted, current) => {
+        const stored = persisted as Partial<AIState> | undefined
+        return {
+          ...current,
+          ...stored,
+          apiKeys: (stored?.apiKeys || []).map((channel) => ({
+            ...channel,
+            secretName: channel.secretName || desktopSecretName(channel.id),
+            proxySecretName: channel.proxySecretName || (channel.encryptedProxyHeaderValue ? desktopProxySecretName(channel.id) : undefined),
+            apiKey: undefined,
+          })),
+        }
+      },
     }
   )
 )

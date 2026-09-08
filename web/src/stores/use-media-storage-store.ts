@@ -3,6 +3,7 @@ import { createJSONStorage, persist } from 'zustand/middleware'
 import { localForageStorage } from '@/lib/localforage-storage'
 import { decryptAPIKey, encryptAPIKey } from '@/lib/secure-storage'
 import { desktopFetch } from '@/lib/desktop-fetch'
+import { deleteDesktopSecret, syncDesktopSecret, syncDesktopSecretInBackground } from '@/lib/desktop-secrets'
 
 export interface MediaStorageHealth {
   ok: boolean
@@ -90,18 +91,17 @@ function bearerAuthorization(value: string) {
 
 async function saveDesktopSecret(value: string) {
   const authorization = bearerAuthorization(value)
-  if (!authorization || typeof window === 'undefined' || !window.cnoteDesktop?.secrets) return
+  if (!authorization) return false
   // Secret references represent complete header values in the main process.
   // Store the Bearer prefix here because the Worker authenticates the exact
   // `Authorization: Bearer <token>` header value.
-  await window.cnoteDesktop.secrets.set(MEDIA_STORAGE_SECRET, authorization).catch(() => undefined)
+  return syncDesktopSecret(MEDIA_STORAGE_SECRET, authorization)
 }
 
 function requestHeaders(settings: Pick<MediaStorageSettings, 'accessToken' | 'encryptedAccessToken'>, tokenOverride?: string) {
   const token = tokenOverride ?? tokenFor(settings)
-  const useDesktopSecret = Boolean(typeof window !== 'undefined' && window.cnoteDesktop)
   const headers: Record<string, string> = {}
-  if (!useDesktopSecret && token) headers.Authorization = bearerAuthorization(token)
+  if (token) headers.Authorization = bearerAuthorization(token)
   return headers
 }
 
@@ -182,7 +182,7 @@ export const useMediaStorageStore = create<MediaStorageState>()(
       enabled: false,
       updateSettings: (updates) => set((state) => {
         const accessToken = updates.accessToken === undefined ? state.getAccessToken() : normalizeAccessToken(updates.accessToken)
-        if (accessToken) void saveDesktopSecret(accessToken)
+        if (accessToken) syncDesktopSecretInBackground(MEDIA_STORAGE_SECRET, bearerAuthorization(accessToken))
         return {
           ...updates,
           baseURL: updates.baseURL === undefined ? state.baseURL : normalizeBaseURL(updates.baseURL),
@@ -199,7 +199,7 @@ export const useMediaStorageStore = create<MediaStorageState>()(
         }
       }),
       clearSettings: () => {
-        if (typeof window !== 'undefined') void window.cnoteDesktop?.secrets.delete(MEDIA_STORAGE_SECRET).catch(() => undefined)
+        void deleteDesktopSecret(MEDIA_STORAGE_SECRET).catch(() => undefined)
         set({
           baseURL: '',
           uploadPath: DEFAULT_UPLOAD_PATH,
