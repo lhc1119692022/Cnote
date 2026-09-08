@@ -1,6 +1,7 @@
 import { app, dialog, type BrowserWindow } from 'electron'
 import { promises as fs } from 'node:fs'
 import path from 'node:path'
+import { randomUUID } from 'node:crypto'
 import { getStorageLocationInfo, resetStorageLocation, setStorageLocation } from './storage-location'
 import type { DirectoryDialogRequest, OpenFileRequest, OpenFileResult, SaveFileRequest, SystemPort } from './types'
 
@@ -56,6 +57,24 @@ export class NativeSystemPort implements SystemPort {
       await fs.writeFile(temporary, request.data)
       await fs.rename(temporary, target)
       return true
+    } catch (error) {
+      await fs.rm(temporary, { force: true }).catch(() => undefined)
+      throw error
+    }
+  }
+
+  async saveResource(request: { resourceId: string; fileName: string; data: Uint8Array }) {
+    if (!(request.data instanceof Uint8Array)) throw new Error('资源数据无效。')
+    if (!/^sha256-[a-f0-9]{64}$/.test(request.resourceId)) throw new Error('资源 ID 无效。')
+    const extension = path.extname(path.basename(request.fileName)).toLowerCase().replace(/[^a-z0-9.]/g, '') || '.bin'
+    const resourceDirectory = path.join(app.getPath('userData'), 'resources')
+    const target = path.join(resourceDirectory, request.resourceId + extension)
+    await fs.mkdir(resourceDirectory, { recursive: true })
+    const temporary = target + '.cnote-writing-' + process.pid + '-' + randomUUID()
+    try {
+      await fs.writeFile(temporary, request.data)
+      await fs.rename(temporary, target)
+      return target
     } catch (error) {
       await fs.rm(temporary, { force: true }).catch(() => undefined)
       throw error

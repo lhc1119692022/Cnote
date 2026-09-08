@@ -138,7 +138,7 @@ export interface DataPayload {
 export interface MindmapTreeNode { id: string; text: string; children: MindmapTreeNode[] }
 export interface MindmapPayload { kind: 'mindmap'; root: MindmapTreeNode; sourceMarkdown?: string }
 
-export interface RemoteMediaRef { url: string; sourceUrl?: string; resourceId?: string; mimeType?: string; width?: number; height?: number }
+export interface RemoteMediaRef { url: string; sourceUrl?: string; resourceId?: string; fileName?: string; mimeType?: string; width?: number; height?: number }
 
 /** A media item kept by image/video nodes and passed through graph connections. */
 export interface ContentMediaItem {
@@ -341,6 +341,7 @@ export interface GenerationTaskState {
   resultUrls?: string[]
   resultResourceIds?: string[]
   resultMimeTypes?: string[]
+  resultFileNames?: string[]
   error?: string
   lastPolledAt?: number
   /** Immutable request data used to resume polling after the channel is edited. */

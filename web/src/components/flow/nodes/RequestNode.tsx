@@ -202,6 +202,7 @@ export const RequestNode = memo(({ id, data, selected }: NodeProps<RequestNodeDa
   const nodeRef = useRef<HTMLDivElement>(null)
   const pollingRef = useRef(false)
   const abortRef = useRef<AbortController | null>(null)
+  const unmountingRef = useRef(false)
   const draggedReferenceIdRef = useRef<string | null>(null)
   const [draggedReferenceId, setDraggedReferenceId] = useState<string | null>(null)
 
@@ -258,13 +259,13 @@ export const RequestNode = memo(({ id, data, selected }: NodeProps<RequestNodeDa
     })
   }, [id, updateNode, variant])
 
-  const createResultNode = useCallback((urls: string[], resourceIds?: string[], mimeTypes?: string[]) => {
+  const createResultNode = useCallback((urls: string[], resourceIds?: string[], mimeTypes?: string[], fileNames?: string[]) => {
     if (!urls.length || (variant !== 'image' && variant !== 'video')) return
     const state = useFlowStore.getState()
     const current = state.nodes.find((node) => node.id === id)
     if (!current) return
     const currentData = current.data as RequestNodeData
-    const resultData = createGenerationResultContentData(variant, urls, `${currentData.label || (variant === 'image' ? '图片' : '视频')}结果`, resourceIds, mimeTypes)
+    const resultData = createGenerationResultContentData(variant, urls, `${currentData.label || (variant === 'image' ? '图片' : '视频')}结果`, resourceIds, mimeTypes, fileNames)
     const resultNodeId = currentData.resultNodeIds?.[variant] || (currentData.variant === variant ? currentData.resultNodeId : undefined)
     let resultNode = resultNodeId ? state.nodes.find((node) => node.id === resultNodeId) : undefined
     if (resultNode?.type === 'content') {
@@ -362,7 +363,7 @@ export const RequestNode = memo(({ id, data, selected }: NodeProps<RequestNodeDa
         updateTask({ taskId, provider: channel.providerId, channelId: channel.id, model: model.id, status: 'queued', submittedAt, elapsedMs: 0, timeoutAt, error: undefined, requestSnapshot: { variant, channelId: channel.id, providerId: channel.providerId, protocol: channel.protocol, baseURL: channel.baseURL, secretName: channel.secretName, mediaTransport: channel.mediaTransport, mediaUploadPath: channel.mediaUploadPath, mediaUploadURL: channel.mediaUploadURL, mediaUploadSecretName: channel.mediaUploadSecretName, model: model.id, config: preparedConfig } })
         if (submitted.resultUrls?.length) {
           updateTask({ status: 'completed', resultUrls: submitted.resultUrls, resultResourceIds: submitted.resultResourceIds, resultMimeTypes: submitted.resultMimeTypes, completedAt: Date.now(), elapsedMs: Date.now() - submittedAt })
-          createResultNode(submitted.resultUrls, submitted.resultResourceIds, submitted.resultMimeTypes)
+          createResultNode(submitted.resultUrls, submitted.resultResourceIds, submitted.resultMimeTypes, submitted.resultFileNames)
           return
         }
       } else {
@@ -379,7 +380,7 @@ export const RequestNode = memo(({ id, data, selected }: NodeProps<RequestNodeDa
         const elapsedMs = elapsedOffset + Date.now() - submittedAt
         updateTask({ ...polled.task, taskId, submittedAt, elapsedMs, timeoutAt })
         if (polled.task.status === 'completed') {
-          if (polled.task.resultUrls?.length) createResultNode(polled.task.resultUrls, polled.task.resultResourceIds, polled.task.resultMimeTypes)
+          if (polled.task.resultUrls?.length) createResultNode(polled.task.resultUrls, polled.task.resultResourceIds, polled.task.resultMimeTypes, polled.task.resultFileNames)
           else updateTask({ error: '任务已完成，但服务端没有返回可预览的结果地址' })
           return
         }
@@ -391,6 +392,9 @@ export const RequestNode = memo(({ id, data, selected }: NodeProps<RequestNodeDa
       }
     } catch (error) {
       if (error instanceof DOMException && error.name === 'AbortError') {
+        // Leaving the Flow or closing the window only stops local polling.
+        // Keep the persisted remote task resumable; explicit stop still cancels it.
+        if (unmountingRef.current) return
         if (timedOut) updateTask({ status: 'timeout', elapsedMs: elapsedOffset + Date.now() - submittedAt, timeoutAt })
         else updateTask({ status: 'idle', error: '已停止生成', elapsedMs: elapsedOffset + Date.now() - submittedAt })
         return
@@ -411,7 +415,10 @@ export const RequestNode = memo(({ id, data, selected }: NodeProps<RequestNodeDa
     if (!pollingRef.current) void runTaskRef.current(task.taskId)
   }, [task.status, task.taskId])
 
-  useEffect(() => () => { abortRef.current?.abort() }, [])
+  useEffect(() => () => {
+    unmountingRef.current = true
+    abortRef.current?.abort()
+  }, [])
 
   const stopTask = () => {
     const taskId = task.taskId

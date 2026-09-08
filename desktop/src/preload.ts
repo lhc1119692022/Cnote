@@ -32,6 +32,8 @@ const api = {
       invoke<{ name: string; data: Uint8Array } | null>('system:open-file', request),
     saveFile: (request: { title?: string; suggestedName: string; filters?: FileDialogFilter[]; data: Uint8Array }) =>
       invoke<boolean>('system:save-file', request),
+    saveResource: (request: { resourceId: string; fileName: string; data: Uint8Array }) =>
+      invoke<string>('system:save-resource', request),
     selectDirectory: (request?: DirectoryDialogRequest) => invoke<string | null>('system:select-directory', request),
     getStorageLocation: () => invoke<StorageLocationInfo>('system:get-storage-location'),
     setStorageLocation: (value: string) => invoke<StorageLocationInfo>('system:set-storage-location', value),

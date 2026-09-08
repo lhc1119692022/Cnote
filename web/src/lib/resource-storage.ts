@@ -13,6 +13,7 @@ interface ResourceMeta {
   size: number
   refCount: number
   createdAt: number
+  fileName?: string
 }
 
 let resourceMutationQueue: Promise<unknown> = Promise.resolve()
@@ -63,7 +64,7 @@ async function assertBrowserStorageCapacity(additionalBytes: number) {
   }
 }
 
-export async function storeLocalResource(file: Blob) {
+export async function storeLocalResource(file: Blob, fileName?: string, persistToDisk = false) {
   return enqueueResourceMutation(async () => {
     const checksum = await checksumBlob(file)
     const resourceId = `sha256-${checksum}`
@@ -74,9 +75,13 @@ export async function storeLocalResource(file: Blob) {
     }
     const meta: ResourceMeta = previous
       ? { ...previous, refCount: previous.refCount + 1 }
-      : { id: resourceId, checksum, mimeType: file.type || 'application/octet-stream', size: file.size, refCount: 1, createdAt: Date.now() }
-    await localforage.setItem(`${RESOURCE_META_PREFIX}${resourceId}`, meta)
-    return { resourceId, checksum, mimeType: meta.mimeType, size: meta.size, url: createManagedObjectUrl(file) }
+      : { id: resourceId, checksum, mimeType: file.type || 'application/octet-stream', size: file.size, refCount: 1, createdAt: Date.now(), ...(fileName ? { fileName } : {}) }
+    const nextMeta = fileName && !meta.fileName ? { ...meta, fileName } : meta
+    await localforage.setItem(`${RESOURCE_META_PREFIX}${resourceId}`, nextMeta)
+    if (persistToDisk && typeof window !== 'undefined' && window.cnoteDesktop?.system.saveResource && nextMeta.fileName) {
+      await window.cnoteDesktop.system.saveResource({ resourceId, fileName: nextMeta.fileName, data: new Uint8Array(await file.arrayBuffer()) })
+    }
+    return { resourceId, checksum, mimeType: nextMeta.mimeType, size: nextMeta.size, fileName: nextMeta.fileName, url: createManagedObjectUrl(file) }
   })
 }
 

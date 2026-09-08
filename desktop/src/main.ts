@@ -302,6 +302,7 @@ function registerIpcHandlers() {
   })
   ipcMain.handle('system:open-file', (_event, request: unknown) => getRuntime().ports.system.openFile(assertOpenFileRequest(request)))
   ipcMain.handle('system:save-file', (_event, request: unknown) => getRuntime().ports.system.saveFile(assertSaveFileRequest(request)))
+  ipcMain.handle('system:save-resource', (_event, request: unknown) => getRuntime().ports.system.saveResource(assertSaveResourceRequest(request)))
   ipcMain.handle('system:select-directory', (_event, request: unknown) => getRuntime().ports.system.selectDirectory(assertDirectoryDialogRequest(request)))
   ipcMain.handle('system:get-storage-location', () => getRuntime().ports.system.getStorageLocation())
   ipcMain.handle('system:set-storage-location', (_event, value: unknown) => getRuntime().ports.system.setStorageLocation(assertString(value, 'storage path')))
@@ -468,6 +469,13 @@ async function resolveSecretHeaders(request: NativeNetworkJobRequest, requireSec
     headers[header] = normalizeSecretHeaderValue(header, value, secretName)
   }
   return headers
+}
+
+function assertSaveResourceRequest(value: unknown) {
+  if (!value || typeof value !== 'object') throw new Error('资源请求无效。')
+  const input = value as Record<string, unknown>
+  if (typeof input.resourceId !== 'string' || typeof input.fileName !== 'string' || !(input.data instanceof Uint8Array)) throw new Error('资源请求字段无效。')
+  return { resourceId: input.resourceId, fileName: input.fileName, data: input.data }
 }
 
 function assertDirectoryDialogRequest(value: unknown) {

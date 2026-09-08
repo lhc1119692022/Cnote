@@ -93,9 +93,16 @@ export interface OpenFileResult {
   data: Uint8Array
 }
 
+export interface SaveResourceRequest {
+  resourceId: string
+  fileName: string
+  data: Uint8Array
+}
+
 export interface SystemPort {
   openFile(request?: OpenFileRequest): Promise<OpenFileResult | null>
   saveFile(request: SaveFileRequest): Promise<boolean>
+  saveResource(request: SaveResourceRequest): Promise<string>
   selectDirectory(request?: DirectoryDialogRequest): Promise<string | null>
   getStorageLocation(): Promise<import('./storage-location').StorageLocationInfo>
   setStorageLocation(value: string): Promise<import('./storage-location').StorageLocationInfo>

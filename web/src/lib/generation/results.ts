@@ -6,6 +6,7 @@ export function createGenerationResultContentData(
   label?: string,
   resourceIds?: string[],
   mimeTypes?: string[],
+  fileNames?: string[],
 ): ContentNodeData {
   const isImage = variant === 'image'
   const title = label || (isImage ? '图片生成结果' : '视频生成结果')
@@ -13,6 +14,7 @@ export function createGenerationResultContentData(
     resource: {
       url,
       resourceId: resourceIds?.[index],
+      fileName: fileNames?.[index],
       mimeType: mimeTypes?.[index] || (isImage ? 'image/png' : 'video/mp4'),
     },
     label: `${isImage ? '图片' : '视频'} ${index + 1}`,

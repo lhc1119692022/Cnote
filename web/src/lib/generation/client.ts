@@ -18,6 +18,7 @@ export interface GenerationTaskResponse {
   resultUrls?: string[]
   resultResourceIds?: string[]
   resultMimeTypes?: string[]
+  resultFileNames?: string[]
   /** Config after local video references have been converted to public URLs. */
   preparedConfig?: GenerationVariantConfig
   raw?: unknown
@@ -379,7 +380,16 @@ async function inlineImagePart(reference: GenerationReference) {
   return { inlineData: { mimeType: blob.type || 'image/png', data: btoa(binary) } }
 }
 
-async function materializeInlineResults(body: any) {
+function extensionForMime(mimeType: string, variant: 'image' | 'video') {
+  const known: Record<string, string> = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp', 'image/gif': 'gif', 'video/mp4': 'mp4', 'video/webm': 'webm', 'video/quicktime': 'mov' }
+  return known[mimeType.split(';', 1)[0].toLowerCase()] || (variant === 'image' ? 'png' : 'mp4')
+}
+
+function generationFileName(variant: 'image' | 'video', index: number, mimeType: string) {
+  return `cnote-generation-${Date.now()}-${index + 1}.${extensionForMime(mimeType, variant)}`
+}
+
+async function materializeInlineResults(body: any, variant: 'image' | 'video') {
   const values: Array<{ data: string; mimeType?: string }> = []
   const seen = new Set<string>()
   const collect = (value: any) => {
@@ -397,13 +407,27 @@ async function materializeInlineResults(body: any) {
     else Object.values(value).forEach(collect)
   }
   collect(body)
-  const results: { url: string; resourceId: string; mimeType: string }[] = []
+  const results: { url: string; resourceId: string; mimeType: string; fileName: string }[] = []
   for (const value of values) {
     const mimeType = value.mimeType || 'image/png'
     const binary = atob(value.data)
     const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0))
-    const stored = await storeLocalResource(new Blob([bytes], { type: mimeType }))
-    results.push({ url: stored.url, resourceId: stored.resourceId, mimeType })
+    const fileName = generationFileName(variant, results.length, mimeType)
+    const stored = await storeLocalResource(new Blob([bytes], { type: mimeType }), fileName, true)
+    results.push({ url: stored.url, resourceId: stored.resourceId, mimeType, fileName })
+  }
+  return results
+}
+
+async function materializeRemoteResults(urls: string[], variant: 'image' | 'video', signal?: AbortSignal) {
+  const results: { url: string; resourceId: string; mimeType: string; fileName: string }[] = []
+  for (const url of urls) {
+    const response = await desktopFetch(url, { signal })
+    if (!response.ok) throw new Error(`无法下载生成结果（HTTP ${response.status}）`)
+    const mimeType = response.headers.get('content-type')?.split(';', 1)[0]?.trim() || (variant === 'image' ? 'image/png' : 'video/mp4')
+    const fileName = generationFileName(variant, results.length, mimeType)
+    const stored = await storeLocalResource(await response.blob(), fileName, true)
+    results.push({ url: stored.url, resourceId: stored.resourceId, mimeType, fileName })
   }
   return results
 }
@@ -590,12 +614,14 @@ export async function submitGenerationTask(context: GenerationRequestContext, si
     signal,
   }, { secretRefs: authSecretRefs(channel, config.adapterId) })
   const parsed = await parseResponse(response)
-  const inlineResults = await materializeInlineResults(parsed)
-  const immediateResultUrls = [...resultURLsFrom(parsed), ...inlineResults.map((result) => result.url)]
+  const inlineResults = await materializeInlineResults(parsed, variant)
+  const remoteResults = await materializeRemoteResults(resultURLsFrom(parsed), variant, signal)
+  const immediateResults = [...remoteResults, ...inlineResults]
+  const immediateResultUrls = immediateResults.map((result) => result.url)
   const taskId = taskIdFrom(parsed)
-  if (!taskId && immediateResultUrls.length) return { taskId: `completed-${crypto.randomUUID()}`, resultUrls: immediateResultUrls, resultResourceIds: inlineResults.map((result) => result.resourceId), resultMimeTypes: inlineResults.map((result) => result.mimeType), preparedConfig: config, raw: parsed }
+  if (!taskId && immediateResultUrls.length) return { taskId: `completed-${crypto.randomUUID()}`, resultUrls: immediateResultUrls, resultResourceIds: immediateResults.map((result) => result.resourceId), resultMimeTypes: immediateResults.map((result) => result.mimeType), resultFileNames: immediateResults.map((result) => result.fileName), preparedConfig: config, raw: parsed }
   if (!taskId) throw new Error('生成服务没有返回 task_id')
-  return { taskId, resultUrls: immediateResultUrls, preparedConfig: config, raw: parsed }
+  return { taskId, resultUrls: immediateResultUrls, resultResourceIds: immediateResults.map((result) => result.resourceId), resultMimeTypes: immediateResults.map((result) => result.mimeType), resultFileNames: immediateResults.map((result) => result.fileName), preparedConfig: config, raw: parsed }
 }
 
 export async function pollGenerationTask(context: GenerationRequestContext, taskId: string, signal?: AbortSignal): Promise<GenerationPollResponse> {
@@ -609,8 +635,10 @@ export async function pollGenerationTask(context: GenerationRequestContext, task
   }, { secretRefs: authSecretRefs(channel, context.config.adapterId) })
   const parsed = await parseResponse(response)
   const status = statusFrom(parsed)
-  const inlineResults = await materializeInlineResults(parsed)
-  const resultUrls = [...resultURLsFrom(parsed), ...inlineResults.map((result) => result.url)]
+  const inlineResults = await materializeInlineResults(parsed, context.variant)
+  const remoteResults = status === 'completed' ? await materializeRemoteResults(resultURLsFrom(parsed), context.variant, signal) : []
+  const materializedResults = [...remoteResults, ...inlineResults]
+  const resultUrls = materializedResults.map((result) => result.url)
   const task: GenerationTaskState = {
     taskId,
     provider: channel.providerId,
@@ -634,10 +662,13 @@ export async function pollGenerationTask(context: GenerationRequestContext, task
       }, { secretRefs: authSecretRefs(channel, context.config.adapterId) })
       if (contentResponse.ok && contentResponse.headers.get('content-type')?.includes('application/json')) {
         const contentBody = await contentResponse.json()
-        const contentInlineResults = await materializeInlineResults(contentBody)
-        task.resultUrls = [...resultURLsFrom(contentBody), ...contentInlineResults.map((result) => result.url)]
-        task.resultResourceIds = contentInlineResults.length ? contentInlineResults.map((result) => result.resourceId) : undefined
-        task.resultMimeTypes = contentInlineResults.length ? contentInlineResults.map((result) => result.mimeType) : undefined
+        const contentInlineResults = await materializeInlineResults(contentBody, context.variant)
+        const contentRemoteResults = await materializeRemoteResults(resultURLsFrom(contentBody), context.variant, signal)
+        const contentResults = [...contentRemoteResults, ...contentInlineResults]
+        task.resultUrls = contentResults.map((result) => result.url)
+        task.resultResourceIds = contentResults.length ? contentResults.map((result) => result.resourceId) : undefined
+        task.resultMimeTypes = contentResults.length ? contentResults.map((result) => result.mimeType) : undefined
+        task.resultFileNames = contentResults.length ? contentResults.map((result) => result.fileName) : undefined
       } else if (contentResponse.ok) {
         const declaredType = contentResponse.headers.get('content-type')?.split(';', 1)[0]?.trim()
         const contentType = declaredType && declaredType !== 'application/octet-stream'
@@ -645,7 +676,7 @@ export async function pollGenerationTask(context: GenerationRequestContext, task
           : context.variant === 'image' ? 'image/png' : 'video/mp4'
         const blob = await contentResponse.blob()
         if (blob.size > 0) {
-          const stored = await storeLocalResource(new Blob([blob], { type: contentType }))
+          const stored = await storeLocalResource(new Blob([blob], { type: contentType }), generationFileName(context.variant, 0, contentType), true)
           task.resultUrls = [stored.url]
           task.resultResourceIds = [stored.resourceId]
           task.resultMimeTypes = [contentType]

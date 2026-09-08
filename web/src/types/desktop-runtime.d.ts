@@ -50,6 +50,7 @@ interface CnoteDesktopApi {
   system: {
     openFile: (request?: { title?: string; filters?: Array<{ name: string; extensions: string[] }> }) => Promise<{ name: string; data: Uint8Array } | null>
     saveFile: (request: { title?: string; suggestedName: string; filters?: Array<{ name: string; extensions: string[] }>; data: Uint8Array }) => Promise<boolean>
+    saveResource: (request: { resourceId: string; fileName: string; data: Uint8Array }) => Promise<string>
     selectDirectory: (request?: { title?: string; defaultPath?: string }) => Promise<string | null>
     getStorageLocation: () => Promise<{
       currentPath: string
