@@ -199,6 +199,13 @@ function isRemoteMediaURL(value: string) {
   return /^https?:\/\//i.test(value)
 }
 
+async function blobToDataURL(blob: Blob) {
+  const bytes = new Uint8Array(await blob.arrayBuffer())
+  let binary = ''
+  bytes.forEach((byte) => { binary += String.fromCharCode(byte) })
+  return 'data:' + (blob.type || 'application/octet-stream') + ';base64,' + btoa(binary)
+}
+
 function valueAtPath(payload: unknown, path: string) {
   return path.split('.').filter(Boolean).reduce<unknown>((current, key) => {
     if (!current || typeof current !== 'object') return undefined
@@ -387,8 +394,20 @@ async function prepareReferenceConfig(context: GenerationRequestContext, signal?
   if (!needsRemote) return orderedConfig
   const transport = adapter?.mediaTransport || channel.mediaTransport || 'auto'
   if (transport === 'public-url') {
-    ensurePublicReferenceURLs(references)
+    ensureProviderReadableReferences(references)
     return orderedConfig
+  }
+  if (transport === 'auto') {
+    let inlineBytes = 0
+    const prepared = await Promise.all(references.map(async (reference) => {
+      if (isHttpsUrl(referenceURL(reference))) return reference
+      const { blob } = await referenceBlob(reference)
+      inlineBytes += blob.size
+      if (inlineBytes > 128 * 1024 * 1024) throw new Error('Local reference media exceeds 128 MiB; use a public HTTPS URL instead')
+      const url = await blobToDataURL(blob)
+      return { ...reference, source: 'uploaded' as const, url, previewUrl: reference.previewUrl || url, status: 'ready' as const }
+    }))
+    return { ...orderedConfig, references: normalizeGenerationReferences(prepared) }
   }
 
   const uploadAdapterId = config.adapterId || adapter?.id
@@ -564,10 +583,10 @@ function contentPath(context: GenerationRequestContext, taskId: string) {
   return `/v1/${variant === 'image' ? 'images' : 'videos'}/${encodeURIComponent(taskId)}/content`
 }
 
-function ensurePublicReferenceURLs(references: GenerationReference[]) {
-  const invalid = references.find((reference) => !/^https:\/\//i.test(referenceURL(reference)))
+function ensureProviderReadableReferences(references: GenerationReference[]) {
+  const invalid = references.find((reference) => !/^https:\/\//i.test(referenceURL(reference)) && !/^data:/i.test(referenceURL(reference)))
   if (invalid) {
-    throw new Error(`参考文件“${invalid.label || invalid.fileName || invalid.id}”尚未转换为公网 HTTPS 地址`)
+    throw new Error(`参考文件“${invalid.label || invalid.fileName || invalid.id}”尚未转换为公网 HTTPS 地址或内联 Data URL`)
   }
 }
 
@@ -581,7 +600,7 @@ export async function submitGenerationTask(context: GenerationRequestContext, si
   const config = await prepareReferenceConfig({ ...context, channel }, signal)
   const protocol = protocolFor(channel)
   let videoResolution: string | undefined
-  if (variant === 'video') { try { ensurePublicReferenceURLs(config.references); videoResolution = validateVideoConfig(model, config) } catch (error) { throw new GenerationStageError('validation', error instanceof Error ? error.message : String(error), error) } }
+  if (variant === 'video') { try { ensureProviderReadableReferences(config.references); videoResolution = validateVideoConfig(model, config) } catch (error) { throw new GenerationStageError('validation', error instanceof Error ? error.message : String(error), error) } }
 
   let body: Record<string, unknown> | undefined
   let requestURL = ''

@@ -26,6 +26,7 @@ function App() {
         <Route path="/settings" element={<APIKeysManager />} />
         <Route path="/settings/api-keys" element={<APIKeysManager />} />
         <Route path="/settings/generation-channels" element={<Navigate to="/settings/api-keys?tab=generation" replace />} />
+        <Route path="*" element={<Navigate to="/dashboard" replace />} />
       </Routes>
     </Suspense>
   )

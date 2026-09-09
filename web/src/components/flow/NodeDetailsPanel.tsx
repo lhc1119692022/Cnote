@@ -7,7 +7,7 @@ import { getActiveMediaItem, getNodeMediaItems } from '@/lib/content-media'
 import { requestAIMessageSend } from '@/lib/flow/ai-panel-events'
 import { useAIStore } from '@/stores/use-ai-store'
 import { useFlowStore } from '@/stores/use-flow-store'
-import type { AINodeData, AIReasoningLevel, AIWebSearchMode, ContentNodeData } from '@/types/flow'
+import type { AINodeData, AIReasoningLevel, AIWebSearchMode, BrowserNodeData, ContentNodeData, GroupNodeData, RequestNodeData, StickyNodeData } from '@/types/flow'
 import { ContentEditorPanel, MarkdownPreview } from './ContentEditorPanel'
 
 function contentSourceUrl(data: ContentNodeData) {
@@ -155,11 +155,56 @@ function AIDetails({ nodeId, data }: { nodeId: string; data: AINodeData }) {
   </div>
 }
 
+function BasicNodeDetails({ nodeId, type }: { nodeId: string; type: 'request' | 'browser' | 'sticky' | 'group' }) {
+  const node = useFlowStore((state) => state.nodes.find((item) => item.id === nodeId))
+  const updateNode = useFlowStore((state) => state.updateNode)
+  if (!node) return null
+
+  const updateData = (updates: Record<string, unknown>) => {
+    updateNode(nodeId, { data: { ...node.data, ...updates } })
+    useFlowStore.getState().saveCurrentFlow()
+  }
+
+  if (type === 'browser') {
+    const data = node.data as BrowserNodeData
+    return <div className="min-h-0 flex-1 space-y-4 overflow-y-auto border-t border-border p-4">
+      <PanelSection title="浏览器节点">
+        <label className="space-y-1 text-xs text-muted-foreground"><span>网址</span><input value={data.url || ''} onChange={(event) => updateData({ url: event.target.value, confirmedUrl: event.target.value })} className="h-10 w-full rounded-xl border border-border bg-card px-3 text-sm text-foreground outline-none focus:border-foreground/30" placeholder="https://example.com" /></label>
+        <label className="space-y-1 text-xs text-muted-foreground"><span>输出模式</span><select value={data.outputMode || 'url'} onChange={(event) => updateData({ outputMode: event.target.value })} className="h-10 w-full rounded-xl border border-border bg-card px-3 text-sm text-foreground outline-none focus:border-foreground/30"><option value="url">网页地址</option><option value="text">网页文本</option><option value="both">地址和文本</option></select></label>
+        <p className="text-xs leading-5 text-muted-foreground">当前状态：{data.status === 'ready' ? '已就绪' : data.status === 'error' ? '加载失败' : data.status === 'loading' ? '加载中' : '待加载'}</p>
+      </PanelSection>
+    </div>
+  }
+
+  if (type === 'sticky') {
+    const data = node.data as StickyNodeData & { text?: string }
+    return <div className="min-h-0 flex-1 space-y-4 overflow-y-auto border-t border-border p-4">
+      <PanelSection title="贴纸节点">
+        <label className="space-y-1 text-xs text-muted-foreground"><span>内容</span><textarea value={data.content || data.text || ''} onChange={(event) => updateData({ content: event.target.value, text: event.target.value })} rows={7} className="w-full resize-y rounded-xl border border-border bg-card p-3 text-sm leading-6 text-foreground outline-none focus:border-foreground/30" placeholder="输入贴纸内容" /></label>
+        <label className="space-y-1 text-xs text-muted-foreground"><span>颜色</span><select value={data.color || 'yellow'} onChange={(event) => updateData({ color: event.target.value })} className="h-10 w-full rounded-xl border border-border bg-card px-3 text-sm text-foreground outline-none focus:border-foreground/30"><option value="yellow">黄色</option><option value="pink">粉色</option><option value="green">绿色</option><option value="blue">蓝色</option><option value="purple">紫色</option></select></label>
+        <label className="flex items-center gap-2 text-xs text-muted-foreground"><input type="checkbox" checked={Boolean(data.pinned)} onChange={(event) => updateData({ pinned: event.target.checked })} />固定贴纸位置</label>
+      </PanelSection>
+    </div>
+  }
+
+  if (type === 'group') {
+    const data = node.data as GroupNodeData
+    return <div className="min-h-0 flex-1 space-y-4 overflow-y-auto border-t border-border p-4"><PanelSection title="编组节点"><p className="text-sm text-foreground">包含 {data.memberCount || 0} 个节点</p><label className="space-y-1 text-xs text-muted-foreground"><span>内边距</span><input type="number" min="0" value={data.padding || 24} onChange={(event) => updateData({ padding: Math.max(0, Number(event.target.value) || 0) })} className="h-10 w-full rounded-xl border border-border bg-card px-3 text-sm text-foreground outline-none focus:border-foreground/30" /></label></PanelSection></div>
+  }
+
+  const data = node.data as RequestNodeData
+  const selectedVariant = data.variant || 'body'
+  const variant = selectedVariant === 'video' ? 'video' : 'image'
+  const config = data[variant]
+  return <div className="min-h-0 flex-1 space-y-4 overflow-y-auto border-t border-border p-4"><PanelSection title="请求体节点"><label className="space-y-1 text-xs text-muted-foreground"><span>生成类型</span><select value={selectedVariant} onChange={(event) => updateData({ variant: event.target.value })} className="h-10 w-full rounded-xl border border-border bg-card px-3 text-sm text-foreground outline-none focus:border-foreground/30"><option value="body">请求体</option><option value="image">图片</option><option value="video">视频</option></select></label><label className="space-y-1 text-xs text-muted-foreground"><span>提示词</span><textarea disabled={selectedVariant === 'body'} value={config?.prompt || ''} onChange={(event) => updateData({ [variant]: { ...config, prompt: event.target.value } })} rows={7} className="w-full resize-y rounded-xl border border-border bg-card p-3 text-sm leading-6 text-foreground outline-none focus:border-foreground/30" placeholder={selectedVariant === 'body' ? '请求体模式不使用生成提示词' : '输入生成提示词'} /></label><p className="text-xs leading-5 text-muted-foreground">请求节点只负责保存生成参数，执行仍由画布上的运行操作触发。</p></PanelSection></div>
+}
+
 export function NodeDetailsPanel({ nodeId }: { nodeId: string }) {
   const node = useFlowStore((state) => state.nodes.find((item) => item.id === nodeId))
   if (!node) return null
   if (node.type === 'ai') return <AIDetails nodeId={nodeId} data={node.data as AINodeData} />
-  if (node.type !== 'content') return <div className="flex min-h-0 flex-1 items-center justify-center border-t border-border px-8 text-center text-sm text-muted-foreground">当前节点暂时没有专门的面板视图。</div>
+  if (node.type === 'request' || node.type === 'browser' || node.type === 'sticky' || node.type === 'group') return <BasicNodeDetails nodeId={nodeId} type={node.type} />
+  if (node.type !== 'content') return <div className="flex min-h-0 flex-1 items-center justify-center border-t border-border px-8 text-center text-sm text-muted-foreground">当前节点没有可编辑的详情。</div>
   const data = node.data as ContentNodeData
   if (data.category === 'text' || data.category === 'mindmap') return <ContentEditorPanel nodeId={nodeId} />
   return <ContentDetails nodeId={nodeId} data={data} />

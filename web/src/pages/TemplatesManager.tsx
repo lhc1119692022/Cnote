@@ -1,6 +1,7 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { FileText, Search, Trash2 } from 'lucide-react'
+import { FileText, Search, Trash2, Upload } from 'lucide-react'
+import type { Edge, Node } from 'reactflow'
 import { AppShell } from '@/components/layout/AppShell'
 import { Button } from '@/components/ui/button'
 import { useFlowStore } from '@/stores/use-flow-store'
@@ -12,6 +13,7 @@ export function TemplatesManager() {
   const createFlow = useFlowStore((state) => state.createFlow)
   const [searchQuery, setSearchQuery] = useState('')
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null)
+  const importInputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
     initialize()
@@ -40,6 +42,29 @@ export function TemplatesManager() {
     if (confirm('确定要删除这个模板吗？')) deleteTemplate(id)
   }
 
+  const handleImportTemplate = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0]
+    event.target.value = ''
+    if (!file) return
+    try {
+      const parsed: unknown = JSON.parse(await file.text())
+      const candidate = Array.isArray(parsed) ? parsed[0] : parsed
+      if (!candidate || typeof candidate !== 'object') throw new Error('模板文件格式无效。')
+      const template = candidate as { title?: unknown; description?: unknown; nodes?: unknown; edges?: unknown; category?: unknown }
+      if (typeof template.title !== 'string' || !template.title.trim() || !Array.isArray(template.nodes) || !Array.isArray(template.edges)) throw new Error('模板文件需要包含 title、nodes 和 edges。')
+      const imported = useTemplateStore.getState().createTemplate(
+        `${template.title.trim()}（导入）`,
+        typeof template.description === 'string' ? template.description : '',
+        template.nodes as Node[],
+        template.edges as Edge[],
+        typeof template.category === 'string' ? template.category : undefined,
+      )
+      alert(`模板“${imported.title}”已导入。`)
+    } catch (error) {
+      alert(error instanceof Error ? error.message : '模板导入失败，请检查 JSON 文件。')
+    }
+  }
+
   const formatDate = (timestamp: number) => {
     const date = new Date(timestamp)
     return `${date.getMonth() + 1}月${date.getDate()}日`
@@ -54,7 +79,8 @@ export function TemplatesManager() {
             <input value={searchQuery} onChange={(event) => setSearchQuery(event.target.value)} placeholder="搜索模板..." className="h-9 w-full rounded-lg border border-border bg-background pl-9 pr-3 text-[13px] text-foreground outline-none focus:border-primary focus:ring-2 focus:ring-ring/20" />
           </div>
           <div className="flex gap-2">
-            <Button variant="secondary" size="sm">导入</Button>
+            <input ref={importInputRef} type="file" accept="application/json,.json" className="hidden" onChange={(event) => void handleImportTemplate(event)} />
+            <Button variant="secondary" size="sm" className="gap-1.5" onClick={() => importInputRef.current?.click()}><Upload className="h-3.5 w-3.5" />导入</Button>
           </div>
         </header>
 
