@@ -520,8 +520,30 @@ export const RequestNode = memo(({ id, data, selected }: NodeProps<RequestNodeDa
     updateVariant({ references: normalizeGenerationReferences([...orderedReferences, { ...reference, order: orderedReferences.length }]) })
   }
 
+  const validateReferenceFile = async (file: File, type: GenerationReference['type']) => {
+    if (type === 'video') {
+      const maxBytes = selectedModel?.id.startsWith('seedance-2.5') ? 200 : selectedModel?.id === 'wan-3' ? 100 : selectedModel?.id === 'gemini-omni-1.1' ? undefined : 50
+      if (maxBytes && file.size > maxBytes * 1024 * 1024) throw new Error(`参考视频不能超过 ${maxBytes} MB`)
+      const duration = await new Promise<number>((resolve, reject) => {
+        const element = document.createElement('video')
+        element.preload = 'metadata'
+        element.onloadedmetadata = () => { URL.revokeObjectURL(element.src); resolve(element.duration) }
+        element.onerror = () => { URL.revokeObjectURL(element.src); reject(new Error('无法读取参考视频时长')) }
+        element.src = URL.createObjectURL(file)
+      })
+      const maxDuration = selectedModel?.id === 'gemini-omni-1.1' ? 10 : selectedModel?.id === 'wan-3' ? 15 : selectedModel?.id?.startsWith('seedance-2.5') ? 30 : 15
+      if (!Number.isFinite(duration) || duration <= 0 || duration > maxDuration) throw new Error(`参考视频时长必须不超过 ${maxDuration} 秒`)
+    }
+    if (type === 'audio') {
+      const maxBytes = selectedModel?.id === 'wan-3' || selectedModel?.id?.startsWith('seedance-') ? 15 : undefined
+      if (maxBytes && file.size > maxBytes * 1024 * 1024) throw new Error(`参考音频不能超过 ${maxBytes} MB`)
+      if (!/^(audio\/(mpeg|wav|x-wav|wave))$/i.test(file.type)) throw new Error('参考音频仅支持 MP3 或 WAV')
+    }
+  }
+
   const handleFile = async (file: File, type: GenerationReference['type']) => {
     if (variant === 'body') return
+    try { await validateReferenceFile(file, type) } catch (error) { updateTask({ status: 'failed', error: error instanceof Error ? error.message : String(error) }); return }
     const stored = await storeLocalResource(file)
     const duplicate = orderedReferences.find((reference) => reference.type === type && reference.resourceId === stored.resourceId)
     if (duplicate) {
@@ -550,6 +572,17 @@ export const RequestNode = memo(({ id, data, selected }: NodeProps<RequestNodeDa
     // reference still keeps the storage lease returned by storeLocalResource,
     // so same-content files share bytes while remaining independently removable.
     revokeManagedObjectUrl(stored.url)
+  }
+
+  const setImageFrameRole = (reference: GenerationReference, role: '' | 'first_frame' | 'last_frame') => {
+    if (reference.type !== 'image') return
+    const nextRole = role || undefined
+    updateVariant({ references: normalizeGenerationReferences(orderedReferences.map((item) => {
+      if (item.id === reference.id) return { ...item, role: nextRole }
+      if (nextRole === 'first_frame' && item.role === 'first_frame') return { ...item, role: 'reference_image' as const }
+      if (nextRole === 'last_frame' && item.role === 'last_frame') return { ...item, role: 'reference_image' as const }
+      return item
+    })) })
   }
 
   const removeReference = async (reference: GenerationReference) => {
@@ -654,6 +687,10 @@ export const RequestNode = memo(({ id, data, selected }: NodeProps<RequestNodeDa
           title={`${reference.label || TYPE_LABELS[type]}：拖动调整顺序`}
         >
           <LocalReferencePreview reference={reference} />
+           {variant === 'video' && type === 'image' && <div className="absolute -bottom-1 left-0 flex gap-0.5 rounded bg-card px-0.5 shadow-sm">
+             <button type="button" className={`nodrag px-1 text-[8px] ${reference.role === 'first_frame' ? 'font-semibold text-foreground' : 'text-muted-foreground'}`} onClick={() => setImageFrameRole(reference, reference.role === 'first_frame' ? '' : 'first_frame')} aria-label="设为首帧" title="设为首帧">首</button>
+             <button type="button" className={`nodrag px-1 text-[8px] ${reference.role === 'last_frame' ? 'font-semibold text-foreground' : 'text-muted-foreground'}`} onClick={() => setImageFrameRole(reference, reference.role === 'last_frame' ? '' : 'last_frame')} aria-label="设为尾帧" title="设为尾帧">尾</button>
+           </div>}
           <button type="button" className="nodrag absolute -right-1.5 -top-1.5 flex h-5 w-5 items-center justify-center rounded-full border border-border bg-card text-muted-foreground opacity-0 shadow-sm transition-opacity hover:text-destructive group-hover:opacity-100" onClick={() => void removeReference(reference)} aria-label={`删除${TYPE_LABELS[type]}素材`} title={`删除${TYPE_LABELS[type]}素材`}><X className="h-3 w-3" /></button>
         </div>)}
         <label className={`nodrag flex h-14 w-14 shrink-0 cursor-pointer items-center justify-center rounded-lg border border-dashed border-border bg-muted/35 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground ${acceptsType ? '' : 'pointer-events-none opacity-35'}`} aria-label={`上传${TYPE_LABELS[type]}素材`} title={acceptsType ? `上传${TYPE_LABELS[type]}素材` : `当前模型不支持${TYPE_LABELS[type]}输入`}>
@@ -674,9 +711,9 @@ export const RequestNode = memo(({ id, data, selected }: NodeProps<RequestNodeDa
         <textarea value={config?.prompt || ''} onChange={(event) => updateVariant({ prompt: event.target.value })} placeholder={variant === 'image' ? '描述你想生成的图片…' : '描述镜头、动作、氛围，或上传图片生成动态视频…'} className="nodrag nowheel absolute inset-0 h-full w-full resize-none bg-transparent px-3 pb-3 pt-2 text-sm leading-6 text-foreground outline-none placeholder:text-muted-foreground/65" aria-label={variant === 'image' ? '图片生成提示词' : '视频生成提示词'} />
       </div>
 
-      {(task.status === 'timeout' || (task.status === 'failed' && Boolean(task.error)) || task.status === 'completed') && <div className="shrink-0 px-3 pb-2 text-[10px]">
+      {(task.status === 'timeout' || task.status === 'unknown' || (task.status === 'failed' && Boolean(task.error)) || task.status === 'completed') && <div className="shrink-0 px-3 pb-2 text-[10px]">
         {task.status === 'timeout' && <div className="rounded-lg bg-amber-50 px-2.5 py-2 text-amber-800"><div>任务已超时，任务 ID 已保留。</div>{task.taskId && <div className="mt-1 truncate font-mono" title={task.taskId}>{task.taskId}</div>}<button type="button" className="nodrag mt-1.5 font-semibold underline" onClick={() => void runTask(task.taskId)}>继续查询</button></div>}
-        {task.status === 'failed' && task.error && <div className="rounded-lg bg-destructive/5 px-2.5 py-2 text-destructive">{task.error}</div>}
+        {(task.status === 'failed' || task.status === 'unknown') && task.error && <div className="rounded-lg bg-destructive/5 px-2.5 py-2 text-destructive">{task.error}</div>}
         {task.status === 'completed' && <div className="rounded-lg bg-emerald-50 px-2.5 py-2 text-emerald-800">任务已完成{task.resultUrls?.length ? `，已收到 ${task.resultUrls.length} 个结果` : ''}，耗时 ${formatElapsed(task.elapsedMs || elapsed)}</div>}
       </div>}
 
@@ -719,8 +756,8 @@ export const RequestNode = memo(({ id, data, selected }: NodeProps<RequestNodeDa
               <div className="h-px bg-border" />
               <ChoiceRow
                 label="质量"
-                value={config?.quality || 'medium'}
-                options={[{ value: 'auto', label: '自动' }, { value: 'low', label: '低' }, { value: 'medium', label: '中' }, { value: 'high', label: '高' }]}
+                value={config?.quality || selectedModel?.defaultQuality || 'medium'}
+                options={(selectedModel?.qualities || ['auto', 'low', 'medium', 'high']).map((quality) => ({ value: quality, label: ({ auto: '自动', low: '低', medium: '中', high: '高', xhigh: '极高', max: '最大' } as Record<string, string>)[quality] || quality }))}
                 onChange={(value) => { updateVariant({ quality: value as NonNullable<typeof config>['quality'] }); closeOpenMenus(nodeRef.current) }}
                 ariaLabel="质量"
               />
@@ -743,6 +780,10 @@ export const RequestNode = memo(({ id, data, selected }: NodeProps<RequestNodeDa
               </div>
               <label className={`nodrag flex items-center justify-between gap-3 rounded-lg px-2 py-2 text-[11px] text-foreground hover:bg-muted/70 ${selectedModel && !selectedModel.capabilities.includes('generate-audio') ? 'opacity-45' : ''}`} title={selectedModel && !selectedModel.capabilities.includes('generate-audio') ? '当前模型不支持生成音频' : '生成音频'}>
                 <span className="flex items-center gap-2"><Mic className="h-3.5 w-3.5 text-muted-foreground" />生成音频</span>
+               {selectedModel?.id.startsWith('seedance-') && <label className="nodrag flex items-center justify-between gap-3 rounded-lg px-2 py-2 text-[11px] text-foreground hover:bg-muted/70" title="关闭音效和音乐">
+                 <span>不要音乐</span>
+                 <input type="checkbox" className="nodrag" checked={Boolean(config?.noMusic)} onChange={(event) => updateVariant({ noMusic: event.target.checked })} aria-label="不要音乐" />
+               </label>}
                 <input type="checkbox" className="nodrag" checked={Boolean(config?.generateAudio)} disabled={Boolean(selectedModel && !selectedModel.capabilities.includes('generate-audio'))} onChange={(event) => updateVariant({ generateAudio: event.target.checked })} aria-label="生成音频" />
               </label>
             </>}
@@ -777,3 +818,5 @@ export const RequestNode = memo(({ id, data, selected }: NodeProps<RequestNodeDa
 })
 
 RequestNode.displayName = 'RequestNode'
+
+

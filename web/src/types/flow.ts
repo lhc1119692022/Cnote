@@ -326,6 +326,7 @@ export type GenerationTaskStatus =
   | 'timeout'
   | 'completed'
   | 'failed'
+  | 'unknown'
 
 export interface GenerationTaskState {
   taskId?: string
@@ -343,6 +344,8 @@ export interface GenerationTaskState {
   resultMimeTypes?: string[]
   resultFileNames?: string[]
   error?: string
+  rawStatus?: string
+  rawResponse?: unknown
   lastPolledAt?: number
   /** Immutable request data used to resume polling after the channel is edited. */
   requestSnapshot?: GenerationTaskRequestSnapshot
@@ -373,10 +376,11 @@ export interface GenerationVariantConfig {
   negativePrompt?: string
   references: GenerationReference[]
   generateAudio?: boolean
+  noMusic?: boolean
   seconds?: number
   resolution?: string
   aspectRatio?: string
-  quality?: 'auto' | 'low' | 'medium' | 'high' | 'standard' | string
+  quality?: 'auto' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'standard' | string
   background?: 'auto' | 'opaque' | 'transparent'
   outputFormat?: 'png' | 'jpeg' | 'webp'
   thinkingLevel?: 'minimal' | 'high'
@@ -438,3 +442,5 @@ export interface Flow {
 export interface Folder { id: string; name: string; color?: string; createdAt: number }
 export interface Template { id: string; title: string; description?: string; thumbnail?: string; nodes: Node[]; edges: Edge[]; category?: string; usageCount: number; createdAt: number }
 export interface Source { id: string; title: string; nodeData: ContentNodeData; createdAt: number; updatedAt: number }
+
+

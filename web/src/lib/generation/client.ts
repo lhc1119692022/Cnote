@@ -29,6 +29,13 @@ export interface GenerationPollResponse {
   raw?: unknown
 }
 
+export class GenerationStageError extends Error {
+  constructor(public readonly stage: 'validation' | 'creation' | 'polling' | 'download', message: string, public readonly cause?: unknown) {
+    super(`${stage}: ${message}`)
+    this.name = 'GenerationStageError'
+  }
+}
+
 export interface GenerationRunOptions {
   taskId?: string
   submittedAt?: number
@@ -88,16 +95,44 @@ async function assertDesktopSecretReady(channel: GenerationChannel, adapterId?: 
   if (missing) throw new Error('当前渠道的 API Key 尚未保存到桌面安全存储，请在“渠道”中重新保存 API Key。')
 }
 
+function normalizeVideoResolution(value: string | undefined) {
+  const normalized = String(value || '720p').trim().toLowerCase().replace(/\s+/g, '')
+  const aliases: Record<string, string> = {
+    '360': '360p', '640x360': '360p', '360x640': '360p', '480': '480p', '854x480': '480p', '640x480': '480p',
+    '720': '720p', '1280x720': '720p', '720x1280': '720p', '1080': '1080p', '1920x1080': '1080p', '1080x1920': '1080p',
+    '4k': '4k', '2160p': '4k', '3840x2160': '4k', '2160x3840': '4k',
+  }
+  return aliases[normalized] || normalized
+}
+
 function validateVideoConfig(model: GenerationModel, config: GenerationVariantConfig) {
-  const seconds = config.seconds || 5
+  const seconds = config.seconds ?? 5
+  if (!Number.isInteger(seconds) || seconds <= 0) throw new Error('视频时长必须是正整数秒数')
+  if (model.allowedDurations?.length && !model.allowedDurations.includes(seconds)) throw new Error(`${model.name} 时长只能为 ${model.allowedDurations.join(' 或 ')} 秒`)
   if (model.minDuration && seconds < model.minDuration || model.maxDuration && seconds > model.maxDuration) throw new Error(`${model.name} 时长必须为 ${model.minDuration}-${model.maxDuration} 秒`)
-  if (model.resolutions?.length && config.resolution && !model.resolutions.includes(config.resolution)) throw new Error(`${model.name} 不支持 ${config.resolution}`)
+  const resolution = normalizeVideoResolution(config.resolution)
+  if (model.resolutions?.length && !model.resolutions.includes(resolution)) throw new Error(`${model.name} 不支持 ${resolution}`)
   if (model.aspectRatios?.length && config.aspectRatio && !model.aspectRatios.includes(config.aspectRatio)) throw new Error(`${model.name} 不支持 ${config.aspectRatio} 画幅`)
+  const images = config.references.filter((reference) => reference.type === 'image')
+  const videos = config.references.filter((reference) => reference.type === 'video')
+  const audios = config.references.filter((reference) => reference.type === 'audio')
   for (const [type, max] of [['image', model.maxImages], ['video', model.maxVideos], ['audio', model.maxAudios] ] as const) {
     const count = config.references.filter((reference) => reference.type === type).length
     if (max && count > max) throw new Error(`${model.name} 最多支持 ${max} 个${type}参考素材`)
   }
-  if (model.id === 'gemini-omni-1.1' && config.references.some((reference) => reference.type === 'audio')) throw new Error('Gemini Omni 1.1 不支持参考音频')
+  if (model.id === 'gemini-omni-1.1' && audios.length) throw new Error('Gemini Omni 1.1 不支持参考音频')
+  const firstFrame = images.filter((reference) => reference.role === 'first_frame')
+  const lastFrame = images.filter((reference) => reference.role === 'last_frame')
+  const ordinaryImages = images.filter((reference) => !['first_frame', 'last_frame'].includes(reference.role || ''))
+  if (lastFrame.length && !firstFrame.length) throw new Error('尾帧必须同时提供首帧')
+  if (firstFrame.length > 1 || lastFrame.length > 1) throw new Error('首帧和尾帧各只能提供一张')
+  if (firstFrame.length && (ordinaryImages.length || videos.length || audios.length) && model.id !== 'gemini-omni-1.1') throw new Error('首尾帧不能与参考媒体混用')
+  if (model.id === 'gemini-omni-1.1' && firstFrame.length && ordinaryImages.length) throw new Error('Gemini Omni 1.1 的首帧不能与参考图片混用')
+  if (audios.length && !ordinaryImages.length && !videos.length && model.id !== 'seedance-2.5-pro') throw new Error(`${model.name} 的参考音频必须同时提供参考图片或参考视频`)
+  if (model.id === 'gemini-omni-1.1' && videos.length && !ordinaryImages.length && !firstFrame.length) throw new Error('Gemini Omni 1.1 的参考视频必须同时提供首帧或参考图片')
+  if (model.id !== 'gemini-omni-1.1' && !config.prompt.trim()) throw new Error(`${model.name} 需要填写提示词`)
+  if (model.id === 'gemini-omni-1.1' && !config.prompt.trim() && !ordinaryImages.length && !firstFrame.length) throw new Error('Gemini Omni 1.1 省略提示词时必须提供首帧或参考图片')
+  return resolution
 }
 function referenceURL(reference: GenerationReference) {
   return reference.url || reference.previewUrl || ''
@@ -466,7 +501,7 @@ function statusFrom(body: any): GenerationTaskState['status'] {
   if (status === 'completed' || status === 'success' || status === 'succeeded' || status === 'done' || status.startsWith('succeeded')) return 'completed'
   if (status === 'failed' || status === 'error' || status === 'cancelled' || status === 'canceled' || status.startsWith('failed')) return 'failed'
   if (status === 'in_progress' || status === 'processing' || status === 'running' || status === 'generating') return 'in_progress'
-  return 'queued'
+  return 'unknown'
 }
 
 function resultURLsFrom(body: any) {
@@ -545,7 +580,8 @@ export async function submitGenerationTask(context: GenerationRequestContext, si
   if (!baseURL || baseURL.startsWith('local://')) throw new Error('当前生成渠道没有可用的公网接口地址')
   const config = await prepareReferenceConfig({ ...context, channel }, signal)
   const protocol = protocolFor(channel)
-  if (variant === 'video') { ensurePublicReferenceURLs(config.references); validateVideoConfig(model, config) }
+  let videoResolution: string | undefined
+  if (variant === 'video') { try { ensurePublicReferenceURLs(config.references); videoResolution = validateVideoConfig(model, config) } catch (error) { throw new GenerationStageError('validation', error instanceof Error ? error.message : String(error), error) } }
 
   let body: Record<string, unknown> | undefined
   let requestURL = ''
@@ -559,7 +595,7 @@ export async function submitGenerationTask(context: GenerationRequestContext, si
       model: model.id,
       prompt: config.prompt,
       size: imageSizeForConfig(config, model),
-      quality: config.quality === 'standard' ? 'medium' : config.quality || 'medium',
+      quality: config.quality === 'standard' ? 'medium' : config.quality || model.defaultQuality || 'medium',
       background: config.background || 'auto',
       output_format: config.outputFormat || 'png',
     }
@@ -602,7 +638,7 @@ export async function submitGenerationTask(context: GenerationRequestContext, si
     body = {
       model: model.id,
       seconds: config.seconds || 5,
-      resolution: config.resolution || '720p',
+      resolution: videoResolution || normalizeVideoResolution(config.resolution),
       aspect_ratio: config.aspectRatio || '16:9',
       prompt: config.prompt,
       ...(firstFrame ? { input_reference: referenceURL(firstFrame) } : {}),
@@ -610,7 +646,8 @@ export async function submitGenerationTask(context: GenerationRequestContext, si
       ...(images.length ? { reference_images: images } : {}),
       ...(videos.length ? { reference_videos: videos } : {}),
       ...(audios.length ? { reference_audios: audios } : {}),
-      sound_effects: Boolean(config.generateAudio),
+      ...(model.id.startsWith('seedance-') ? { sound_effects: config.noMusic ? false : Boolean(config.generateAudio) } : { sound_effects: Boolean(config.generateAudio) }),
+      ...(model.id.startsWith('seedance-') && config.noMusic ? { no_music: true } : {}),
     }
     requestURL = joinVersionedEndpoint(baseURL, '/v1/videos')
     requestBody = JSON.stringify(body)
@@ -623,7 +660,8 @@ export async function submitGenerationTask(context: GenerationRequestContext, si
     body: requestBody,
     signal,
   }, { secretRefs: authSecretRefs(channel, config.adapterId) })
-  const parsed = await parseResponse(response)
+  let parsed: any
+  try { parsed = await parseResponse(response) } catch (error) { throw new GenerationStageError('creation', error instanceof Error ? error.message : String(error), error) }
   const inlineResults = await materializeInlineResults(parsed, variant)
   const remoteResults = await materializeRemoteResults(resultURLsFrom(parsed), variant, signal)
   const immediateResults = [...remoteResults, ...inlineResults]
@@ -643,7 +681,8 @@ export async function pollGenerationTask(context: GenerationRequestContext, task
     headers: authHeaders(channel, context.config.adapterId),
     signal,
   }, { secretRefs: authSecretRefs(channel, context.config.adapterId) })
-  const parsed = await parseResponse(response)
+  let parsed: any
+  try { parsed = await parseResponse(response) } catch (error) { throw new GenerationStageError('polling', error instanceof Error ? error.message : String(error), error) }
   const status = statusFrom(parsed)
   const inlineResults = await materializeInlineResults(parsed, context.variant)
   const remoteResults = status === 'completed' ? await materializeRemoteResults(resultURLsFrom(parsed), context.variant, signal) : []
@@ -655,6 +694,8 @@ export async function pollGenerationTask(context: GenerationRequestContext, task
     channelId: channel.id,
     model: context.model.id,
     status,
+    rawStatus: String(parsed?.status || parsed?.state || parsed?.data?.status || ''),
+    rawResponse: parsed,
     resultUrls,
     resultResourceIds: inlineResults.length ? inlineResults.map((result) => result.resourceId) : undefined,
     resultMimeTypes: inlineResults.length ? inlineResults.map((result) => result.mimeType) : undefined,
@@ -799,7 +840,7 @@ export async function runGenerationTask(
     const polled = await pollGenerationTask(context, taskId, options.signal)
     const next: GenerationTaskState = { ...polled.task, taskId, submittedAt, elapsedMs: Date.now() - submittedAt, timeoutAt }
     options.onTaskUpdate?.(next)
-    if (next.status === 'completed' || next.status === 'failed') return next
+    if (next.status === 'completed' || next.status === 'failed' || next.status === 'unknown') return next
       await waitForPoll(interval, options.signal)
     }
   } catch (error) {
@@ -811,3 +852,9 @@ export async function runGenerationTask(
 
   throw new Error('生成任务没有有效 task_id')
 }
+
+
+
+
+
+

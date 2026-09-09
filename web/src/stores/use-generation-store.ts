@@ -29,6 +29,9 @@ export interface GenerationModel {
   aspectRatios?: string[]
   thinkingLevels?: Array<'minimal' | 'high'>
   defaultThinkingLevel?: 'minimal' | 'high'
+  qualities?: Array<'auto' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'>
+  defaultQuality?: 'auto' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'
+  allowedDurations?: number[]
 }
 
 export interface GenerationChannel {
@@ -97,7 +100,17 @@ export const GENERATION_PROTOCOL_OPTIONS: GenerationProtocolOption[] = [
   { value: 'google-images', label: 'Google 图像', description: '原生 Gemini generateContent 图像接口', group: 'image' },
   { value: 'video-api', label: '视频 API', description: '视频调用文档定义的异步任务接口', group: 'video' },
 ]
-const IMAGE_MODELS: GenerationModel[] = [
+const IMAGE_MODELS: GenerationModel[] = [  ...['gpt-image-2.5', 'gpt-image-2.5-sunburst', 'gpt-image-2.5-flare'].map((id) => ({
+    id,
+    name: id === 'gpt-image-2.5-sunburst' ? 'GPT Image 2.5 Sunburst' : id === 'gpt-image-2.5-flare' ? 'GPT Image 2.5 Flare' : 'GPT Image 2.5',
+    capabilities: ['text-to-image', 'image-to-image'] as GenerationCapability[],
+    inputTypes: ['image'] as Array<'image'>,
+    resolutions: ['1k', '2k', '4k'],
+    aspectRatios: ['auto', '1:1', '3:2', '2:3', '4:3', '3:4', '16:9', '9:16', '21:9'],
+    qualities: ['auto', 'low', 'medium', 'high', 'xhigh', 'max'] as Array<'auto' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'>,
+    defaultQuality: 'auto' as const,
+  })),
+  { id: 'gpt-image-2.5', name: 'GPT Image 2.5', capabilities: ['text-to-image', 'image-to-image'], inputTypes: ['image'], resolutions: ['1k', '2k', '4k'], aspectRatios: ['auto', '1:1', '3:2', '2:3', '4:3', '3:4', '16:9', '9:16', '21:9'], qualities: ['auto', 'low', 'medium', 'high', 'xhigh', 'max'], defaultQuality: 'auto' },
   {
     id: 'gpt-image-2',
     name: 'GPT Image 2',
@@ -169,8 +182,8 @@ const IMAGE_MODELS: GenerationModel[] = [
 
 const VIDEO_MODELS: GenerationModel[] = [
   { id: 'seedance-2-pro', name: 'Seedance 2 Pro', capabilities: ['text-to-video', 'image-to-video', 'reference-to-video', 'first-last-frame', 'video-reference', 'audio-reference', 'generate-audio'], inputTypes: ['image', 'video', 'audio'], maxImages: 9, maxVideos: 3, maxAudios: 3, minDuration: 4, maxDuration: 15, pollIntervalMs: 10000, resolutions: ['480p', '720p', '1080p', '4k'], aspectRatios: ['21:9', '16:9', '4:3', '1:1', '3:4', '9:16'] },
-  { id: 'seedance-2-fast', name: 'Seedance 2 Fast', capabilities: ['text-to-video', 'image-to-video', 'reference-to-video', 'video-reference', 'generate-audio'], inputTypes: ['image', 'video', 'audio'], maxImages: 9, maxVideos: 3, maxAudios: 3, minDuration: 5, maxDuration: 10, pollIntervalMs: 10000, resolutions: ['480p', '720p'], aspectRatios: ['21:9', '16:9', '4:3', '1:1', '3:4', '9:16'] },
-  { id: 'seedance-2-mini', name: 'Seedance 2 Mini', capabilities: ['text-to-video', 'image-to-video', 'reference-to-video', 'video-reference', 'generate-audio'], inputTypes: ['image', 'video', 'audio'], maxImages: 9, maxVideos: 3, maxAudios: 3, minDuration: 5, maxDuration: 10, pollIntervalMs: 10000, resolutions: ['480p', '720p'], aspectRatios: ['21:9', '16:9', '4:3', '1:1', '3:4', '9:16'] },
+  { id: 'seedance-2-fast', name: 'Seedance 2 Fast', capabilities: ['text-to-video', 'image-to-video', 'reference-to-video', 'video-reference', 'generate-audio'], inputTypes: ['image', 'video', 'audio'], maxImages: 9, maxVideos: 3, maxAudios: 3, minDuration: 5, maxDuration: 10, allowedDurations: [5, 10], pollIntervalMs: 10000, resolutions: ['480p', '720p'], aspectRatios: ['21:9', '16:9', '4:3', '1:1', '3:4', '9:16'] },
+  { id: 'seedance-2-mini', name: 'Seedance 2 Mini', capabilities: ['text-to-video', 'image-to-video', 'reference-to-video', 'video-reference', 'generate-audio'], inputTypes: ['image', 'video', 'audio'], maxImages: 9, maxVideos: 3, maxAudios: 3, minDuration: 5, maxDuration: 10, allowedDurations: [5, 10], pollIntervalMs: 10000, resolutions: ['480p', '720p'], aspectRatios: ['21:9', '16:9', '4:3', '1:1', '3:4', '9:16'] },
   { id: 'seedance-2.5-pro', name: 'Seedance 2.5 Pro', capabilities: ['text-to-video', 'image-to-video', 'reference-to-video', 'first-last-frame', 'video-reference', 'audio-reference', 'video-edit', 'generate-audio'], inputTypes: ['image', 'video', 'audio'], maxImages: 30, maxVideos: 10, maxAudios: 10, minDuration: 4, maxDuration: 30, pollIntervalMs: 10000, resolutions: ['480p', '720p', '1080p'], aspectRatios: ['21:9', '16:9', '4:3', '1:1', '3:4', '9:16'] },
   { id: 'wan-3', name: 'Wan 3', capabilities: ['text-to-video', 'image-to-video', 'reference-to-video', 'video-reference', 'audio-reference', 'generate-audio'], inputTypes: ['image', 'video', 'audio'], maxImages: 10, maxVideos: 5, maxAudios: 5, minDuration: 2, maxDuration: 30, pollIntervalMs: 10000, resolutions: ['480p', '720p', '1080p'], aspectRatios: ['16:9', '9:16'] },
   { id: 'gemini-omni-1.1', name: 'Gemini Omni 1.1', capabilities: ['text-to-video', 'image-to-video', 'reference-to-video', 'video-reference', 'generate-audio'], inputTypes: ['image', 'video'], maxImages: 8, maxVideos: 3, minDuration: 3, maxDuration: 10, pollIntervalMs: 10000, resolutions: ['360p', '720p', '1080p', '4k'], aspectRatios: ['16:9', '9:16'] },
@@ -433,3 +446,5 @@ export const useGenerationStore = create<GenerationState>()(
     },
   ),
 )
+
+

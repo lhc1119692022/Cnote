@@ -14,6 +14,7 @@ export function createGenerationVariantConfig(variant: 'image' | 'video'): Gener
     outputFormat: variant === 'image' ? 'png' : undefined,
     thinkingLevel: variant === 'image' ? 'minimal' : undefined,
     generateAudio: variant === 'video',
+    noMusic: false,
   }
 }
 
