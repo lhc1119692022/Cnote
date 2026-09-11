@@ -614,23 +614,46 @@ function flushScheduledFlowSave(get: () => FlowState) {
 let lastPersistedSnapshot: PersistedFlowState | null = null
 let persistWriteQueue = Promise.resolve()
 
+const DIAGNOSTIC_RETENTION_MS = 14 * 24 * 60 * 60 * 1000
+
+function pruneGenerationDiagnostics(value: PersistedFlowState): PersistedFlowState {
+  const cutoff = Date.now() - DIAGNOSTIC_RETENTION_MS
+  const flows = value.flows.map((flow) => ({
+    ...flow,
+    nodes: flow.nodes.map((node) => {
+      const data = node.data as Record<string, any> | undefined
+      if (!data?.tasks) return node
+      const tasks = Object.fromEntries(Object.entries(data.tasks).map(([variant, task]) => {
+        if (!task || typeof task !== 'object') return [variant, task]
+        const next = { ...task as Record<string, any> }
+        const expired = typeof next.completedAt === 'number' && next.completedAt < cutoff
+        if (expired || next.status === 'completed') delete next.rawResponse
+        else if (typeof next.rawResponse === 'string' && next.rawResponse.length > 16000) next.rawResponse = next.rawResponse.slice(0, 16000) + '…'
+        return [variant, next]
+      }))
+      return { ...node, data: { ...data, tasks } }
+    }),
+  }))
+  return { ...value, flows }
+}
+
 const flowPersistStorage: PersistStorage<PersistedFlowState> = {
   getItem: async (name) => {
     const rawValue = await localForageStorage.getItem(name)
     if (!rawValue) return null
     const storedValue = JSON.parse(rawValue) as StorageValue<Partial<FlowState>>
-    const persistedState: PersistedFlowState = {
+    const persistedState: PersistedFlowState = pruneGenerationDiagnostics({
       currentFlowId: storedValue.state.currentFlowId || null,
       flows: storedValue.state.flows || [],
       folders: storedValue.state.folders || [],
       isLocked: Boolean(storedValue.state.isLocked),
-    }
+    })
     const value: StorageValue<PersistedFlowState> = { state: persistedState, version: storedValue.version }
     lastPersistedSnapshot = persistedState
     return value
   },
   setItem: async (name, value) => {
-    const next = value.state
+    const next = pruneGenerationDiagnostics(value.state)
     const previous = lastPersistedSnapshot
     if (
       previous &&

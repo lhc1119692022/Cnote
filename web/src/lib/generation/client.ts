@@ -135,6 +135,22 @@ function validateVideoConfig(model: GenerationModel, config: GenerationVariantCo
   if (model.id === 'gemini-omni-1.1' && !config.prompt.trim() && !ordinaryImages.length && !firstFrame.length) throw new Error('Gemini Omni 1.1 省略提示词时必须提供首帧或参考图片')
   return resolution
 }
+function isGPTImage25(model: GenerationModel) {
+  return /^gpt-image-2\.5(?:-|$)/i.test(model.id)
+}
+
+function validateImageConfig(model: GenerationModel, config: GenerationVariantConfig) {
+  const quality = config.quality === 'standard' ? 'medium' : config.quality || model.defaultQuality || 'auto'
+  if (model.resolutions?.length && config.resolution && !model.resolutions.includes(config.resolution)) throw new Error(`${model.name} 不支持 ${config.resolution} 分辨率`)
+  if (model.aspectRatios?.length && config.aspectRatio && !model.aspectRatios.includes(config.aspectRatio)) throw new Error(`${model.name} 不支持 ${config.aspectRatio} 画幅`)
+  if (!model.qualities?.includes(quality as NonNullable<GenerationModel['qualities']>[number])) throw new Error(`${model.name} 不支持 ${quality} 质量档位`)
+  if ((quality === 'xhigh' || quality === 'max') && !isGPTImage25(model)) throw new Error(`${quality} 质量档位仅支持 GPT Image 2.5 系列模型`)
+  if (!isGPTImage25(model) && (config.background || config.outputFormat || config.outputCompression !== undefined)) throw new Error(`${model.name} 不支持背景、输出格式或压缩质量参数`)
+  if (config.background === 'transparent' && config.outputFormat === 'jpeg') throw new Error('透明背景不能使用 JPEG 输出格式')
+  if (config.outputCompression !== undefined && (!Number.isInteger(config.outputCompression) || config.outputCompression < 0 || config.outputCompression > 100)) throw new Error('输出压缩质量必须是 0-100 的整数')
+  if (config.outputCompression !== undefined && !['jpeg', 'webp'].includes(config.outputFormat || 'png')) throw new Error('输出压缩参数仅支持 JPEG 或 WebP')
+  if (config.outputCount !== undefined && (!Number.isInteger(config.outputCount) || config.outputCount < 1 || config.outputCount > 10)) throw new Error('图片数量必须是 1-10 的整数')
+}
 function referenceURL(reference: GenerationReference) {
   return reference.url || reference.previewUrl || ''
 }
@@ -485,8 +501,16 @@ async function materializeInlineResults(body: any, variant: 'image' | 'video') {
   return results
 }
 
+async function inspectImage(blob: Blob) {
+  if (typeof createImageBitmap !== 'function' || !blob.type.startsWith('image/')) return {}
+  const bitmap = await createImageBitmap(blob)
+  const metadata = { width: bitmap.width, height: bitmap.height }
+  bitmap.close()
+  return metadata
+}
+
 async function materializeRemoteResults(urls: string[], variant: 'image' | 'video', signal?: AbortSignal) {
-  const results: { url: string; resourceId: string; mimeType: string; fileName: string }[] = []
+  const results: { url: string; resourceId: string; mimeType: string; fileName: string; size: number; width?: number; height?: number }[] = []
   let lastError: unknown
   for (const url of urls) {
     try {
@@ -497,8 +521,10 @@ async function materializeRemoteResults(urls: string[], variant: 'image' | 'vide
       }
     const mimeType = response.headers.get('content-type')?.split(';', 1)[0]?.trim() || (variant === 'image' ? 'image/png' : 'video/mp4')
     const fileName = generationFileName(variant, results.length, mimeType)
-    const stored = await storeLocalResource(await response.blob(), fileName, true)
-      results.push({ url: stored.url, resourceId: stored.resourceId, mimeType, fileName })
+    const blob = await response.blob()
+    const dimensions = variant === 'image' ? await inspectImage(blob) : {}
+    const stored = await storeLocalResource(blob, fileName, true)
+      results.push({ url: stored.url, resourceId: stored.resourceId, mimeType, fileName, size: blob.size, ...dimensions })
     } catch (error) {
       if (error instanceof DOMException && error.name === 'AbortError') throw error
       lastError = error
@@ -517,6 +543,20 @@ async function parseResponse(response: Response) {
     throw new Error(String(message))
   }
   return body
+}
+
+function diagnosticResponse(value: unknown, status: GenerationTaskState['status']) {
+  if (status === 'completed') {
+    if (!value || typeof value !== 'object') return undefined
+    const record = value as Record<string, unknown>
+    return { status: record.status || record.state, requestId: record.requestId || record.request_id, resultCount: Array.isArray(record.data) ? record.data.length : undefined }
+  }
+  try {
+    const text = JSON.stringify(value)
+    return text.length > 16000 ? `${text.slice(0, 16000)}…` : value
+  } catch {
+    return String(value).slice(0, 16000)
+  }
 }
 
 function firstString(...values: unknown[]) {
@@ -622,6 +662,9 @@ export async function submitGenerationTask(context: GenerationRequestContext, si
   let requestBody: BodyInit = JSON.stringify({})
   const headers: Record<string, string> = authHeaders(channel, initialConfig.adapterId)
 
+  if (variant === 'image') {
+    try { validateImageConfig(model, config) } catch (error) { throw new GenerationStageError('validation', error instanceof Error ? error.message : String(error), error) }
+  }
   if (variant === 'image' && protocol === 'openai-images') {
     const imageReferences = config.references.filter((reference) => reference.type === 'image')
     const operation = imageReferences.length ? 'edits' : 'generations'
@@ -632,6 +675,9 @@ export async function submitGenerationTask(context: GenerationRequestContext, si
       quality: config.quality === 'standard' ? 'medium' : config.quality || model.defaultQuality || 'medium',
       background: config.background || 'auto',
       output_format: config.outputFormat || 'png',
+      ...(config.outputCompression !== undefined ? { output_compression: config.outputCompression } : {}),
+      ...(config.moderation ? { moderation: config.moderation } : {}),
+      ...(config.outputCount && config.outputCount > 1 ? { n: config.outputCount } : {}),
     }
     requestURL = openAIImagesEndpoint(baseURL, operation)
     if (!imageReferences.length) {
@@ -732,7 +778,7 @@ export async function pollGenerationTask(context: GenerationRequestContext, task
     model: context.model.id,
     status,
     rawStatus: String(parsed?.status || parsed?.state || parsed?.data?.status || ''),
-    rawResponse: parsed,
+    rawResponse: diagnosticResponse(parsed, statusFrom(parsed)),
     resultUrls,
     resultResourceIds: inlineResults.length ? inlineResults.map((result) => result.resourceId) : undefined,
     resultMimeTypes: inlineResults.length ? inlineResults.map((result) => result.mimeType) : undefined,

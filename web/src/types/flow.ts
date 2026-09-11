@@ -344,6 +344,8 @@ export interface GenerationTaskState {
   resultResourceIds?: string[]
   resultMimeTypes?: string[]
   resultFileNames?: string[]
+  resultMetadata?: Array<{ mimeType: string; size: number; width?: number; height?: number }>
+  warnings?: string[]
   error?: string
   rawStatus?: string
   rawResponse?: unknown
@@ -384,6 +386,9 @@ export interface GenerationVariantConfig {
   quality?: 'auto' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'standard' | string
   background?: 'auto' | 'opaque' | 'transparent'
   outputFormat?: 'png' | 'jpeg' | 'webp'
+  outputCompression?: number
+  moderation?: 'auto' | 'low'
+  outputCount?: number
   thinkingLevel?: 'minimal' | 'high'
 }
 

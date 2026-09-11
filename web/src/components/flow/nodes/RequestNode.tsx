@@ -762,6 +762,13 @@ export const RequestNode = memo(({ id, data, selected }: NodeProps<RequestNodeDa
                 ariaLabel="质量"
               />
             </>}
+            {variant === 'image' && selectedModel?.id.toLowerCase().startsWith('gpt-image-') && <>
+              <div className="h-px bg-border" />
+              <ChoiceRow label="背景" value={config?.background || 'auto'} options={[{ value: 'auto', label: '自动' }, { value: 'opaque', label: '不透明' }, { value: 'transparent', label: '透明' }]} onChange={(value) => { updateVariant({ background: value as NonNullable<typeof config>['background'] }); closeOpenMenus(nodeRef.current) }} ariaLabel="背景" />
+              <ChoiceRow label="格式" value={config?.outputFormat || 'png'} options={[{ value: 'png', label: 'PNG' }, { value: 'webp', label: 'WebP' }, { value: 'jpeg', label: 'JPEG', disabled: config?.background === 'transparent' }]} onChange={(value) => { updateVariant({ outputFormat: value as NonNullable<typeof config>['outputFormat'], outputCompression: value === 'png' ? undefined : config?.outputCompression }); closeOpenMenus(nodeRef.current) }} ariaLabel="输出格式" />
+              <div className="flex items-center justify-between gap-3 px-2 py-1.5"><span className="text-[10px] text-muted-foreground">图片数量</span><input type="number" min={1} max={10} value={config?.outputCount || 1} onChange={(event) => updateVariant({ outputCount: Math.max(1, Math.min(10, Number(event.target.value) || 1)) })} className="nodrag h-7 w-16 rounded-full border border-border bg-background/75 px-2 text-center text-[10px] text-foreground outline-none focus-visible:ring-1 focus-visible:ring-foreground/30" aria-label="图片数量" /></div>
+              {config?.outputFormat && config.outputFormat !== 'png' && <div className="flex items-center justify-between gap-3 px-2 py-1.5"><span className="text-[10px] text-muted-foreground">压缩质量</span><input type="number" min={0} max={100} value={config?.outputCompression ?? 90} onChange={(event) => updateVariant({ outputCompression: Math.max(0, Math.min(100, Number(event.target.value) || 0)) })} className="nodrag h-7 w-16 rounded-full border border-border bg-background/75 px-2 text-center text-[10px] text-foreground outline-none focus-visible:ring-1 focus-visible:ring-foreground/30" aria-label="压缩质量" /></div>}
+            </>}
             {variant === 'image' && selectedModel?.thinkingLevels?.length && <>
               <div className="h-px bg-border" />
               <ChoiceRow
