@@ -367,8 +367,9 @@ export function Dashboard() {
 
       {/* 新建 Flow 对话框 */}
       {showNewFlowDialog && (
-        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
           <div
+            style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
             className="max-h-[calc(100dvh-2rem)] w-full max-w-md overflow-y-auto rounded-xl border border-border bg-card p-6 shadow-[0_20px_50px_rgba(0,0,0,0.3)] dark:shadow-[0_20px_50px_rgba(0,0,0,0.8)]"
           >
             <div className="flex items-center justify-center mb-6">
