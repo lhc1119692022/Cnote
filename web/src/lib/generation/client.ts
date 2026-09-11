@@ -4,6 +4,7 @@ import type { GenerationReference, GenerationTaskState, GenerationVariantConfig 
 import { normalizeGenerationReferences } from '@/lib/generation/defaults'
 import { loadLocalResourceBlob, loadLocalResourceUrl, storeLocalResource } from '@/lib/resource-storage'
 import { desktopFetch } from '@/lib/desktop-fetch'
+import { resolveMediaTransport, assertInlineRequestSize, assertMediaLifetime, signedMediaExpiry, MAX_INLINE_REQUEST_BYTES } from './media-policy'
 import { ensureDesktopSecret, syncDesktopSecret } from '@/lib/desktop-secrets'
 
 export interface GenerationRequestContext {
@@ -19,7 +20,7 @@ export interface GenerationTaskResponse {
   resultResourceIds?: string[]
   resultMimeTypes?: string[]
   resultFileNames?: string[]
-  /** Config after local video references have been converted to public URLs. */
+  /** Config after local video references have been prepared for the provider. */
   preparedConfig?: GenerationVariantConfig
   raw?: unknown
 }
@@ -30,7 +31,7 @@ export interface GenerationPollResponse {
 }
 
 export class GenerationStageError extends Error {
-  constructor(public readonly stage: 'validation' | 'creation' | 'polling' | 'download', message: string, public readonly cause?: unknown) {
+  constructor(public readonly stage: 'validation' | 'preparation' | 'creation' | 'polling' | 'download', message: string, public readonly cause?: unknown) {
     super(`${stage}: ${message}`)
     this.name = 'GenerationStageError'
   }
@@ -202,7 +203,9 @@ function isRemoteMediaURL(value: string) {
 async function blobToDataURL(blob: Blob) {
   const bytes = new Uint8Array(await blob.arrayBuffer())
   let binary = ''
-  bytes.forEach((byte) => { binary += String.fromCharCode(byte) })
+  for (let offset = 0; offset < bytes.length; offset += 32768) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + 32768))
+  }
   return 'data:' + (blob.type || 'application/octet-stream') + ';base64,' + btoa(binary)
 }
 
@@ -238,7 +241,7 @@ interface MediaUploadEndpoint {
 function mediaUploadSettings(channel: GenerationChannel, adapterId?: string) {
   const adapter = generationAdapterForConfig(channel, adapterId)
   const protocol = protocolFor(channel, adapterId)
-  const providerPath = adapter?.mediaUploadPath || channel.mediaUploadPath || (protocol === 'video-api' ? '/v1/media/uploads/presign' : undefined)
+  const providerPath = adapter?.mediaUploadPath || channel.mediaUploadPath
   return {
     transport: adapter?.mediaTransport || channel.mediaTransport || 'auto',
     providerPath,
@@ -250,7 +253,7 @@ function mediaUploadSettings(channel: GenerationChannel, adapterId?: string) {
 
 function mediaUploadEndpoint(channel: GenerationChannel, adapterId?: string): MediaUploadEndpoint {
   const settings = mediaUploadSettings(channel, adapterId)
-  if (settings.transport === 'public-url') {
+  if (settings.transport === 'public-url' || settings.transport === 'inline') {
     throw new Error('当前渠道仅接受公网 HTTPS 地址，请改用“自动”“multipart”或“自定义”')
   }
   const mediaStorage = useMediaStorageStore.getState()
@@ -274,7 +277,7 @@ function mediaUploadEndpoint(channel: GenerationChannel, adapterId?: string): Me
   if (!path) throw new Error('当前视频渠道没有配置供应商上传路径，请填写路径或在“本地存储”中配置自定义服务')
   return {
     mode: 'provider',
-    kind: settings.protocol === 'video-api' ? 'presign' : 'multipart',
+    kind: settings.transport === 'multipart' ? 'multipart' : 'presign',
     endpoint: joinVersionedEndpoint(channel.baseURL, path),
     fieldName: settings.fieldName,
     responsePath: settings.responsePath,
@@ -314,6 +317,7 @@ function presignedUploadValue(payload: any, key: 'upload' | 'public') {
 }
 
 async function uploadWithPresign(channel: GenerationChannel, endpoint: MediaUploadEndpoint, blob: Blob, fileName: string, signal?: AbortSignal, adapterId?: string) {
+  await assertDesktopSecretReady(channel, adapterId)
   const response = await desktopFetch(endpoint.endpoint, {
     method: 'POST',
     headers: { ...requestHeaders(channel, { 'Content-Type': 'application/json' }, adapterId) },
@@ -321,18 +325,20 @@ async function uploadWithPresign(channel: GenerationChannel, endpoint: MediaUplo
     signal,
   }, { secretRefs: authSecretRefs(channel, adapterId) })
   const payload = await parseResponse(response)
+  if (payload?.error || payload?.success === false) throw new Error('预签名申请失败（HTTP ' + response.status + '）：供应商返回业务错误，请核对上传能力及权限')
   const uploadURL = presignedUploadValue(payload, 'upload')
   const publicURL = presignedUploadValue(payload, 'public')
-  if (!uploadURL || !isHttpsUrl(uploadURL)) throw new Error('供应商预签名接口没有返回 HTTPS upload_url')
+  if (!uploadURL || !isHttpsUrl(uploadURL)) throw new Error('预签名响应缺少 HTTPS upload_url（HTTP ' + response.status + '；响应类型：' + (response.headers.get('content-type') || '未知') + '）')
   if (!publicURL || !isHttpsUrl(publicURL)) throw new Error('供应商预签名接口没有返回可公开读取的 HTTPS public_url')
   const uploadHeaders = payload?.upload_headers && typeof payload.upload_headers === 'object' ? payload.upload_headers : payload?.uploadHeaders && typeof payload.uploadHeaders === 'object' ? payload.uploadHeaders : {}
   const uploadResponse = await desktopFetch(uploadURL, {
     method: 'PUT',
-    headers: Object.fromEntries(Object.entries(uploadHeaders).filter((entry): entry is [string, string] => typeof entry[0] === 'string' && typeof entry[1] === 'string')) as Record<string, string>,
+    headers: { 'Content-Type': blob.type || 'application/octet-stream', ...Object.fromEntries(Object.entries(uploadHeaders).filter((entry): entry is [string, string] => typeof entry[0] === 'string' && typeof entry[1] === 'string')) },
     body: blob,
     signal,
   })
   if (!uploadResponse.ok) throw new Error(`上传参考文件失败：HTTP ${uploadResponse.status}`)
+  assertMediaLifetime(signedMediaExpiry(publicURL))
   return publicURL
 }
 
@@ -354,11 +360,16 @@ async function uploadReference(channel: GenerationChannel, reference: Generation
   const payload = await parseResponse(response)
   const url = uploadedReferenceUrl(payload, endpoint.responsePath)
   if (!url || !isHttpsUrl(url)) throw new Error(`上传参考文件“${reference.label || reference.id}”后没有得到公网 HTTPS 地址`)
+  assertMediaLifetime(signedMediaExpiry(url))
   return url
 }
 
 /** Performs a small multipart upload without submitting a generation task. */
-export async function testGenerationMediaUpload(channel: GenerationChannel, adapterId?: string, signal?: AbortSignal) {
+export async function testGenerationMediaUpload(channel: GenerationChannel, adapterId?: string, signal?: AbortSignal): Promise<{ url?: string; message?: string }> {
+  const settings = mediaUploadSettings(channel, adapterId)
+  const transport = resolveMediaTransport(settings.transport, settings.providerPath, Boolean(useMediaStorageStore.getState().baseURL || channel.mediaUploadURL))
+  if (transport === 'inline') return { message: '已选择 Data URL；无需上传接口。此检查不代表供应商已接受生成请求。' }
+  if (transport === 'public-url') return { message: '仅使用现有 HTTPS 地址；未执行上传或验证远端可读性。' }
   const endpoint = mediaUploadEndpoint(channel, adapterId)
   await assertMediaUploadSecretReady(endpoint)
   if (endpoint.kind === 'presign') {
@@ -390,22 +401,23 @@ async function prepareReferenceConfig(context: GenerationRequestContext, signal?
   // Image protocols receive local files directly in their request body. They
   // must never be routed through a video-style public URL conversion step.
   if (variant === 'image') return orderedConfig
+  references.forEach((reference) => assertMediaLifetime(reference.expiresAt ?? signedMediaExpiry(referenceURL(reference))))
   const needsRemote = references.some((reference) => !isHttpsUrl(referenceURL(reference)))
   if (!needsRemote) return orderedConfig
-  const transport = adapter?.mediaTransport || channel.mediaTransport || 'auto'
+  const transport = resolveMediaTransport(adapter?.mediaTransport || channel.mediaTransport || 'auto', adapter?.mediaUploadPath || channel.mediaUploadPath, Boolean(useMediaStorageStore.getState().baseURL || channel.mediaUploadURL))
   if (transport === 'public-url') {
-    ensureProviderReadableReferences(references)
+    if (references.some((reference) => !isHttpsUrl(referenceURL(reference)))) throw new Error('此渠道未声明内联或上传能力，请选择明确支持的传输方式，或配置自定义存储')
     return orderedConfig
   }
-  if (transport === 'auto') {
+  if (transport === 'inline') {
     let inlineBytes = 0
     const prepared = await Promise.all(references.map(async (reference) => {
       if (isHttpsUrl(referenceURL(reference))) return reference
       const { blob } = await referenceBlob(reference)
-      inlineBytes += blob.size
-      if (inlineBytes > 128 * 1024 * 1024) throw new Error('Local reference media exceeds 128 MiB; use a public HTTPS URL instead')
+      inlineBytes += 4 * Math.ceil(blob.size / 3)
+      if (inlineBytes > MAX_INLINE_REQUEST_BYTES) throw new Error('素材 Base64 编码后超过 128 MiB，请减少素材或改用公网 HTTPS 地址')
       const url = await blobToDataURL(blob)
-      return { ...reference, source: 'uploaded' as const, url, previewUrl: reference.previewUrl || url, status: 'ready' as const }
+      return { ...reference, url, previewUrl: reference.previewUrl || url, status: 'ready' as const }
     }))
     return { ...orderedConfig, references: normalizeGenerationReferences(prepared) }
   }
@@ -421,7 +433,7 @@ async function prepareReferenceConfig(context: GenerationRequestContext, signal?
       uploads.set(uploadKey, upload)
     }
     const url = await upload
-    return { ...reference, source: 'uploaded' as const, url, previewUrl: reference.previewUrl || url, status: 'ready' as const }
+    return { ...reference, source: 'uploaded' as const, expiresAt: signedMediaExpiry(url), url, previewUrl: reference.previewUrl || url, status: 'ready' as const }
   }))
   return { ...orderedConfig, references: normalizeGenerationReferences(prepared) }
 }
@@ -597,7 +609,10 @@ export async function submitGenerationTask(context: GenerationRequestContext, si
   await assertDesktopSecretReady(channel, initialConfig.adapterId)
   const baseURL = normalizeBaseURL(channel.baseURL)
   if (!baseURL || baseURL.startsWith('local://')) throw new Error('当前生成渠道没有可用的公网接口地址')
-  const config = await prepareReferenceConfig({ ...context, channel }, signal)
+  let config: GenerationVariantConfig
+  try { config = await prepareReferenceConfig({ ...context, channel }, signal) } catch (error) {
+    throw new GenerationStageError('preparation', error instanceof Error ? error.message : String(error), error)
+  }
   const protocol = protocolFor(channel)
   let videoResolution: string | undefined
   if (variant === 'video') { try { ensureProviderReadableReferences(config.references); videoResolution = validateVideoConfig(model, config) } catch (error) { throw new GenerationStageError('validation', error instanceof Error ? error.message : String(error), error) } }
@@ -670,6 +685,9 @@ export async function submitGenerationTask(context: GenerationRequestContext, si
     }
     requestURL = joinVersionedEndpoint(baseURL, '/v1/videos')
     requestBody = JSON.stringify(body)
+    try { assertInlineRequestSize(requestBody) } catch (error) {
+      throw new GenerationStageError('validation', error instanceof Error ? error.message : String(error), error)
+    }
   } else {
     throw new Error('当前生成渠道未配置受支持的图片或视频协议')
   }

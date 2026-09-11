@@ -300,6 +300,7 @@ export type GenerationReferenceRole =
   | 'reference_audio'
 
 export interface GenerationReference {
+  expiresAt?: number
   id: string
   type: GenerationReferenceType
   role?: GenerationReferenceRole
@@ -358,7 +359,7 @@ export interface GenerationTaskRequestSnapshot {
   protocol?: string
   baseURL: string
   secretName?: string
-  mediaTransport?: 'auto' | 'multipart' | 'custom' | 'public-url'
+mediaTransport?: import('@/lib/generation/media-policy').MediaTransport
   mediaUploadPath?: string
   mediaUploadURL?: string
   mediaUploadSecretName?: string

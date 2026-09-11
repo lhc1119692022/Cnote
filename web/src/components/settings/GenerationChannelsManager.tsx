@@ -37,8 +37,8 @@ function normalizeEndpoint(baseURL: string) {
   return baseURL.trim().replace(/\/$/, '')
 }
 
-function defaultMediaUploadPath(protocol: GenerationProtocolId) {
-  return protocol === 'video-api' ? '/v1/media/uploads/presign' : ''
+function defaultMediaUploadPath(_protocol: GenerationProtocolId) {
+  return ''
 }
 
 export function GenerationChannelsManager({ embedded = false, openNewRequest = 0 }: GenerationChannelsManagerProps = {}) {
@@ -135,7 +135,7 @@ export function GenerationChannelsManager({ embedded = false, openNewRequest = 0
     setSupportsImage(generationChannelSupportsVariant(channel, 'image'))
     setSupportsVideo(generationChannelSupportsVariant(channel, 'video'))
     const storedMediaTransport = channel.mediaTransport || channel.adapters?.find((adapter) => adapter.mediaTransport)?.mediaTransport || 'auto'
-    setMediaTransport(storedMediaTransport === 'public-url' ? 'auto' : storedMediaTransport)
+    setMediaTransport(storedMediaTransport)
     setMediaUploadPath(channel.mediaUploadPath || channel.adapters?.find((adapter) => adapter.mediaUploadPath)?.mediaUploadPath || defaultMediaUploadPath(nextProtocol))
     setMediaTestState('idle')
     setMediaTestMessage('')
@@ -276,6 +276,7 @@ export function GenerationChannelsManager({ embedded = false, openNewRequest = 0
     if (!current) return
     const candidate: GenerationChannel = {
       ...current,
+      baseURL: normalizeEndpoint(baseURL),
       mediaTransport,
       mediaUploadPath: mediaUploadPath.trim() || undefined,
       protocol,
@@ -294,7 +295,7 @@ export function GenerationChannelsManager({ embedded = false, openNewRequest = 0
     try {
       const result = await testGenerationMediaUpload(candidate, protocol)
       setMediaTestState('success')
-      setMediaTestMessage(`验证成功：${result.url}`)
+      setMediaTestMessage(result.message || '上传完成；测试文件需按存储服务的保留策略清理。')
     } catch (error) {
       setMediaTestState('error')
       setMediaTestMessage(error instanceof Error ? error.message : '上传接口验证失败')
@@ -371,10 +372,10 @@ export function GenerationChannelsManager({ embedded = false, openNewRequest = 0
           <div className="mt-4 flex items-center gap-3 text-[13px] text-muted-foreground"><span className="shrink-0 font-medium text-foreground">渠道支持</span><div className="flex min-w-0 flex-1 gap-2"><button type="button" aria-pressed={supportsImage} onClick={() => setSupportsImage((value) => !value)} className={`flex min-w-0 flex-1 items-center justify-center gap-2 rounded-lg border px-3 py-2.5 text-[12px] transition-colors ${supportsImage ? 'border-primary bg-primary/10 font-medium text-primary' : 'border-border bg-background text-muted-foreground hover:bg-muted'}`}><ImageIcon className="h-4 w-4 shrink-0" />图片生成</button><button type="button" aria-pressed={supportsVideo} onClick={() => setSupportsVideo((value) => !value)} className={`flex min-w-0 flex-1 items-center justify-center gap-2 rounded-lg border px-3 py-2.5 text-[12px] transition-colors ${supportsVideo ? 'border-primary bg-primary/10 font-medium text-primary' : 'border-border bg-background text-muted-foreground hover:bg-muted'}`}><Video className="h-4 w-4 shrink-0" />视频生成</button></div></div>
 
           {supportsVideo && <div className="mt-4 grid gap-4 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] md:items-end">
-            <label className="block text-[13px] text-muted-foreground"><span className="mb-2 block font-medium">素材传输方式</span><select value={mediaTransport === 'public-url' ? 'auto' : mediaTransport} onChange={(event) => { setMediaTransport(event.target.value as GenerationMediaTransport); setMediaTestState('idle'); setMediaTestMessage('') }} className="h-10 w-full rounded-lg border border-border bg-background px-3 text-foreground outline-none focus:border-primary focus:ring-2 focus:ring-ring/20"><option value="auto">自动</option><option value="multipart">multipart</option><option value="custom">自定义</option></select></label>
-            {mediaTransport !== 'custom' ? (
+            <label className="block text-[13px] text-muted-foreground"><span className="mb-2 block font-medium">素材传输方式</span><select value={mediaTransport} onChange={(event) => { setMediaTransport(event.target.value as GenerationMediaTransport); setMediaTestState('idle'); setMediaTestMessage('') }} className="h-10 w-full rounded-lg border border-border bg-background px-3 text-foreground outline-none focus:border-primary focus:ring-2 focus:ring-ring/20"><option value="auto">自动（按上传配置）</option><option value="inline">Data URL（渠道需支持）</option><option value="presign">预签名上传</option><option value="public-url">仅公网 HTTPS</option><option value="multipart">multipart</option><option value="custom">自定义</option></select></label>
+            {!['custom', 'inline', 'public-url'].includes(mediaTransport) ? (
               <label className="block text-[13px] text-muted-foreground"><span className="mb-2 block font-medium">供应商上传路径</span><input value={mediaUploadPath} onChange={(event) => { setMediaUploadPath(event.target.value); setMediaTestState('idle'); setMediaTestMessage('') }} placeholder={protocol === 'video-api' ? '/v1/media/uploads/presign' : '/v1/media/uploads'} className="h-10 w-full rounded-lg border border-border bg-background px-3 text-foreground outline-none focus:border-primary focus:ring-2 focus:ring-ring/20" /></label>
-            ) : <div className="flex h-10 items-center text-[11px] leading-relaxed text-muted-foreground">自定义服务地址和令牌在“本地存储”中统一配置。</div>}
+            ) : <div className="flex h-10 items-center text-[11px] leading-relaxed text-muted-foreground">{mediaTransport === 'custom' ? '自定义服务地址和令牌在“本地存储”中统一配置。' : '不调用供应商上传接口。'}</div>}
             <div className="flex min-w-0 flex-wrap items-center gap-2">
               <Button type="button" variant="outline" size="sm" className="gap-1.5" onClick={() => void handleTestMediaUpload()} disabled={mediaTestState === 'testing'}><Check className="h-3.5 w-3.5" />验证上传</Button>
             </div>

@@ -9,7 +9,7 @@ import type { GenerationCapability } from '@/types/flow'
 export type GenerationProviderId = 'openai' | 'google' | 'video' | 'custom'
 export type GenerationProtocolId = 'openai-images' | 'google-images' | 'video-api'
 /** How local video references become provider-readable inputs. */
-export type GenerationMediaTransport = 'auto' | 'multipart' | 'custom' | 'public-url'
+export type GenerationMediaTransport = import('@/lib/generation/media-policy').MediaTransport
 export type GenerationNodeVariant = 'image' | 'video'
 
 export interface GenerationModel {

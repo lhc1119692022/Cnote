@@ -13,7 +13,8 @@
     "preview": "vite preview",
     "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
     "format": "prettier --write \"src/**/*.{ts,tsx,css}\"",
-    "test:video-api:mock": "node scripts/verify-video-api-mock.mjs"
+    "test:video-api:mock": "node scripts/verify-video-api-mock.mjs",
+    "test:media-policy": "node scripts/verify-media-policy.mjs"
   },
   "dependencies": {
     "class-variance-authority": "^0.7.1",
