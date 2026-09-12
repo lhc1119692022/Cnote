@@ -1,3 +1,4 @@
+import { showMessage } from '@/lib/app-dialog'
 import { create } from 'zustand'
 import { persist, type PersistStorage, type StorageValue } from 'zustand/middleware'
 import { nanoid } from 'nanoid'
@@ -20,7 +21,7 @@ import {
 } from '@/lib/flow/node-dimensions'
 import { tryGetContentServiceClient } from '@/lib/content-service'
 import { createRequestNodeData } from '@/lib/generation/defaults'
-import { createGenerationResultContentData } from '@/lib/generation/results'
+import { appendGenerationResultContentData } from '@/lib/generation/results'
 
 type FlowHistoryEntry = { nodes: Node[]; edges: Edge[] }
 
@@ -248,35 +249,37 @@ function flowNodeDimension(node: Node, axis: 'width' | 'height') {
   return axis === 'width' ? 240 : 160
 }
 
-function browserOverlapsNode(browser: Node, other: Node, position = browser.position) {
+function nodesOverlapAtPosition(node: Node, other: Node, position = node.position) {
   const gap = 24
-  const browserRight = position.x + flowNodeDimension(browser, 'width') + gap
-  const browserBottom = position.y + flowNodeDimension(browser, 'height') + gap
+  const nodeRight = position.x + flowNodeDimension(node, 'width') + gap
+  const nodeBottom = position.y + flowNodeDimension(node, 'height') + gap
   const otherRight = other.position.x + flowNodeDimension(other, 'width') + gap
   const otherBottom = other.position.y + flowNodeDimension(other, 'height') + gap
   return position.x - gap < otherRight
-    && browserRight > other.position.x - gap
+    && nodeRight > other.position.x - gap
     && position.y - gap < otherBottom
-    && browserBottom > other.position.y - gap
+    && nodeBottom > other.position.y - gap
 }
 
-function findOpenBrowserPosition(browser: Node, nodes: Node[]) {
-  const start = browser.position
-  const width = flowNodeDimension(browser, 'width')
-  const height = flowNodeDimension(browser, 'height')
+function findOpenNodePosition(node: Node, nodes: Node[]) {
+  const start = node.position
+  const width = flowNodeDimension(node, 'width')
+  const height = flowNodeDimension(node, 'height')
   const candidates = [{ x: start.x, y: start.y }]
-  for (let ring = 1; ring <= 8; ring += 1) {
+  for (let ring = 1; ring <= 12; ring += 1) {
     const horizontal = ring * (width + 48)
     const vertical = ring * (height + 48)
-    candidates.push(
-      { x: start.x + horizontal, y: start.y },
-      { x: start.x - horizontal, y: start.y },
-      { x: start.x, y: start.y + vertical },
-      { x: start.x, y: start.y - vertical },
-    )
+    for (const direction of [
+      { x: 1, y: 0 }, { x: -1, y: 0 }, { x: 0, y: 1 }, { x: 0, y: -1 },
+      { x: 1, y: 1 }, { x: -1, y: 1 }, { x: 1, y: -1 }, { x: -1, y: -1 },
+    ]) {
+      candidates.push({ x: start.x + direction.x * horizontal, y: start.y + direction.y * vertical })
+    }
   }
-  return candidates.find((candidate) => nodes.every((node) => node.id === browser.id || !browserOverlapsNode(browser, node, candidate))) || start
+  return candidates.find((candidate) => nodes.every((other) => other.id === node.id || !nodesOverlapAtPosition(node, other, candidate))) || start
 }
+
+const findOpenBrowserPosition = findOpenNodePosition
 
 function normalizeBrowserPositions(nodes: Node[]) {
   const positioned = nodes.map((node) => node)
@@ -328,6 +331,7 @@ function normalizeRequestNode(node: Node): Node {
   const label = new Set(['请求体', '图片生成', '视频生成']).has(storedLabel) ? '请求体' : storedLabel || defaults.label
   const storedTasks = (data.tasks || {}) as Record<string, unknown>
   const storedResultNodeIds = (data.resultNodeIds || {}) as Record<string, unknown>
+  const storedResultNodeIdsByVariant = (data.resultNodeIdsByVariant || {}) as Record<string, unknown>
   const legacyTask = (data.task || {}) as Record<string, unknown>
   const tasks = {
     ...defaults.tasks,
@@ -349,6 +353,7 @@ function normalizeRequestNode(node: Node): Node {
       video: { ...defaults.video, ...((data.video || {}) as Record<string, unknown>) },
       tasks,
       resultNodeIds,
+      resultNodeIdsByVariant: storedResultNodeIdsByVariant,
       task: variant === 'image' || variant === 'video' ? tasks[variant] : defaults.task,
       resultNodeId: variant === 'image' || variant === 'video' ? resultNodeIds[variant] : undefined,
     },
@@ -877,6 +882,9 @@ export const useFlowStore = create<FlowState>()(
                 resultNodeIds: (node.data as RequestNodeData)?.resultNodeIds
                   ? Object.fromEntries(Object.entries((node.data as RequestNodeData).resultNodeIds as Record<string, string | undefined>).map(([variant, resultNodeId]) => [variant, resultNodeId ? nodeIdMap.get(resultNodeId) : undefined]))
                   : undefined,
+                resultNodeIdsByVariant: (node.data as RequestNodeData)?.resultNodeIdsByVariant
+                  ? Object.fromEntries(Object.entries((node.data as RequestNodeData).resultNodeIdsByVariant as Record<string, string[] | undefined>).map(([variant, resultNodeIds]) => [variant, resultNodeIds?.map((resultNodeId) => nodeIdMap.get(resultNodeId)).filter((resultNodeId): resultNodeId is string => Boolean(resultNodeId))]))
+                  : undefined,
                 task: (node.data as RequestNodeData)?.task?.status === 'completed' ? (node.data as RequestNodeData).task : { status: 'idle' },
                 tasks: (node.data as RequestNodeData)?.tasks
                   ? Object.fromEntries(Object.entries((node.data as RequestNodeData).tasks as Record<string, GenerationTaskState | undefined>).map(([variant, task]) => [variant, task?.status === 'completed' ? task : { status: 'idle' }]))
@@ -908,17 +916,20 @@ export const useFlowStore = create<FlowState>()(
         let createdNode!: Node
         set((state) => {
           const clonedNode = withDefaultNodeDimensions(cloneFlowValue(node))
-          const positionedNode = clonedNode.type === 'browser'
+          const positionedNode = {
+            ...clonedNode,
+            position: findOpenNodePosition({ ...clonedNode, id: '__new-node__' } as Node, state.nodes),
+          }
+          const normalizedNode = positionedNode.type === 'browser'
             ? {
-                ...clonedNode,
-                position: findOpenBrowserPosition({ ...clonedNode, id: '__new-browser__' } as Node, state.nodes),
-                data: { ...clonedNode.data, browserLayoutVersion: 2 },
+                ...positionedNode,
+                data: { ...positionedNode.data, browserLayoutVersion: 2 },
               }
-            : clonedNode
+            : positionedNode
           const usedLabels = new Set(state.nodes.map(getNodeLabel))
-          const label = getUniqueNodeLabel(getNodeLabel(positionedNode), usedLabels)
+          const label = getUniqueNodeLabel(getNodeLabel(normalizedNode), usedLabels)
           const newNode: Node = {
-            ...positionedNode,
+            ...normalizedNode,
             id: nanoid(),
             data: { ...positionedNode.data, label },
           }
@@ -1438,34 +1449,43 @@ export const useFlowStore = create<FlowState>()(
             if (!requestNode || requestNode.type !== 'request') return
             const requestData = requestNode.data as RequestNodeData
             const variant = output.variant
-            const resultData = createGenerationResultContentData(
-              variant,
-              urls,
-              `${requestData.label || (variant === 'image' ? '图片' : '视频')}结果`,
-              task?.resultResourceIds,
-              task?.resultMimeTypes,
-            )
-            const storedResultId = requestData.resultNodeIds?.[variant]
-            let resultNode = storedResultId ? state.nodes.find((node) => node.id === storedResultId) : undefined
-
-            if (resultNode?.type === 'content') {
-              state.updateNode(resultNode.id, { data: resultData })
-            } else {
-              const width = Number(requestNode.style?.width || requestNode.width || 520)
-              resultNode = state.addNode({
-                type: 'content',
-                position: { x: requestNode.position.x + width + 90, y: requestNode.position.y },
-                data: resultData,
-              })
-            }
-
-            if (!state.edges.some((edge) => edge.source === nodeId && edge.target === resultNode?.id)) {
-              state.addEdge({ source: nodeId, target: resultNode.id, sourceHandle: 'out', targetHandle: 'in', type: 'interactive' })
-            }
+            const resultLabel = `${requestData.label || (variant === 'image' ? '图片' : '视频')}结果`
+            const connectedResultNodes = state.edges
+              .filter((edge) => edge.source === nodeId)
+              .map((edge) => state.nodes.find((node) => node.id === edge.target))
+              .filter((node): node is NonNullable<typeof node> => node?.type === 'content' && node.data?.category === variant)
+            const storedIds = requestData.resultNodeIdsByVariant?.[variant] || []
+            const orderedNodes = [...connectedResultNodes].sort((left, right) => {
+              const leftIndex = storedIds.indexOf(left.id)
+              const rightIndex = storedIds.indexOf(right.id)
+              return (leftIndex < 0 ? Number.MAX_SAFE_INTEGER : leftIndex) - (rightIndex < 0 ? Number.MAX_SAFE_INTEGER : rightIndex)
+            })
+            const resultNodeIds: string[] = []
+            const width = Number(requestNode.style?.width || requestNode.width || 520)
+            const useHistory = orderedNodes.length >= urls.length
+            urls.forEach((url, index) => {
+              const existingNode = orderedNodes[index]
+              let resultNode = existingNode
+              const resultData = useHistory && existingNode
+                ? appendGenerationResultContentData(existingNode.data as any, variant, [url], resultLabel, task?.resultResourceIds?.slice(index, index + 1), task?.resultMimeTypes?.slice(index, index + 1), task?.resultFileNames?.slice(index, index + 1))
+                : appendGenerationResultContentData(undefined, variant, [url], resultLabel, task?.resultResourceIds?.slice(index, index + 1), task?.resultMimeTypes?.slice(index, index + 1), task?.resultFileNames?.slice(index, index + 1))
+              if (resultNode) state.updateNode(resultNode.id, { data: resultData })
+              else {
+                resultNode = state.addNode({
+                  type: 'content',
+                  position: findOpenNodePosition({ type: 'content', position: { x: requestNode.position.x + width + 90, y: requestNode.position.y + index * 40 }, data: resultData } as Node, state.nodes),
+                  data: resultData,
+                })
+                state.addEdge({ source: nodeId, target: resultNode.id, sourceHandle: 'out', targetHandle: 'in', type: 'interactive' })
+              }
+              resultNodeIds.push(resultNode.id)
+            })
             state.updateNode(nodeId, {
               data: {
-                resultNodeIds: { ...(requestData.resultNodeIds || {}), [variant]: resultNode.id },
-                resultNodeId: resultNode.id,
+                ...requestData,
+                resultNodeIds: { ...(requestData.resultNodeIds || {}), [variant]: resultNodeIds[0] },
+                resultNodeIdsByVariant: { ...(requestData.resultNodeIdsByVariant || {}), [variant]: [...new Set([...orderedNodes.map((node) => node.id), ...resultNodeIds])] },
+                resultNodeId: resultNodeIds[0],
                 resultCreatedAt: Date.now(),
               },
             })
@@ -1523,9 +1543,9 @@ export const useFlowStore = create<FlowState>()(
 
           if (!result.success && result.error !== '执行已停止') {
             console.error('Flow execution failed:', result.error)
-            alert(`执行失败: ${result.error}`)
+            showMessage(`执行失败: ${result.error}`)
           } else if (result.success) {
-            alert('Flow 执行完成！')
+            showMessage('Flow 执行完成！')
           }
         } catch (error) {
           console.error('Flow execution error:', error)
@@ -1533,7 +1553,7 @@ export const useFlowStore = create<FlowState>()(
           await updateDesktopJob({ status: failureStatus, error: controller.signal.aborted ? '执行已停止' : error instanceof Error ? error.message : '未知错误', resumeRequired: false })
           await pendingJobWrites
           set({ isExecuting: false, activeDesktopJobId: null })
-          if (!controller.signal.aborted) alert(`执行错误: ${error instanceof Error ? error.message : '未知错误'}`)
+          if (!controller.signal.aborted) showMessage(`执行错误: ${error instanceof Error ? error.message : '未知错误'}`)
         } finally {
           if (activeFlowExecutionController === controller) activeFlowExecutionController = null
           if (activeDesktopJobId === desktopJobId) activeDesktopJobId = null

@@ -1,3 +1,4 @@
+import { showMessage } from '@/lib/app-dialog'
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useReactFlow } from "reactflow";
@@ -406,7 +407,7 @@ export function Toolbar({
     try {
       await resumeDesktopJob(resumableDesktopJob.id);
     } catch (error) {
-      alert(error instanceof Error ? error.message : "后台任务恢复失败。");
+      showMessage(error instanceof Error ? error.message : "后台任务恢复失败。");
     }
   };
 

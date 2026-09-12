@@ -1,7 +1,11 @@
+import { askConfirmation } from '@/lib/app-dialog'
 import { useEffect, useState } from 'react'
 import { FileText, Plus, Search } from 'lucide-react'
 import { AppShell } from '@/components/layout/AppShell'
 import { Button } from '@/components/ui/button'
+import { RichTextEditor } from '@/components/ui/rich-text-editor'
+import type { RichTextDocument } from '@/types/flow'
+import { plainTextDocument, richTextPayload } from '@/lib/rich-text'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { useSourceStore } from '@/stores/use-source-store'
 import type { ContentCategory, ContentNodeData } from '@/types/flow'
@@ -10,6 +14,7 @@ import { emptyContentData } from '@/lib/content-import'
 import { checksumText } from '@/lib/resource-storage'
 
 const CONTENT_TYPES: { value: ContentCategory; label: string }[] = [
+  { value: 'text', label: '文本' },
   { value: 'video', label: '视频' },
   { value: 'social', label: '社媒' },
   { value: 'document', label: '文档' },
@@ -26,7 +31,8 @@ export function SourcesManager() {
   const [showNewDialog, setShowNewDialog] = useState(false)
   const [newTitle, setNewTitle] = useState('')
   const [newContent, setNewContent] = useState('')
-  const [newType, setNewType] = useState<ContentCategory>('document')
+  const [newDocument, setNewDocument] = useState<RichTextDocument>()
+  const [newType, setNewType] = useState<ContentCategory>('text')
 
   useEffect(() => {
     initialize()
@@ -42,7 +48,8 @@ export function SourcesManager() {
     setShowNewDialog(false)
     setNewTitle('')
     setNewContent('')
-    setNewType('document')
+    setNewType('text')
+    setNewDocument(undefined)
   }
 
   const handleCreateSource = async () => {
@@ -54,16 +61,16 @@ export function SourcesManager() {
       subtype: newType === 'document' ? 'plain-text' : null,
       state: 'ready',
       source: { kind: 'text', text: newContent, checksum, mimeType: 'text/plain' },
-      payload: newType === 'document' ? { kind: 'document', rawText: newContent, plainText: newContent } : undefined,
+      payload: newType === 'text' ? richTextPayload(newContent, newDocument || plainTextDocument(newContent)) : newType === 'document' ? { kind: 'document', plainText: newContent, document: newDocument || plainTextDocument(newContent) } : undefined,
       preview: { title: newTitle, description: newContent.slice(0, 160), badge: CONTENT_TYPES.find((item) => item.value === newType)?.label },
     }
     createSource(newTitle, nodeData)
     resetDialog()
   }
 
-  const handleDeleteSource = (event: React.MouseEvent, id: string) => {
+  const handleDeleteSource = async (event: React.MouseEvent, id: string) => {
     event.stopPropagation()
-    if (confirm('确定要删除这个内容吗？')) deleteSource(id)
+    if (await askConfirmation('确定要删除这个内容吗？')) deleteSource(id)
   }
 
   const formatDate = (timestamp: number) => {
@@ -79,6 +86,7 @@ export function SourcesManager() {
 
   const sourceDescription = (source: (typeof sources)[number]) => {
     const payload = source.nodeData.payload
+    if (payload?.kind === 'text') return payload.value
     if (payload?.kind === 'document') return payload.plainText
     if (payload?.kind === 'social') return payload.bodyText
     if (payload?.kind === 'video') return payload.transcript || payload.title || source.nodeData.preview?.description || ''
@@ -179,10 +187,10 @@ export function SourcesManager() {
                 ))}
               </div>
             </div>
-            <label className="block text-[13px] text-muted-foreground">
+            <div className="block text-[13px] text-muted-foreground">
               <span className="mb-2 block font-medium">内容</span>
-              <textarea value={newContent} onChange={(event) => setNewContent(event.target.value)} placeholder="输入内容..." className="h-32 w-full resize-none rounded-lg border border-border bg-background px-3 py-2 text-foreground outline-none focus:border-primary focus:ring-2 focus:ring-ring/20" />
-            </label>
+              {newType === 'text' || newType === 'document' ? <RichTextEditor value={newContent} document={newDocument} onChange={(value, document) => { setNewContent(value); setNewDocument(document) }} placeholder="输入内容..." className="h-64 rounded-lg border border-border text-foreground" contentClassName="p-3" /> : <textarea value={newContent} onChange={(event) => setNewContent(event.target.value)} placeholder="输入内容..." className="h-32 w-full resize-none rounded-lg border border-border bg-background px-3 py-2 text-foreground outline-none focus:border-primary focus:ring-2 focus:ring-ring/20" />}
+            </div>
           </div>
           <div className="mt-6 flex gap-3">
             <Button variant="secondary" className="flex-1" onClick={resetDialog}>取消</Button>

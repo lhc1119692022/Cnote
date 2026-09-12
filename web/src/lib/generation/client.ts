@@ -677,7 +677,7 @@ export async function submitGenerationTask(context: GenerationRequestContext, si
       output_format: config.outputFormat || 'png',
       ...(config.outputCompression !== undefined ? { output_compression: config.outputCompression } : {}),
       ...(config.moderation ? { moderation: config.moderation } : {}),
-      ...(config.outputCount && config.outputCount > 1 ? { n: config.outputCount } : {}),
+      n: Math.max(1, Math.min(10, Math.trunc(config.outputCount || 1))),
     }
     requestURL = openAIImagesEndpoint(baseURL, operation)
     if (!imageReferences.length) {

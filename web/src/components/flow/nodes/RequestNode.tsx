@@ -5,7 +5,7 @@ import { useFlowStore } from '@/stores/use-flow-store'
 import { generationAdapterForModel, generationChannelSupportsVariant, generationChannelUsesModelInference, generationSecretName, useGenerationStore, type GenerationChannel, type GenerationModel } from '@/stores/use-generation-store'
 import { createGenerationReference, createRequestNodeData, normalizeGenerationReferences } from '@/lib/generation/defaults'
 import { cancelGenerationTask, pollGenerationTask, pollIntervalForModel, submitGenerationTask } from '@/lib/generation/client'
-import { createGenerationResultContentData } from '@/lib/generation/results'
+import { appendGenerationResultContentData } from '@/lib/generation/results'
 import { deleteLocalResource, loadLocalResourceUrl, revokeManagedObjectUrl, storeLocalResource } from '@/lib/resource-storage'
 import { textForAIContextNode } from '@/lib/flow/ai-context'
 import { getNodeMediaItems } from '@/lib/content-media'
@@ -259,33 +259,55 @@ export const RequestNode = memo(({ id, data, selected }: NodeProps<RequestNodeDa
     })
   }, [id, updateNode, variant])
 
-  const createResultNode = useCallback((urls: string[], resourceIds?: string[], mimeTypes?: string[], fileNames?: string[]) => {
+  const createResultNodes = useCallback((urls: string[], resourceIds?: string[], mimeTypes?: string[], fileNames?: string[], batchIndex = 0, batchCount = urls.length) => {
     if (!urls.length || (variant !== 'image' && variant !== 'video')) return
     const state = useFlowStore.getState()
     const current = state.nodes.find((node) => node.id === id)
     if (!current) return
     const currentData = current.data as RequestNodeData
-    const resultData = createGenerationResultContentData(variant, urls, `${currentData.label || (variant === 'image' ? '图片' : '视频')}结果`, resourceIds, mimeTypes, fileNames)
-    const resultNodeId = currentData.resultNodeIds?.[variant] || (currentData.variant === variant ? currentData.resultNodeId : undefined)
-    let resultNode = resultNodeId ? state.nodes.find((node) => node.id === resultNodeId) : undefined
-    if (resultNode?.type === 'content') {
-      updateNode(resultNode.id, { data: resultData })
-    } else {
-      const width = Number(current.style?.width || 520)
-      resultNode = addNode({
-        type: 'content',
-        position: { x: current.position.x + width + 90, y: current.position.y },
-        data: resultData,
-      })
+    const resultLabel = `${currentData.label || (variant === 'image' ? '图片' : '视频')}结果`
+    const connectedResultNodes = state.edges
+      .filter((edge) => edge.source === id)
+      .map((edge) => state.nodes.find((node) => node.id === edge.target))
+      .filter((node): node is NonNullable<typeof node> => node?.type === 'content' && node.data?.category === variant)
+    const storedIds = currentData.resultNodeIdsByVariant?.[variant] || []
+    const legacyId = currentData.resultNodeIds?.[variant] || (currentData.variant === variant ? currentData.resultNodeId : undefined)
+    const orderedNodes = [...connectedResultNodes].sort((left, right) => {
+      const leftIndex = storedIds.indexOf(left.id)
+      const rightIndex = storedIds.indexOf(right.id)
+      return (leftIndex < 0 ? Number.MAX_SAFE_INTEGER : leftIndex) - (rightIndex < 0 ? Number.MAX_SAFE_INTEGER : rightIndex)
+    })
+    if (!orderedNodes.length && legacyId) {
+      const legacyNode = state.nodes.find((node) => node.id === legacyId)
+      if (
+        legacyNode?.type === 'content'
+        && legacyNode.data?.category === variant
+        && state.edges.some((edge) => edge.source === id && edge.target === legacyNode.id)
+      ) orderedNodes.push(legacyNode)
     }
-    if (!state.edges.some((edge) => edge.source === id && edge.target === resultNode?.id)) {
-      addEdge({ source: id, target: resultNode.id, sourceHandle: 'out', targetHandle: 'in', type: 'interactive' })
-    }
+    const useHistory = orderedNodes.length >= batchCount
+    const resultNodeIds: string[] = []
+    const width = Number(current.style?.width || 520)
+    urls.forEach((url, index) => {
+      const resultIndex = batchIndex + index
+      const existingNode = orderedNodes[resultIndex]
+      let resultNode = existingNode
+      const resultData = useHistory && existingNode
+        ? appendGenerationResultContentData(existingNode.data as any, variant, [url], resultLabel, resourceIds?.slice(index, index + 1), mimeTypes?.slice(index, index + 1), fileNames?.slice(index, index + 1))
+        : appendGenerationResultContentData(undefined, variant, [url], resultLabel, resourceIds?.slice(index, index + 1), mimeTypes?.slice(index, index + 1), fileNames?.slice(index, index + 1))
+      if (resultNode?.type === 'content') updateNode(resultNode.id, { data: resultData })
+      else {
+        resultNode = addNode({ type: 'content', position: { x: current.position.x + width + 90, y: current.position.y + index * 40 }, data: resultData })
+        addEdge({ source: id, target: resultNode.id, sourceHandle: 'out', targetHandle: 'in', type: 'interactive' })
+      }
+      resultNodeIds.push(resultNode.id)
+    })
     updateNode(id, {
       data: {
         ...currentData,
-        resultNodeIds: { ...(currentData.resultNodeIds || {}), [variant]: resultNode.id },
-        resultNodeId: resultNode.id,
+        resultNodeIds: { ...(currentData.resultNodeIds || {}), [variant]: resultNodeIds[0] },
+        resultNodeIdsByVariant: { ...(currentData.resultNodeIdsByVariant || {}), [variant]: [...new Set([...orderedNodes.map((node) => node.id), ...resultNodeIds])] },
+        resultNodeId: resultNodeIds[0],
         resultCreatedAt: Date.now(),
       },
     })
@@ -344,51 +366,60 @@ export const RequestNode = memo(({ id, data, selected }: NodeProps<RequestNodeDa
       controller.abort()
     }, timeoutMs)
     try {
-      let taskId = resumeTaskId
-      if (!taskId) {
-        updateTask({ status: 'validating', submittedAt, elapsedMs: 0, timeoutAt, error: undefined, resultUrls: undefined })
-        updateTask({ status: 'submitting' })
-        const submitted = await submitGenerationTask({ channel, model, config: runConfig, variant }, controller.signal)
-        taskId = submitted.taskId
-        const preparedConfig = submitted.preparedConfig || runConfig
-        if (submitted.preparedConfig?.references && variant === 'video') {
-          // Upstream media belongs to its source node. Persist only references
-          // that were already owned by this request node; the full prepared
-          // config remains in the immutable task snapshot for polling/resume.
-          const ownedReferenceIds = new Set((config?.references || []).map((reference) => reference.id))
-          const persistedReferences = submitted.preparedConfig.references.filter((reference) => ownedReferenceIds.has(reference.id))
-          const current = useFlowStore.getState().nodes.find((node) => node.id === id)
-          if (current && persistedReferences.length) updateNode(id, { data: { ...current.data, [variant]: { ...(current.data as RequestNodeData)[variant], references: persistedReferences } } })
-        }
-        updateTask({ taskId, provider: channel.providerId, channelId: channel.id, model: model.id, status: 'queued', submittedAt, elapsedMs: 0, timeoutAt, error: undefined, requestSnapshot: { variant, channelId: channel.id, providerId: channel.providerId, protocol: channel.protocol, baseURL: channel.baseURL, secretName: channel.secretName, mediaTransport: channel.mediaTransport, mediaUploadPath: channel.mediaUploadPath, mediaUploadURL: channel.mediaUploadURL, mediaUploadSecretName: channel.mediaUploadSecretName, model: model.id, config: preparedConfig } })
-        if (submitted.resultUrls?.length) {
-          updateTask({ status: 'completed', resultUrls: submitted.resultUrls, resultResourceIds: submitted.resultResourceIds, resultMimeTypes: submitted.resultMimeTypes, completedAt: Date.now(), elapsedMs: Date.now() - submittedAt })
-          createResultNode(submitted.resultUrls, submitted.resultResourceIds, submitted.resultMimeTypes, submitted.resultFileNames)
-          return
-        }
-      } else {
+      const requestedCount = resumeTaskId || variant !== 'image'
+        ? 1
+        : Math.max(1, Math.min(10, Math.trunc(runConfig.outputCount || 1)))
+      let taskId: string | undefined
+      for (let generationIndex = 0; generationIndex < requestedCount; generationIndex += 1) {
+        taskId = resumeTaskId
+        const requestConfig = resumeTaskId ? runConfig : { ...runConfig, outputCount: 1 }
+        if (!taskId) {
+          updateTask({ status: 'validating', submittedAt, elapsedMs: 0, timeoutAt, error: undefined, resultUrls: undefined })
+          updateTask({ status: 'submitting' })
+          const submitted = await submitGenerationTask({ channel, model, config: requestConfig, variant }, controller.signal)
+          taskId = submitted.taskId
+          const preparedConfig = submitted.preparedConfig || requestConfig
+          if (submitted.preparedConfig?.references && variant === 'video') {
+            // Upstream media belongs to its source node. Persist only references
+            // that were already owned by this request node; the full prepared
+            // config remains in the immutable task snapshot for polling/resume.
+            const ownedReferenceIds = new Set((config?.references || []).map((reference) => reference.id))
+            const persistedReferences = submitted.preparedConfig.references.filter((reference) => ownedReferenceIds.has(reference.id))
+            const current = useFlowStore.getState().nodes.find((node) => node.id === id)
+            if (current && persistedReferences.length) updateNode(id, { data: { ...current.data, [variant]: { ...(current.data as RequestNodeData)[variant], references: persistedReferences } } })
+          }
+          updateTask({ taskId, provider: channel.providerId, channelId: channel.id, model: model.id, status: 'queued', submittedAt, elapsedMs: 0, timeoutAt, error: undefined, requestSnapshot: { variant, channelId: channel.id, providerId: channel.providerId, protocol: channel.protocol, baseURL: channel.baseURL, secretName: channel.secretName, mediaTransport: channel.mediaTransport, mediaUploadPath: channel.mediaUploadPath, mediaUploadURL: channel.mediaUploadURL, mediaUploadSecretName: channel.mediaUploadSecretName, model: model.id, config: preparedConfig } })
+          if (submitted.resultUrls?.length) {
+            updateTask({ status: 'completed', resultUrls: submitted.resultUrls, resultResourceIds: submitted.resultResourceIds, resultMimeTypes: submitted.resultMimeTypes, completedAt: Date.now(), elapsedMs: Date.now() - submittedAt })
+            createResultNodes(submitted.resultUrls, submitted.resultResourceIds, submitted.resultMimeTypes, submitted.resultFileNames, generationIndex, requestedCount)
+            resumeTaskId = undefined
+            continue
+          }
+        } else {
         updateTask({ taskId, provider: channel.providerId, channelId: channel.id, model: model.id, status: 'in_progress', submittedAt, elapsedMs: elapsedOffset, timeoutAt, error: undefined, requestSnapshot: previousTask?.requestSnapshot })
-      }
+        }
 
-      const pollInterval = pollIntervalForModel(model)
-      while (taskId) {
-        if (Date.now() >= timeoutAt) {
-          updateTask({ status: 'timeout', elapsedMs: elapsedOffset + Date.now() - submittedAt, timeoutAt })
-          return
+        const pollInterval = pollIntervalForModel(model)
+        while (taskId) {
+          if (Date.now() >= timeoutAt) {
+            updateTask({ status: 'timeout', elapsedMs: elapsedOffset + Date.now() - submittedAt, timeoutAt })
+            return
+          }
+          const polled = await pollGenerationTask({ channel, model, config: requestConfig, variant }, taskId, controller.signal)
+          const elapsedMs = elapsedOffset + Date.now() - submittedAt
+          updateTask({ ...polled.task, taskId, submittedAt, elapsedMs, timeoutAt })
+          if (polled.task.status === 'completed') {
+            if (polled.task.resultUrls?.length) createResultNodes(polled.task.resultUrls, polled.task.resultResourceIds, polled.task.resultMimeTypes, polled.task.resultFileNames, generationIndex, requestedCount)
+            else { updateTask({ error: '任务已完成，但服务端没有返回可预览的结果地址' }); return }
+            break
+          }
+          if (polled.task.status === 'failed') return
+          await new Promise<void>((resolve, reject) => {
+            const timer = window.setTimeout(resolve, pollInterval)
+            controller.signal.addEventListener('abort', () => { window.clearTimeout(timer); reject(new DOMException('执行已停止', 'AbortError')) }, { once: true })
+          })
         }
-        const polled = await pollGenerationTask({ channel, model, config: runConfig, variant }, taskId, controller.signal)
-        const elapsedMs = elapsedOffset + Date.now() - submittedAt
-        updateTask({ ...polled.task, taskId, submittedAt, elapsedMs, timeoutAt })
-        if (polled.task.status === 'completed') {
-          if (polled.task.resultUrls?.length) createResultNode(polled.task.resultUrls, polled.task.resultResourceIds, polled.task.resultMimeTypes, polled.task.resultFileNames)
-          else updateTask({ error: '任务已完成，但服务端没有返回可预览的结果地址' })
-          return
-        }
-        if (polled.task.status === 'failed') return
-        await new Promise<void>((resolve, reject) => {
-          const timer = window.setTimeout(resolve, pollInterval)
-          controller.signal.addEventListener('abort', () => { window.clearTimeout(timer); reject(new DOMException('执行已停止', 'AbortError')) }, { once: true })
-        })
+        resumeTaskId = undefined
       }
     } catch (error) {
       if (error instanceof DOMException && error.name === 'AbortError') {
@@ -405,7 +436,7 @@ export const RequestNode = memo(({ id, data, selected }: NodeProps<RequestNodeDa
       pollingRef.current = false
       abortRef.current = null
     }
-  }, [config, createResultNode, id, timeoutMs, updateNode, updateTask, variant])
+  }, [config, createResultNodes, id, timeoutMs, updateNode, updateTask, variant])
 
   const runTaskRef = useRef(runTask)
   useEffect(() => { runTaskRef.current = runTask }, [runTask])

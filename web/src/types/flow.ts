@@ -122,6 +122,7 @@ export interface ContentParseState {
 
 export interface DocumentPayload {
   kind: 'document'
+  document?: RichTextDocument
   rawText?: string
   plainText: string
   headings?: Array<{ level: number; text: string }>
@@ -201,9 +202,9 @@ export interface PresentationPayload {
 }
 export interface RichTextDocument {
   version: 1
-  source: string
-  format: 'markdown'
+  format: 'tiptap-json'
   plainText: string
+  json: import('@tiptap/core').JSONContent
 }
 
 export interface TextPayload {
@@ -402,6 +403,8 @@ export interface RequestNodeData extends BaseNodeData {
   task?: GenerationTaskState
   /** Per-variant result node links. `resultNodeId` remains as a backwards-compatible active alias. */
   resultNodeIds?: Partial<Record<'image' | 'video', string>>
+  /** All connected preview nodes for each generation variant. */
+  resultNodeIdsByVariant?: Partial<Record<'image' | 'video', string[]>>
   resultNodeId?: string
   resultCreatedAt?: number
 }
@@ -427,6 +430,10 @@ export interface BrowserNodeData extends BaseNodeData {
   syncStatus?: WebPageSyncStatus
   observedUrl?: string
   snapshot?: PageTextSnapshot
+  /** Content node that should receive automatic page captures. */
+  linkedContentNodeId?: string
+  /** Marks a browser created by the automatic social-link import flow. */
+  socialImport?: boolean
   /** Legacy field retained for flows created before output modes existed. */
   extractedContent?: string
   status: 'idle' | 'loading' | 'ready' | 'error'
@@ -434,6 +441,7 @@ export interface BrowserNodeData extends BaseNodeData {
 export type StickyNodeColor = 'yellow' | 'pink' | 'green' | 'blue' | 'purple'
 export interface StickyNodeData extends BaseNodeData {
   content: string
+  document?: RichTextDocument
   color: StickyNodeColor
   background: 'solid' | 'none'
   /** A pinned sticky stays selectable and editable, but cannot be dragged. */

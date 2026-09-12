@@ -1,3 +1,4 @@
+import { showMessage, askConfirmation } from '@/lib/app-dialog'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Check, ChevronDown, Film, Image as ImageIcon, KeyRound, Layers3, Pencil, Plus, RefreshCw, Trash2, Video, X } from 'lucide-react'
 import { AppShell } from '@/components/layout/AppShell'
@@ -193,27 +194,27 @@ export function GenerationChannelsManager({ embedded = false, openNewRequest = 0
     const normalizedName = channelName.trim() || '生成渠道'
     const normalizedUploadPath = mediaUploadPath.trim() || undefined
     if (!normalizedBaseURL) {
-      alert('请输入接口地址')
+      showMessage('请输入接口地址')
       return
     }
     if (!editingChannelId && !apiKey.trim()) {
-      alert('请输入 API Key')
+      showMessage('请输入 API Key')
       return
     }
     if (modelIds.length === 0) {
-      alert('请至少手动添加一个模型 ID')
+      showMessage('请至少手动添加一个模型 ID')
       return
     }
     if (!supportsImage && !supportsVideo) {
-      alert('请至少选择图片节点或视频节点')
+      showMessage('请至少选择图片节点或视频节点')
       return
     }
     if (supportsVideo && mediaTransport === 'multipart' && !normalizedUploadPath) {
-      alert('multipart 模式需要填写供应商上传路径')
+      showMessage('multipart 模式需要填写供应商上传路径')
       return
     }
     if (supportsVideo && mediaTransport === 'custom' && !hasCustomMediaStorage) {
-      alert('请先在“本地存储”中配置自定义上传服务')
+      showMessage('请先在“本地存储”中配置自定义上传服务')
       return
     }
 
@@ -253,7 +254,7 @@ export function GenerationChannelsManager({ embedded = false, openNewRequest = 0
       try {
         await syncDesktopSecret(savedChannel.secretName, secretValue)
       } catch {
-        alert('API Key 未能保存到桌面安全存储，请重试。')
+        showMessage('API Key 未能保存到桌面安全存储，请重试。')
         return
       }
     }
@@ -335,7 +336,7 @@ export function GenerationChannelsManager({ embedded = false, openNewRequest = 0
                   </div>
                   <div className="flex shrink-0 items-center gap-2">
                     <Button variant="secondary" size="sm" className="gap-1.5" onClick={(event) => { event.stopPropagation(); openEditChannelDialog(channel) }}><Pencil className="h-3.5 w-3.5" />编辑</Button>
-                    <Button variant="outline" size="icon-sm" aria-label={`删除渠道 ${channel.name}`} onClick={(event) => { event.stopPropagation(); if (confirm(`确定要删除渠道“${channel.name}”吗？`)) removeChannel(channel.id) }}><Trash2 className="h-3.5 w-3.5 text-destructive" /></Button>
+                    <Button variant="outline" size="icon-sm" aria-label={`删除渠道 ${channel.name}`} onClick={async (event) => { event.stopPropagation(); if (await askConfirmation(`确定要删除渠道“${channel.name}”吗？`)) removeChannel(channel.id) }}><Trash2 className="h-3.5 w-3.5 text-destructive" /></Button>
                   </div>
                 </article>
               )

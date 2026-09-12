@@ -1,9 +1,11 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { askConfirmation, showMessage } from '@/lib/app-dialog'
+import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { ChevronRight, Download, FileText, Folder, FolderOpen, MoreVertical, Plus, Search, Trash2, Upload } from 'lucide-react'
 import { useFlowStore } from '@/stores/use-flow-store'
 import { useTemplateStore } from '@/stores/use-template-store'
 import { AppShell } from '@/components/layout/AppShell'
+import { Dialog } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
 import { FlowBackupError, restoreFlowBackup, saveFlowBackup } from '@/lib/flow-backup'
 import { openBlobFromFile } from '@/lib/file-save'
@@ -33,27 +35,11 @@ export function Dashboard() {
   const [groupMenuDirection, setGroupMenuDirection] = useState<'left' | 'right'>('right')
   const [pendingFolderFlowId, setPendingFolderFlowId] = useState<string | null>(null)
   const backupInputRef = useRef<HTMLInputElement>(null)
-  const newFlowNameInputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
     initialize()
     initializeTemplates()
   }, [initialize, initializeTemplates])
-
-  useLayoutEffect(() => {
-    if (!showNewFlowDialog) return
-    const frame = window.requestAnimationFrame(() => {
-      newFlowNameInputRef.current?.focus()
-      newFlowNameInputRef.current?.select()
-    })
-    const secondFrame = window.requestAnimationFrame(() => {
-      newFlowNameInputRef.current?.focus()
-    })
-    return () => {
-      window.cancelAnimationFrame(frame)
-      window.cancelAnimationFrame(secondFrame)
-    }
-  }, [showNewFlowDialog])
 
   useEffect(() => {
     if (!openFlowMenuId) return
@@ -107,9 +93,9 @@ export function Dashboard() {
     setShowNewFolderDialog(true)
   }
 
-  const handleDeleteFolder = (e: React.MouseEvent, id: string) => {
+  const handleDeleteFolder = async (e: React.MouseEvent, id: string) => {
     e.stopPropagation()
-    if (confirm('确定要删除这个文件夹吗？文件夹内的 Flow 将移至根目录。')) {
+    if (await askConfirmation('确定要删除这个文件夹吗？文件夹内的 Flow 将移至根目录。')) {
       deleteFolder(id)
     }
   }
@@ -134,10 +120,10 @@ export function Dashboard() {
     setShowNewFlowDialog(true)
   }
 
-  const handleDeleteFlow = (e: React.MouseEvent, id: string) => {
+  const handleDeleteFlow = async (e: React.MouseEvent, id: string) => {
     e.preventDefault()
     e.stopPropagation()
-    if (confirm('确定要删除这个 Flow 吗？')) {
+    if (await askConfirmation('确定要删除这个 Flow 吗？')) {
       deleteFlow(id)
     }
   }
@@ -150,7 +136,7 @@ export function Dashboard() {
     try {
       await saveFlowBackup(flow)
     } catch (error) {
-      alert(error instanceof FlowBackupError ? error.message : 'Flow 备份失败，请稍后重试。')
+      showMessage(error instanceof FlowBackupError ? error.message : 'Flow 备份失败，请稍后重试。')
     }
   }
 
@@ -164,10 +150,10 @@ export function Dashboard() {
     if (!file) return
     try {
       const result = await restoreFlowBackup(file)
-      if (result.warnings.length) alert(`备份已恢复。\n\n${result.warnings.join('\n')}`)
+      if (result.warnings.length) showMessage(`备份已恢复。\n\n${result.warnings.join('\n')}`)
       if (result.flowId) navigate(`/flows/${result.flowId}`)
     } catch (error) {
-      alert(error instanceof FlowBackupError ? error.message : '备份文件无效或无法读取。')
+      showMessage(error instanceof FlowBackupError ? error.message : '备份文件无效或无法读取。')
     }
   }
 
@@ -366,8 +352,7 @@ export function Dashboard() {
       </main>
 
       {/* 新建 Flow 对话框 */}
-      {showNewFlowDialog && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
+      <Dialog open={showNewFlowDialog} onOpenChange={setShowNewFlowDialog}>
           <div
             style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
             className="max-h-[calc(100dvh-2rem)] w-full max-w-md overflow-y-auto rounded-xl border border-border bg-card p-6 shadow-[0_20px_50px_rgba(0,0,0,0.3)] dark:shadow-[0_20px_50px_rgba(0,0,0,0.8)]"
@@ -389,7 +374,6 @@ export function Dashboard() {
                   Flow 名称
                 </label>
                 <input
-                  ref={newFlowNameInputRef}
                   type="text"
                   value={newFlowName}
                   onChange={(e) => setNewFlowName(e.target.value)}
@@ -485,12 +469,10 @@ export function Dashboard() {
               </Button>
             </div>
           </div>
-        </div>
-      )}
+      </Dialog>
 
       {/* 新建文件夹对话框 */}
-      {showNewFolderDialog && (
-        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50">
+      <Dialog open={showNewFolderDialog} onOpenChange={setShowNewFolderDialog}>
           <div
             className="w-full max-w-md rounded-xl border border-border bg-card p-6 shadow-[0_20px_50px_rgba(0,0,0,0.3)] dark:shadow-[0_20px_50px_rgba(0,0,0,0.8)]"
           >
@@ -543,8 +525,7 @@ export function Dashboard() {
               </Button>
             </div>
           </div>
-        </div>
-      )}
+      </Dialog>
     </AppShell>
   )
 }

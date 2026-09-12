@@ -1,3 +1,4 @@
+import { askConfirmation, showMessage } from '@/lib/app-dialog'
 import { useCallback, useEffect, useRef, useState, type ChangeEvent } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import {
@@ -294,7 +295,7 @@ export function APIKeysManager() {
   }
 
   const deleteMediaObject = async (object: MediaStorageObject) => {
-    if (!confirm(`确定删除远端对象“${object.originalName || object.key}”吗？删除后，使用该地址的任务将无法再读取素材。`)) return
+    if (!await askConfirmation(`确定删除远端对象“${object.originalName || object.key}”吗？删除后，使用该地址的任务将无法再读取素材。`)) return
     setMediaDeletingKey(object.key)
     try {
       await mediaStorage.deleteObject(object.key, { baseURL: mediaBaseURL, accessToken: mediaAccessToken })
@@ -330,7 +331,7 @@ export function APIKeysManager() {
 
   const resetDesktopStorageLocation = async () => {
     if (!isDesktopRuntime || !window.cnoteDesktop || desktopStorageBusy) return
-    if (!confirm('恢复默认位置后，重启 Cnote 才会生效。是否继续？')) return
+    if (!await askConfirmation('恢复默认位置后，重启 Cnote 才会生效。是否继续？')) return
     setDesktopStorageBusy(true)
     setDesktopStorageMessage('')
     try {
@@ -466,19 +467,19 @@ export function APIKeysManager() {
     const normalizedProxyHeaderName = proxyHeaderName.trim()
 
     if (!normalizedBaseURL) {
-      alert('请输入接口地址')
+      showMessage('请输入接口地址')
       return
     }
     if (!editingChannelId && !apiKey.trim()) {
-      alert('请输入 API Key')
+      showMessage('请输入 API Key')
       return
     }
     if (!editingChannelId && normalizedProxyHeaderName && !proxyHeaderValue) {
-      alert('请输入代理请求头值')
+      showMessage('请输入代理请求头值')
       return
     }
     if (modelIds.length === 0) {
-      alert('请至少拉取并选择一个模型，或手动添加一个模型 ID')
+      showMessage('请至少拉取并选择一个模型，或手动添加一个模型 ID')
       return
     }
 
@@ -509,7 +510,7 @@ export function APIKeysManager() {
         if (apiKey.trim() && savedChannel.secretName) await syncDesktopSecret(savedChannel.secretName, apiKey.trim())
         if (normalizedProxyHeaderName && proxyHeaderValue && savedChannel.proxySecretName) await syncDesktopSecret(savedChannel.proxySecretName, proxyHeaderValue)
       } catch {
-        alert('密钥未能保存到桌面安全存储，请重试。')
+        showMessage('密钥未能保存到桌面安全存储，请重试。')
         return
       }
     }
@@ -557,7 +558,7 @@ export function APIKeysManager() {
       if (channels.length !== configuration.channels.length) {
         throw new Error('Invalid channel data')
       }
-      if (apiKeys.length > 0 && !confirm('导入配置会替换当前全部渠道，是否继续？')) return
+      if (apiKeys.length > 0 && !await askConfirmation('导入配置会替换当前全部渠道，是否继续？')) return
       replaceAPIKeys(channels)
       if (isDesktopRuntime && window.cnoteDesktop) {
         const importedChannels = useAIStore.getState().apiKeys
@@ -570,9 +571,9 @@ export function APIKeysManager() {
           }
         }))
       }
-      alert(`已导入 ${channels.length} 个渠道`)
+      showMessage(`已导入 ${channels.length} 个渠道`)
     } catch {
-      alert('配置文件无效或无法读取')
+      showMessage('配置文件无效或无法读取')
     }
   }
 
@@ -646,7 +647,7 @@ export function APIKeysManager() {
                         </div>
                         <div className="flex shrink-0 items-center gap-2">
                           <Button variant="secondary" size="sm" className="gap-1.5" onClick={(event) => { event.stopPropagation(); openEditChannelDialog(channel) }}><Pencil className="h-3.5 w-3.5" />编辑</Button>
-                          <Button variant="outline" size="icon-sm" aria-label={`删除渠道 ${channel.name}`} onClick={(event) => { event.stopPropagation(); if (confirm(`确定要删除渠道“${channel.name}”吗？`)) removeAPIKey(channel.id) }}><Trash2 className="h-3.5 w-3.5 text-destructive" /></Button>
+                          <Button variant="outline" size="icon-sm" aria-label={`删除渠道 ${channel.name}`} onClick={async (event) => { event.stopPropagation(); if (await askConfirmation(`确定要删除渠道“${channel.name}”吗？`)) removeAPIKey(channel.id) }}><Trash2 className="h-3.5 w-3.5 text-destructive" /></Button>
                         </div>
                       </article>
                     )
@@ -725,7 +726,7 @@ export function APIKeysManager() {
                 <div className="mt-4 flex flex-wrap gap-2">
                   <Button size="sm" className="gap-1.5" disabled={mediaTesting || !mediaBaseURL.trim()} onClick={() => void testMediaStorage()}><RefreshCw className={`h-3.5 w-3.5 ${mediaTesting ? 'animate-spin' : ''}`} />{mediaTesting ? '正在测试' : '测试并保存'}</Button>
                   <Button variant="secondary" size="sm" className="gap-1.5" disabled={mediaRefreshing || !mediaBaseURL.trim()} onClick={() => void refreshMediaUsage()}><RefreshCw className={`h-3.5 w-3.5 ${mediaRefreshing ? 'animate-spin' : ''}`} />刷新远端用量</Button>
-                  {(mediaStorage.baseURL || mediaBaseURL) && <Button variant="outline" size="sm" className="gap-1.5 text-destructive" onClick={() => { if (!confirm('确定清除自定义媒体存储配置吗？远端对象不会被删除。')) return; mediaStorage.clearSettings(); setMediaBaseURL(''); setMediaAccessToken(''); setMediaObjects([]); setMediaObjectsCursor(undefined); setMediaMessage('已清除配置；远端对象仍保留。') }}><Trash2 className="h-3.5 w-3.5" />清除配置</Button>}
+                  {(mediaStorage.baseURL || mediaBaseURL) && <Button variant="outline" size="sm" className="gap-1.5 text-destructive" onClick={async () => { if (!await askConfirmation('确定清除自定义媒体存储配置吗？远端对象不会被删除。')) return; mediaStorage.clearSettings(); setMediaBaseURL(''); setMediaAccessToken(''); setMediaObjects([]); setMediaObjectsCursor(undefined); setMediaMessage('已清除配置；远端对象仍保留。') }}><Trash2 className="h-3.5 w-3.5" />清除配置</Button>}
                 </div>
                 {mediaMessage && <p className={`mt-3 text-[12px] leading-5 ${mediaMessage.startsWith('连接成功') || mediaMessage.includes('已更新') ? 'text-emerald-600 dark:text-emerald-400' : 'text-muted-foreground'}`}>{mediaMessage}</p>}
 

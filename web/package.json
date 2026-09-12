@@ -7,6 +7,8 @@
   "license": "MIT",
   "repository": "https://github.com/lhc1119692022/Cnote",
   "scripts": {
+    "test:dialog": "node scripts/verify-dialog.mjs",
+    "test:rich-text": "node scripts/verify-rich-text.mjs",
     "dev": "vite",
     "build": "tsc && vite build",
     "build:desktop": "tsc && vite build --mode desktop",
@@ -17,6 +19,15 @@
     "test:media-policy": "node scripts/verify-media-policy.mjs"
   },
   "dependencies": {
+    "@tiptap/extension-image": "^3.31.3",
+    "@tiptap/extension-placeholder": "^3.31.3",
+    "@tiptap/extension-table": "^3.31.3",
+    "@tiptap/extension-task-item": "^3.31.3",
+    "@tiptap/extension-task-list": "^3.31.3",
+    "@tiptap/markdown": "^3.31.3",
+    "@tiptap/pm": "^3.31.3",
+    "@tiptap/react": "^3.31.3",
+    "@tiptap/starter-kit": "^3.31.3",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "html-to-image": "^1.11.13",
@@ -47,6 +58,7 @@
     "eslint": "^9.17.0",
     "eslint-plugin-react-hooks": "^5.1.0",
     "eslint-plugin-react-refresh": "^0.4.16",
+    "jsdom": "^30.0.1",
     "postcss": "^8.4.49",
     "prettier": "^3.4.2",
     "tailwindcss": "^4.0.0",

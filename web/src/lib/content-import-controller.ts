@@ -1,15 +1,17 @@
 import { nanoid } from 'nanoid'
-import { classifyContentUrl, detectAndParseContent, markdownPlainText, markdownToMindmap, resolveSourceBlob, type ContentImportInput } from '@/lib/content-import'
+import { plainTextDocument, importMarkdownDocument, richTextPayload } from '@/lib/rich-text'
+import { classifyContentUrl, detectAndParseContent, emptyContentData, markdownToMindmap, resolveSourceBlob, type ContentImportInput } from '@/lib/content-import'
 import { checksumText, deleteLocalResource } from '@/lib/resource-storage'
 import { useFlowStore } from '@/stores/use-flow-store'
 import { runDesktopNativeJob } from '@/lib/desktop-native-jobs'
 import { getContentServiceClient } from '@/lib/content-service'
 import { ScraperClient, ScraperRequestError } from '@/lib/scraper'
-import type { BrowserNodeData, ContentCategory, ContentNodeData, ContentSource, ParseError } from '@/types/flow'
+import type { BrowserNodeData, ContentCategory, ContentNodeData, ContentSource, ParseError, SocialPayload } from '@/types/flow'
 import type { Node } from 'reactflow'
 import { getNodeMediaItems, type ContentMediaKind } from '@/lib/content-media'
-import { captureBrowserWebview, type DesktopParsedPage } from '@/lib/browser-webview'
+import { captureBrowserWebview, type BrowserPageCapture, type DesktopParsedPage } from '@/lib/browser-webview'
 import { desktopFetch } from '@/lib/desktop-fetch'
+import { BROWSER_NODE_DEFAULT_SIZE, CONTENT_NODE_DEFAULT_SIZE } from '@/lib/flow/node-dimensions'
 
 const categoryLabels: Record<ContentCategory, string> = {
   text: '文本', video: '视频', social: '社媒', document: '文档', data: '数据', presentation: '演示文稿', mindmap: '思维导图', image: '图片',
@@ -60,6 +62,68 @@ function inferTextFormat(value: string) {
 // refresh for the same target. Serialize each target to keep graph updates
 // outside React Flow's active connection transaction.
 const textRefreshPromises = new Map<string, Promise<boolean>>()
+
+export function createBrowserSocialSource(url: string, position: { x: number; y: number }, targetNodeId?: string) {
+  const flowStore = useFlowStore.getState()
+  const target = targetNodeId ? flowStore.nodes.find((node) => node.id === targetNodeId) : undefined
+  const browser = flowStore.addNode({ type: 'browser', position, style: BROWSER_NODE_DEFAULT_SIZE, data: { label: '社媒解析浏览器', url, confirmedUrl: url, browserRuntime: 'desktop-native', outputMode: 'text', status: 'loading', syncStatus: 'synced', socialImport: true, linkedContentNodeId: target?.id } satisfies BrowserNodeData })
+  if (target) {
+    flowStore.addEdge({ source: browser.id, target: target.id, type: 'default' })
+    flowStore.updateNode(target.id, { data: { ...target.data, category: 'social', subtype: 'browser-social', state: 'parsing', parse: { progress: 0.2, startedAt: Date.now(), requestId: browser.id } } })
+  }
+  flowStore.saveCurrentFlow()
+  return browser.id
+}
+
+export function createBrowserNodeFromLink(url: string, sourceNodeId?: string) {
+  const flowStore = useFlowStore.getState()
+  const source = sourceNodeId ? flowStore.nodes.find((node) => node.id === sourceNodeId) : undefined
+  const position = source
+    ? { x: source.position.x + Number(source.style?.width || 540) + 80, y: source.position.y }
+    : { x: 160, y: 160 }
+  const browser = flowStore.addNode({
+    type: 'browser',
+    position,
+    style: BROWSER_NODE_DEFAULT_SIZE,
+    data: { label: '浏览器节点', url, confirmedUrl: url, browserRuntime: 'desktop-native', outputMode: 'url', status: 'loading', syncStatus: 'synced' } satisfies BrowserNodeData,
+  })
+  flowStore.saveCurrentFlow()
+  return browser.id
+}
+
+export function ensureSocialContentNode(browserNodeId: string) {
+  const flowStore = useFlowStore.getState()
+  const browser = flowStore.nodes.find((node) => node.id === browserNodeId)
+  if (!browser || browser.type !== 'browser') return undefined
+  const data = browser.data as BrowserNodeData
+  if (!data.socialImport) return undefined
+  if (data.linkedContentNodeId) return data.linkedContentNodeId
+  const content = flowStore.addNode({
+    type: 'content',
+    position: { x: browser.position.x + BROWSER_NODE_DEFAULT_SIZE.width + 80, y: browser.position.y + 90 },
+    style: CONTENT_NODE_DEFAULT_SIZE,
+    data: { ...emptyContentData('社媒内容'), category: 'social', subtype: 'browser-social', state: 'parsing', parse: { progress: 0.2, startedAt: Date.now(), requestId: browserNodeId } },
+  })
+  flowStore.addEdge({ source: browserNodeId, target: content.id, type: 'default' })
+  flowStore.updateNode(browserNodeId, { data: { ...data, linkedContentNodeId: content.id } satisfies BrowserNodeData })
+  flowStore.saveCurrentFlow()
+  return content.id
+}
+
+export async function syncSocialFromBrowser(browserNodeId: string, capture: { url: string; title: string; media?: BrowserPageCapture['media'] }, parsed: DesktopParsedPage) {
+  const flowStore = useFlowStore.getState()
+  const browser = flowStore.nodes.find((node) => node.id === browserNodeId)
+  const targetId = browser?.type === 'browser' ? (browser.data as BrowserNodeData).linkedContentNodeId : undefined
+  const target = targetId ? flowStore.nodes.find((node) => node.id === targetId) : undefined
+  if (!target || target.type !== 'content' || target.data?.category !== 'social') return
+  const current = target.data.payload?.kind === 'social' ? target.data.payload : undefined
+  const mediaBlocks = (capture.media || []).map((item) => item.kind === 'image'
+    ? { type: 'image' as const, resource: { url: item.url, sourceUrl: item.url, mimeType: 'image/*', width: item.width, height: item.height }, caption: item.alt }
+    : { type: 'video' as const, resource: { url: item.url, sourceUrl: item.url, mimeType: 'video/*', width: item.width, height: item.height }, poster: item.poster ? { url: item.poster, sourceUrl: item.poster, mimeType: 'image/*' } : undefined })
+  const payload: SocialPayload = { kind: 'social', platform: current?.platform || 'generic', canonicalUrl: parsed.url || capture.url, title: parsed.title || capture.title || current?.title || '社媒内容', bodyText: parsed.text || '', contentBlocks: [...(parsed.text ? [{ type: 'text' as const, text: parsed.text }] : []), ...mediaBlocks], author: current?.author, publishedAt: current?.publishedAt, metrics: current?.metrics, topics: current?.topics }
+  flowStore.updateNode(target.id, { data: { ...target.data, state: parsed.text.trim() ? 'ready' : 'partial', payload, preview: { ...target.data.preview, title: payload.title, description: payload.bodyText.slice(0, 160), badge: '社媒', meta: ['桌面浏览器解析'] }, parse: { ...target.data.parse, progress: 1, completedAt: Date.now(), parserId: parsed.parserId, parserVersion: parsed.parserVersion, warnings: parsed.warnings?.map((message) => ({ code: 'BROWSER_PARSE_WARNING', message })) } } })
+  flowStore.saveCurrentFlow()
+}
 
 export function extractTextFromNode(node?: Node): string {
   if (!node) return ''
@@ -600,9 +664,11 @@ export async function saveTextContentToNode(
   const current = useFlowStore.getState().nodes.find((node) => node.id === nodeId)
   if (!current) return false
   const format = richText ? 'rich-text' as const : inferTextFormat(value)
-  const checksum = await checksumText(value)
   const latest = useFlowStore.getState().nodes.find((node) => node.id === nodeId)
   if (!latest || latest.data?.state === 'detecting' || latest.data?.state === 'parsing' || (!options?.overwrite && latest.data?.payload?.kind === 'text' && latest.data.payload.value !== value)) return false
+  const document = latest.data?.payload?.kind === 'text' && latest.data.payload.document?.plainText === value
+    ? latest.data.payload.document
+    : format === 'markdown' ? importMarkdownDocument(value) : plainTextDocument(value)
   const flowStore = useFlowStore.getState()
   flowStore.updateNode(nodeId, {
     type: 'content',
@@ -611,16 +677,11 @@ export async function saveTextContentToNode(
       schemaVersion: 2,
       label: latest.data?.label && !isGeneratedContentLabel(latest.data.label) ? latest.data.label : '文本节点',
       category: 'text',
-      subtype: format === 'plain' ? 'plain-text' : 'markdown',
+      subtype: 'plain-text',
       state: value.trim() ? 'ready' : 'empty',
-      source: value ? { kind: 'text', text: value, checksum, mimeType: format === 'plain' ? 'text/plain' : 'text/markdown' } : null,
-      payload: {
-        kind: 'text',
-        value,
-        format,
-        document: richText ? { version: 1, source: value, format: 'markdown', plainText: markdownPlainText(value) } : undefined,
-      },
-      preview: { title: '文本', badge: richText ? '富文本' : format === 'markdown' ? 'Markdown' : '文本', meta: [`${markdownPlainText(value).length} 字符`] },
+      source: null,
+      payload: richTextPayload(document.plainText, document),
+      preview: { title: '文本', badge: '富文本', meta: [`${document.plainText.length} 字符`] },
       parse: undefined,
       resourceLost: false,
       disabled: false,
@@ -731,6 +792,11 @@ export async function importContentIntoNode(nodeId: string, input: ContentImport
     if (!current || current.data?.parse?.requestId !== requestId) return
     const typedError = typeof error === 'object' && error !== null ? error as { code?: unknown; retryable?: unknown } : undefined
     const code = typeof typedError?.code === 'string' ? typedError.code : 'PARSER_ERROR'
+    const browserSocialFallback = code === 'BROWSER_PARSE_REQUIRED' && input.kind === 'text' && (categoryHint === 'social' || classifyContentUrl(input.text.trim())?.category === 'social')
+    if (browserSocialFallback) {
+      createBrowserSocialSource(input.text.trim(), { x: current.position.x, y: current.position.y }, nodeId)
+      return
+    }
     const retryable = typeof typedError?.retryable === 'boolean' ? typedError.retryable : !['UNSUPPORTED_TYPE', 'INVALID_CONTENT'].includes(code)
     const parseError: ParseError = { code, message: error instanceof Error ? error.message : '内容解析失败', retryable }
     const retryText = input.kind === 'text' ? input.text : undefined

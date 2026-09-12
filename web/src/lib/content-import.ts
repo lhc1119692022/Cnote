@@ -1,6 +1,7 @@
 import { nanoid } from 'nanoid'
+import { importedTextPayload } from '@/lib/rich-text'
 import PdfWorker from 'pdfjs-dist/legacy/build/pdf.worker.mjs?worker'
-import { getContentServiceClient } from '@/lib/content-service'
+import { getContentServiceClient, tryGetContentServiceClient } from '@/lib/content-service'
 import { ScraperClient, ScraperRequestError } from '@/lib/scraper'
 import { checksumText, deleteLocalResource, loadLocalResourceBlob, storeLocalResource } from '@/lib/resource-storage'
 import type {
@@ -461,7 +462,7 @@ export async function detectAndParseContent(
         payload = resolvedCategory === 'mindmap'
           ? isMermaidMindmap ? mermaidToMindmap(text) : markdownToMindmap(text)
           : resolvedCategory === 'text'
-            ? { kind: 'text', value: text, format: detected.subtype === 'markdown' ? 'markdown' : 'plain' }
+            ? importedTextPayload(text, detected.subtype === 'markdown')
             : { kind: 'document', rawText: text, plainText: detected.subtype === 'markdown' ? markdownPlainText(text) : text, headings: detected.subtype === 'markdown' ? markdownHeadings(text) : undefined }
         if (resolvedCategory !== detected.category) {
           return {
@@ -512,6 +513,10 @@ export async function detectAndParseContent(
     }
     if (classification.provider === 'xiaohongshu' || classification.provider === 'douyin' || classification.provider === 'instagram') {
       try {
+        const configuredContentService = tryGetContentServiceClient()
+        if (!configuredContentService && window.cnoteDesktop) {
+          throw Object.assign(new Error('桌面浏览器解析'), { code: 'BROWSER_PARSE_REQUIRED' })
+        }
         const page = await getContentServiceClient('social').scrapeWeb(normalized)
         const platform = classification.socialPlatform || 'generic'
         const payload: SocialPayload = page.social || { kind: 'social', platform, canonicalUrl: normalized, title: page.title || `${classification.badge}内容`, bodyText: page.content || '', contentBlocks: page.content ? [{ type: 'text', text: page.content }] : [] }
@@ -656,7 +661,7 @@ export async function detectAndParseContent(
     category: 'text',
     subtype,
     source: { ...source, mimeType: isMarkdown ? 'text/markdown' : 'text/plain' },
-    payload: { kind: 'text', value: text, format: isMarkdown ? 'markdown' : 'plain' },
+    payload: importedTextPayload(text, isMarkdown),
     preview: { title: '文本', badge: isMarkdown ? 'Markdown' : '文本', meta: [`${text.length} 字符`] },
   }
 }

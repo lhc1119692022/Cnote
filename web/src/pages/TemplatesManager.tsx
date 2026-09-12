@@ -1,3 +1,4 @@
+import { askConfirmation, showMessage } from '@/lib/app-dialog'
 import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { FileText, Search, Trash2, Upload } from 'lucide-react'
@@ -36,10 +37,10 @@ export function TemplatesManager() {
     navigate(`/flows/${flow.id}`)
   }
 
-  const handleDeleteTemplate = (event: React.MouseEvent, id: string) => {
+  const handleDeleteTemplate = async (event: React.MouseEvent, id: string) => {
     event.preventDefault()
     event.stopPropagation()
-    if (confirm('确定要删除这个模板吗？')) deleteTemplate(id)
+    if (await askConfirmation('确定要删除这个模板吗？')) deleteTemplate(id)
   }
 
   const handleImportTemplate = async (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -59,9 +60,9 @@ export function TemplatesManager() {
         template.edges as Edge[],
         typeof template.category === 'string' ? template.category : undefined,
       )
-      alert(`模板“${imported.title}”已导入。`)
+      showMessage(`模板“${imported.title}”已导入。`)
     } catch (error) {
-      alert(error instanceof Error ? error.message : '模板导入失败，请检查 JSON 文件。')
+      showMessage(error instanceof Error ? error.message : '模板导入失败，请检查 JSON 文件。')
     }
   }
 

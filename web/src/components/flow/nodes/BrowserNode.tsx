@@ -5,7 +5,7 @@ import { useFlowStore } from '@/stores/use-flow-store'
 import { captureBrowserWebview, type BrowserWebviewElement, type DesktopParsedPage } from '@/lib/browser-webview'
 import { runDesktopNativeJob } from '@/lib/desktop-native-jobs'
 import { BROWSER_NODE_DEFAULT_SIZE, BROWSER_NODE_MIN_SIZE } from '@/lib/flow/node-dimensions'
-import { refreshDownstreamTextNodes } from '@/lib/content-import-controller'
+import { ensureSocialContentNode, refreshDownstreamTextNodes, syncSocialFromBrowser } from '@/lib/content-import-controller'
 import type { BrowserNodeData } from '@/types/flow'
 import { NodeHandle, NodeHoverToolbar, NodeResizeArc } from './NodeChrome'
 
@@ -232,13 +232,14 @@ export const BrowserNode = memo(({ id, data, selected }: NodeProps<BrowserNodeDa
     else setFrameKey((value) => value + 1)
   }
 
-  const captureNativePage = async () => {
+  const captureNativePage = useCallback(async () => {
     if (!isDesktopRuntime) return
     setCapturing(true)
     setNativeError('')
     try {
       const capture = await captureBrowserWebview(id)
       const parsed = await runDesktopNativeJob<DesktopParsedPage>({ kind: 'native:content-parse', input: { html: capture.html, url: capture.url, title: capture.title } })
+      ensureSocialContentNode(id)
       persist({
         url: capture.url,
         confirmedUrl: capture.url,
@@ -247,6 +248,7 @@ export const BrowserNode = memo(({ id, data, selected }: NodeProps<BrowserNodeDa
         status: 'ready',
         snapshot: { url: capture.url, title: parsed.title || capture.title, text: parsed.text || capture.text, fetchedAt: Date.now(), headings: parsed.headings, links: parsed.links, parserId: parsed.parserId, parserVersion: parsed.parserVersion },
       })
+      await syncSocialFromBrowser(id, { url: capture.url, title: capture.title, media: capture.media }, parsed)
       useFlowStore.getState().saveCurrentFlow()
       void refreshDownstreamTextNodes(id)
     } catch (error) {
@@ -254,7 +256,13 @@ export const BrowserNode = memo(({ id, data, selected }: NodeProps<BrowserNodeDa
     } finally {
       setCapturing(false)
     }
-  }
+  }, [id, isDesktopRuntime, persist])
+
+  useEffect(() => {
+    if (!data.socialImport || !webviewReady) return
+    const timer = window.setTimeout(() => { void captureNativePage() }, 900)
+    return () => window.clearTimeout(timer)
+  }, [captureNativePage, data.socialImport, webviewReady, currentUrl])
 
   const handleFrameLoad = () => {
     const firstLoad = loadedUrlRef.current !== currentUrl

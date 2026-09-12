@@ -2,6 +2,7 @@ import React, { Component, type ErrorInfo, type ReactNode } from 'react'
 import ReactDOM from 'react-dom/client'
 import { HashRouter } from 'react-router-dom'
 import App from './App.tsx'
+import { AppDialogHost } from '@/components/ui/app-dialog-host'
 import './index.css'
 import './i18n'
 import { DesktopWindowChrome } from '@/components/layout/DesktopWindowChrome'
@@ -42,6 +43,7 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
       <AppErrorBoundary>
         <HashRouter>
           <App />
+          <AppDialogHost />
         </HashRouter>
       </AppErrorBoundary>
     </DesktopWindowChrome>

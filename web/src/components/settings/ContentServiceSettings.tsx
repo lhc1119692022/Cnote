@@ -1,3 +1,4 @@
+import { askConfirmation } from '@/lib/app-dialog'
 import { useEffect, useState } from 'react'
 import { CheckCircle2, Cloud, RefreshCw, Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
@@ -37,8 +38,8 @@ export function ContentServiceSettings() {
     }
   }
 
-  const clear = () => {
-    if (!confirm('确定清除当前内容解析服务配置吗？')) return
+  const clear = async () => {
+    if (!await askConfirmation('确定清除当前内容解析服务配置吗？')) return
     settings.clearSettings()
     setBaseURL('')
     setAccessToken('')

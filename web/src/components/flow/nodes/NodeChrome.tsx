@@ -1,3 +1,4 @@
+import { showMessage } from '@/lib/app-dialog'
 import { useEffect, useRef, useState, type ChangeEvent, type ReactNode } from 'react'
 import { Handle, Position, useReactFlow } from 'reactflow'
 import { Download, FileText, Globe, Layers3, Copy, Bookmark, RefreshCw, Scissors, Sparkles, StickyNote, Plus, X } from 'lucide-react'
@@ -220,7 +221,7 @@ export function NodeHoverToolbar({ nodeId, children }: { nodeId: string; childre
         extension: `.${extension}`,
       })
     } catch (error) {
-      alert(error instanceof Error ? error.message : '下载失败，请稍后重试。')
+      showMessage(error instanceof Error ? error.message : '下载失败，请稍后重试。')
     } finally {
       setIsDownloading(false)
     }

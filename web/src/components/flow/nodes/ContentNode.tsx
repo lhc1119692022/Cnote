@@ -2,7 +2,7 @@ import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useStat
 import { NodeProps, Position } from 'reactflow'
 import { AlertCircle, AlignLeft, ChevronLeft, ChevronRight, ExternalLink, FileText, FileUp, Image as ImageIcon, LoaderCircle, Maximize2, Presentation, RectangleHorizontal, RectangleVertical, RefreshCw, Share2, Sparkles, Table2, Video, Workflow } from 'lucide-react'
 import { Button } from '@/components/ui/button'
-import { importContentFromUpstream, importContentIntoNode, reparseContentNode, saveTextContentToNode } from '@/lib/content-import-controller'
+import { createBrowserNodeFromLink, importContentFromUpstream, importContentIntoNode, reparseContentNode, saveTextContentToNode } from '@/lib/content-import-controller'
 import { CONTENT_FILE_ACCEPT, CONTENT_FILE_ACCEPT_BY_CATEGORY } from '@/lib/content-import'
 import { useLocalResourceUrl } from '@/hooks/use-local-resource-url'
 import { hasLocalResource } from '@/lib/resource-storage'
@@ -14,7 +14,9 @@ import { CONTENT_MEDIA_MAX_AUTO_HEIGHT, CONTENT_NODE_MIN_SIZE, ONLINE_VIDEO_MAX_
 import type { ContentCategory, ContentMediaItem, ContentNodeData, MindmapTreeNode } from '@/types/flow'
 import { getActiveMediaIndex, getMaxMediaAspectRatio, getNodeMediaItems } from '@/lib/content-media'
 import { NodeDragGutters, NodeHandle, NodeHoverToolbar, NodeResizeArc, NodeResourceLostNotice } from './NodeChrome'
-import { MarkdownPreview } from '../ContentEditorPanel'
+import { RichTextEditor } from '@/components/ui/rich-text-editor'
+import { richTextPayload } from '@/lib/rich-text'
+import type { RichTextDocument } from '@/types/flow'
 
 interface CategoryOption { id: ContentCategory; label: string; icon: typeof Video; iconClass: string }
 const contentCategoryOptions: CategoryOption[] = [
@@ -213,6 +215,7 @@ export const ContentLeafNode = memo(({ id, data, selected }: NodeProps<ContentNo
   const resourceId = resourceIdOf(data)
   const localUrl = useLocalResourceUrl(resourceId)
   const sourceUrl = urlOf(data)
+  const openLinkInBrowserNode = useCallback((url: string) => { createBrowserNodeFromLink(url, id) }, [id])
   const busy = data.state === 'importing' || data.state === 'detecting' || data.state === 'parsing'
   const error = data.parse?.error
   const documentPayload = data.payload?.kind === 'document' ? data.payload : undefined
@@ -440,7 +443,7 @@ export const ContentLeafNode = memo(({ id, data, selected }: NodeProps<ContentNo
     const flushDraft = (event: Event) => {
       if (category !== 'text' || !textDirtyRef.current) return
       const detail = (event as CustomEvent<{ tasks?: Promise<unknown>[] }>).detail
-      const task = saveTextContentToNode(id, draft).finally(() => { textDirtyRef.current = false })
+      const task = saveTextContentToNode(id, draft, true).finally(() => { textDirtyRef.current = false })
       detail?.tasks?.push(task)
     }
     document.addEventListener('cnote:flush-node-editors', flushDraft)
@@ -595,21 +598,20 @@ export const ContentLeafNode = memo(({ id, data, selected }: NodeProps<ContentNo
     openInlineEditor(id)
     setTextEditing(true)
   }
-  const updateTextDraft = (value: string) => {
+  const updateTextDraft = (value: string, document: RichTextDocument) => {
     textDirtyRef.current = true
     setDraft(value)
-    const format = /(^|\n)#{1,6}\s+|(^|\n)\s*[-*+]\s+/m.test(value) ? 'markdown' as const : 'plain' as const
     const current = useFlowStore.getState().nodes.find((node) => node.id === id)
     if (!current) return
     updateNode(id, {
       data: {
         ...current.data,
         category: 'text',
-        subtype: format === 'markdown' ? 'markdown' : 'plain-text',
+        subtype: 'plain-text',
         state: value.trim() ? 'ready' : 'empty',
         source: null,
-        payload: { kind: 'text', value, format },
-        preview: { title: '文本', badge: format === 'markdown' ? 'Markdown' : '文本', meta: [`${value.length} 字符`] },
+        payload: richTextPayload(value, document),
+        preview: { title: '文本', badge: '富文本', meta: [`${value.length} 字符`] },
         parse: undefined,
       } satisfies ContentNodeData,
     })
@@ -720,22 +722,10 @@ export const ContentLeafNode = memo(({ id, data, selected }: NodeProps<ContentNo
       {busy && <div className="flex flex-1 flex-col items-center justify-center gap-3 text-sm text-muted-foreground"><LoaderCircle className="h-7 w-7 animate-spin" /><span>{data.state === 'importing' ? '正在导入文件…' : data.state === 'detecting' ? '正在识别内容类型…' : '正在解析内容…'}</span></div>}
       {!busy && (data.state === 'error' || data.state === 'unsupported') && <div className="flex flex-1 flex-col items-center justify-center gap-3 text-center"><AlertCircle className="h-7 w-7 text-amber-500" /><p className="text-sm font-medium">{error?.message || '无法识别此内容'}</p>{(data.source || data.parse?.retryText) && <Button variant="secondary" size="sm" onClick={() => void reparseContentNode(id)}><RefreshCw className="mr-1.5 h-3.5 w-3.5" />重新识别</Button>}</div>}
       {!busy && !error && category === 'text' && <div className="flex min-h-0 flex-1 flex-col">
-        {editorMode === 'inline' && activeEditorNodeId === id && textEditing
-          ? <textarea autoFocus={textEditing} value={draft} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => event.stopPropagation()} onFocus={() => setTextEditing(true)} onChange={(event) => updateTextDraft(event.target.value)} onPaste={(event) => {
-              const file = event.clipboardData.files[0]
-              if (file) { event.preventDefault(); importTextFile(file); return }
-              event.preventDefault()
-              const text = event.clipboardData.getData('text/plain')
-              const target = event.currentTarget
-              const next = `${draft.slice(0, target.selectionStart)}${text}${draft.slice(target.selectionEnd)}`
-              updateTextDraft(next)
-            }} onBlur={() => {
-              setTextEditing(false)
-              if (textDirtyRef.current) void saveTextContentToNode(id, draft).finally(() => { textDirtyRef.current = false })
-            }} className="custom-scrollbar nodrag nowheel min-h-0 flex-1 resize-none overflow-y-auto border-0 bg-transparent p-1 text-base leading-7 outline-none" placeholder="此处粘贴或编辑" />
-          : draft.trim()
-            ? <button type="button" className="nodrag flex min-h-0 flex-1 w-full flex-col items-stretch justify-start p-0 text-left" onClick={beginTextEditing}><MarkdownPreview source={draft} /></button>
-            : <button type="button" className="nodrag flex min-h-0 flex-1 w-full flex-col items-center justify-center gap-3 text-muted-foreground" onClick={beginTextEditing}><AlignLeft className="h-10 w-10 stroke-[1.5]" /><span className="text-sm">点击开始编辑</span></button>}
+        <RichTextEditor key={id} value={draft} document={data.payload?.kind === 'text' ? data.payload.document : undefined} toolbar={false} className="flex-1" onLinkClick={openLinkInBrowserNode} onActivate={beginTextEditing} onChange={updateTextDraft} onCommit={(value) => {
+          setTextEditing(false)
+          if (textDirtyRef.current) void saveTextContentToNode(id, value, true).finally(() => { textDirtyRef.current = false })
+        }} />
         <div className="nodrag mt-3 shrink-0 text-xs text-muted-foreground">{draft.length} 字符</div>
       </div>}
       {!busy && category === 'mindmap' && data.state === 'empty' && <button type="button" className="nodrag flex flex-1 w-full items-center justify-center" onClick={openEditorPanel}><span className="rounded-full border border-foreground/70 px-8 py-3 text-lg text-foreground">无主题</span></button>}
@@ -813,7 +803,7 @@ export const ContentLeafNode = memo(({ id, data, selected }: NodeProps<ContentNo
         {category === 'video' && !isOnlinePlayableVideo && videoPlayback === 'embed' && youtubeEmbedUrl && <iframe src={youtubeEmbedUrl} title={video?.title || 'YouTube 视频'} allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" allowFullScreen referrerPolicy="strict-origin-when-cross-origin" className="nodrag nopan nowheel pointer-events-auto block h-full min-h-[220px] w-full rounded-[18px] border-0 bg-black" />}
         {category === 'video' && videoPlayback === 'preview' && <div className="space-y-3"><RemoteLinkPreview title={data.preview?.title || video?.title || data.label} description={data.preview?.description} thumbnailUrl={data.preview?.thumbnailUrl} url={sourceUrl} label={data.preview?.badge || '原内容'} />{video?.transcript && <p className="line-clamp-3 text-base leading-7 text-muted-foreground">{video.transcript}</p>}</div>}
         {category === 'video' && !isOnlinePlayableVideo && parseWarning && <div className="mt-3 flex items-start gap-2 rounded-lg border border-amber-200/80 bg-amber-50/70 px-3 py-2 text-xs leading-5 text-amber-900 dark:border-amber-900/70 dark:bg-amber-950/30 dark:text-amber-100"><AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" /><span>{parseWarning.message}</span></div>}
-        {category === 'document' && (displayText ? <div className="space-y-3"><p className="line-clamp-8 whitespace-pre-wrap text-base leading-7">{displayText}</p>{documentPayload?.pageCount && <span className="text-xs text-muted-foreground">共 {documentPayload.pageCount} 页</span>}{sourceUrl && <a href={sourceUrl} target="_blank" rel="noreferrer" className="nodrag inline-flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground" onPointerDown={(event) => event.stopPropagation()}><ExternalLink className="h-3.5 w-3.5" />打开原文</a>}</div> : <RemoteLinkPreview title={data.preview?.title || data.label} description={data.preview?.description} thumbnailUrl={data.preview?.thumbnailUrl} url={sourceUrl} label="原文" />)}
+        {category === 'document' && (displayText ? <div className="space-y-3"><RichTextEditor value={displayText} document={documentPayload?.document} editable={false} toolbar={false} onLinkClick={openLinkInBrowserNode} />{documentPayload?.pageCount && <span className="text-xs text-muted-foreground">共 {documentPayload.pageCount} 页</span>}{sourceUrl && <a href={sourceUrl} target="_blank" rel="noreferrer" className="nodrag inline-flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground" onPointerDown={(event) => event.stopPropagation()}><ExternalLink className="h-3.5 w-3.5" />打开原文</a>}</div> : <RemoteLinkPreview title={data.preview?.title || data.label} description={data.preview?.description} thumbnailUrl={data.preview?.thumbnailUrl} url={sourceUrl} label="原文" />)}
         {category === 'data' && dataPayload && (dataPayload.sheets.length > 0 ? <div className="overflow-auto"><div className="mb-2 text-xs text-muted-foreground">{dataPayload.sheets[0]?.name} · {dataPayload.sheets[0]?.totalRows || 0} 行</div><table className="w-full border-collapse text-xs"><thead><tr>{dataPayload.sheets[0]?.columns.slice(0, 6).map((column) => <th key={column} className="border border-border bg-muted/50 px-2 py-1.5 text-left">{column}</th>)}</tr></thead><tbody>{dataPayload.sheets[0]?.rows.slice(0, 5).map((row, index) => <tr key={index}>{row.slice(0, 6).map((cell, cellIndex) => <td key={cellIndex} className="max-w-28 truncate border border-border px-2 py-1.5">{String(cell ?? '')}</td>)}</tr>)}</tbody></table></div> : <RemoteLinkPreview title={data.preview?.title || data.label} description={data.preview?.description} thumbnailUrl={data.preview?.thumbnailUrl} url={sourceUrl} label="数据源" />)}
         {category === 'mindmap' && limitedMindmap && <div className="mindmap-scroll-area custom-scrollbar nodrag nowheel select-text"><MindmapMap root={limitedMindmap} />{sourceUrl && <a href={sourceUrl} target="_blank" rel="noreferrer" className="nodrag absolute bottom-4 right-4 inline-flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground" onPointerDown={(event) => event.stopPropagation()}><ExternalLink className="h-3.5 w-3.5" />打开原导图</a>}</div>}
         {category === 'social' && social && <div ref={socialContentRef} className="space-y-4">

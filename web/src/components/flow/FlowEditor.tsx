@@ -61,8 +61,11 @@ import {
   emptyContentData,
   type ContentImportInput,
 } from "@/lib/content-import";
+import { classifyContentUrl } from "@/lib/content-import";
+import { tryGetContentServiceClient } from "@/lib/content-service";
 import {
   canNodeOutputText,
+  createBrowserSocialSource,
   importContentFromUpstream,
   importContentIntoNode,
   refreshTextFromUpstream,
@@ -659,6 +662,17 @@ function FlowEditorInner() {
     setLibraryMenuOpen(false);
     setConnectionMenu(null);
     setCanvasContextMenu(null);
+  }, []);
+
+  useEffect(() => {
+    // Native text selection is outside React Flow's selection lifecycle. Clear
+    // it at the application boundary so every pointer click starts cleanly.
+    const clearNativeSelection = () => {
+      const selection = window.getSelection();
+      if (selection && !selection.isCollapsed) selection.removeAllRanges();
+    };
+    document.addEventListener("pointerdown", clearNativeSelection, true);
+    return () => document.removeEventListener("pointerdown", clearNativeSelection, true);
   }, []);
 
   const showLocalVideoAiWarning = useCallback(() => {
@@ -1606,6 +1620,12 @@ function FlowEditorInner() {
 
   const importClipboardInputAt = useCallback(
     async (input: ContentImportInput, clientX?: number, clientY?: number) => {
+      const socialText = input.kind === "text" ? input.text.trim() : "";
+      const socialUrl = socialText ? classifyContentUrl(socialText) : null;
+      if (window.cnoteDesktop && !tryGetContentServiceClient() && socialUrl?.category === "social") {
+        createBrowserSocialSource(socialText, getCanvasContentPosition(clientX, clientY));
+        return;
+      }
       const created = addNode({
         type: "content",
         position: getCanvasContentPosition(clientX, clientY),
@@ -1622,6 +1642,17 @@ function FlowEditorInner() {
       if (selected.length !== 1 || selected[0].type !== "content") return false;
       const target = selected[0];
       const category = target.data?.category as ContentNodeData["category"] | undefined;
+      const socialText = input.kind === "text" ? input.text.trim() : "";
+      const socialUrl = socialText ? classifyContentUrl(socialText) : null;
+      if (window.cnoteDesktop && !tryGetContentServiceClient() && socialUrl?.category === "social") {
+        if (category === "social" && input.kind === "text") {
+          createBrowserSocialSource(socialText, { x: target.position.x - BROWSER_NODE_DEFAULT_SIZE.width - 80, y: target.position.y }, target.id);
+        } else if (!category) {
+          deleteNode(target.id);
+          createBrowserSocialSource(socialText, target.position);
+        }
+        return true;
+      }
       // A type-selection node detects the clipboard content itself. Link-based
       // content nodes use their selected category and parse immediately.
       if (!category || category === "video" || category === "social" || category === "document") {
@@ -1631,7 +1662,7 @@ function FlowEditorInner() {
       }
       return false;
     },
-    [],
+    [deleteNode],
   );
 
   const createClipboardErrorNode = useCallback(

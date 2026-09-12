@@ -548,22 +548,27 @@ export class FlowExecutor {
       references: mergedReferences,
     }
     let snapshot = { ...runConfig, references: runConfig.references.map((reference) => ({ ...reference })) }
-    const task = await runGenerationTask(
-      { channel, model, config: runConfig, variant },
-      {
-        taskId: persisted ? existingTask?.taskId : undefined,
-        submittedAt: persisted ? existingTask?.submittedAt : undefined,
-        timeoutMs: variant === 'image' ? 15 * 60 * 1000 : 60 * 60 * 1000,
-        signal: this.signal,
-        onCancel: async (taskId) => { await cancelGenerationTask({ channel, model, config: runConfig, variant }, taskId) },
-        onConfigPrepared: (preparedConfig) => {
-          snapshot = { ...preparedConfig, references: preparedConfig.references.map((reference) => ({ ...reference })) }
-        },
-        onTaskUpdate: (nextTask) => {
-          const current = this.nodes.find((item) => item.id === node.id)?.data as RequestNodeData | undefined
-          const previous = current?.tasks?.[variant] || current?.task || { status: 'idle' as const }
-          this.onNodeDataUpdate?.(node.id, {
-            tasks: { ...(current?.tasks || {}), [variant]: { ...previous, ...nextTask, requestSnapshot: {
+    const requestedCount = persisted || variant !== 'image' ? 1 : Math.max(1, Math.min(10, Math.trunc(runConfig.outputCount || 1)))
+    let task: GenerationTaskState | undefined
+    const allResults: GenerationTaskState = { status: 'completed', resultUrls: [], resultResourceIds: [], resultMimeTypes: [], resultFileNames: [] }
+    for (let generationIndex = 0; generationIndex < requestedCount; generationIndex += 1) {
+      const requestConfig = persisted ? runConfig : { ...runConfig, outputCount: 1 }
+      task = await runGenerationTask(
+        { channel, model, config: requestConfig, variant },
+        {
+          taskId: generationIndex === 0 && persisted ? existingTask?.taskId : undefined,
+          submittedAt: generationIndex === 0 && persisted ? existingTask?.submittedAt : undefined,
+          timeoutMs: variant === 'image' ? 15 * 60 * 1000 : 60 * 60 * 1000,
+          signal: this.signal,
+          onCancel: async (taskId) => { await cancelGenerationTask({ channel, model, config: requestConfig, variant }, taskId) },
+          onConfigPrepared: (preparedConfig) => {
+            snapshot = { ...preparedConfig, references: preparedConfig.references.map((reference) => ({ ...reference })) }
+          },
+          onTaskUpdate: (nextTask) => {
+            const current = this.nodes.find((item) => item.id === node.id)?.data as RequestNodeData | undefined
+            const previous = current?.tasks?.[variant] || current?.task || { status: 'idle' as const }
+            this.onNodeDataUpdate?.(node.id, {
+              tasks: { ...(current?.tasks || {}), [variant]: { ...previous, ...nextTask, requestSnapshot: {
               variant,
               channelId: channel.id,
               providerId: channel.providerId,
@@ -577,11 +582,18 @@ export class FlowExecutor {
               model: model.id,
               config: snapshot,
             } } },
-            task: { ...previous, ...nextTask },
-          })
+              task: { ...previous, ...nextTask },
+            })
+          },
         },
-      },
-    )
+      )
+      if (task.status !== 'completed') break
+      allResults.resultUrls = [...(allResults.resultUrls || []), ...(task.resultUrls || [])]
+      allResults.resultResourceIds = [...(allResults.resultResourceIds || []), ...(task.resultResourceIds || [])]
+      allResults.resultMimeTypes = [...(allResults.resultMimeTypes || []), ...(task.resultMimeTypes || [])]
+      allResults.resultFileNames = [...(allResults.resultFileNames || []), ...(task.resultFileNames || [])]
+    }
+    task = allResults
     if (task.status === 'completed' && !task.resultUrls?.length && !task.resultResourceIds?.length) {
       throw new Error('生成任务已完成，但服务端没有返回可预览的结果')
     }

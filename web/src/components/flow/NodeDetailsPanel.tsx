@@ -1,6 +1,7 @@
 import { Brain, ExternalLink, FileText, Image as ImageIcon, Search, Send, Share2, Sparkles, Video } from 'lucide-react'
 import { useMemo } from 'react'
 import { Button } from '@/components/ui/button'
+import { RichTextEditor } from '@/components/ui/rich-text-editor'
 import { useLocalResourceUrl } from '@/hooks/use-local-resource-url'
 import { getProvider, getAIModelCapabilities } from '@/lib/api'
 import { getActiveMediaItem, getNodeMediaItems } from '@/lib/content-media'
@@ -180,7 +181,7 @@ function BasicNodeDetails({ nodeId, type }: { nodeId: string; type: 'request' | 
     const data = node.data as StickyNodeData & { text?: string }
     return <div className="min-h-0 flex-1 space-y-4 overflow-y-auto border-t border-border p-4">
       <PanelSection title="贴纸节点">
-        <label className="space-y-1 text-xs text-muted-foreground"><span>内容</span><textarea value={data.content || data.text || ''} onChange={(event) => updateData({ content: event.target.value, text: event.target.value })} rows={7} className="w-full resize-y rounded-xl border border-border bg-card p-3 text-sm leading-6 text-foreground outline-none focus:border-foreground/30" placeholder="输入贴纸内容" /></label>
+        <RichTextEditor key={nodeId} value={data.content || ''} document={data.document} onChange={(value, document) => updateData({ content: value, text: value, document })} className="h-80 rounded-xl border border-border text-foreground" contentClassName="p-3" placeholder="输入贴纸内容" />
         <label className="space-y-1 text-xs text-muted-foreground"><span>颜色</span><select value={data.color || 'yellow'} onChange={(event) => updateData({ color: event.target.value })} className="h-10 w-full rounded-xl border border-border bg-card px-3 text-sm text-foreground outline-none focus:border-foreground/30"><option value="yellow">黄色</option><option value="pink">粉色</option><option value="green">绿色</option><option value="blue">蓝色</option><option value="purple">紫色</option></select></label>
         <label className="flex items-center gap-2 text-xs text-muted-foreground"><input type="checkbox" checked={Boolean(data.pinned)} onChange={(event) => updateData({ pinned: event.target.checked })} />固定贴纸位置</label>
       </PanelSection>
@@ -206,6 +207,6 @@ export function NodeDetailsPanel({ nodeId }: { nodeId: string }) {
   if (node.type === 'request' || node.type === 'browser' || node.type === 'sticky' || node.type === 'group') return <BasicNodeDetails nodeId={nodeId} type={node.type} />
   if (node.type !== 'content') return <div className="flex min-h-0 flex-1 items-center justify-center border-t border-border px-8 text-center text-sm text-muted-foreground">当前节点没有可编辑的详情。</div>
   const data = node.data as ContentNodeData
-  if (data.category === 'text' || data.category === 'mindmap') return <ContentEditorPanel nodeId={nodeId} />
+  if (data.category === 'text' || data.category === 'mindmap' || (data.payload?.kind === 'document' && data.payload.document)) return <ContentEditorPanel key={nodeId} nodeId={nodeId} />
   return <ContentDetails nodeId={nodeId} data={data} />
 }

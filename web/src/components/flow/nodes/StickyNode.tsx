@@ -1,8 +1,10 @@
 import { memo, useEffect, useState } from 'react'
 import { NodeProps, Position } from 'reactflow'
 import { Pin } from 'lucide-react'
+import { RichTextEditor } from '@/components/ui/rich-text-editor'
 import { useFlowStore } from '@/stores/use-flow-store'
 import { STICKY_NODE_MIN_SIZE } from '@/lib/flow/node-dimensions'
+import { createBrowserNodeFromLink } from '@/lib/content-import-controller'
 import type { StickyNodeColor, StickyNodeData } from '@/types/flow'
 import { NodeHandle, NodeHoverToolbar, NodeResizeArc } from './NodeChrome'
 
@@ -98,12 +100,15 @@ export const StickyNode = memo(({ id, data, selected }: NodeProps<StickyNodeData
 
       {/* 内容区域 */}
       <div className="min-h-0 flex-1 overflow-hidden rounded-[inherit] p-4 pt-5">
-        <textarea
+        <RichTextEditor
+          key={id}
           value={content}
-          onChange={(event) => { const value = event.target.value; setContent(value); updateNode(id, { data: { ...data, content: value, text: value } }) }}
+          document={data.document}
+          onLinkClick={(url) => { createBrowserNodeFromLink(url, id) }}
+          onChange={(value, document) => { setContent(value); updateNode(id, { data: { ...data, content: value, text: value, document } }) }}
+          onCommit={() => { addToHistory(); useFlowStore.getState().saveCurrentFlow() }}
           placeholder="添加备注..."
-          className="custom-scrollbar h-full min-h-0 w-full resize-none overflow-auto bg-transparent px-0 py-0 text-base leading-7 focus:outline-none"
-          style={{ color: '#1d1d1f' }}
+          className="h-full text-[#1d1d1f]"
         />
       </div>
 
