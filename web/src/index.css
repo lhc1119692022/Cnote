@@ -1184,3 +1184,18 @@
 .shadow-2xl {
   box-shadow: 0 10px 28px rgb(15 23 42 / 0.09) !important;
 }
+
+.flow-node-selecting .react-flow,
+.flow-node-selecting .react-flow * {
+  user-select: none !important;
+  -webkit-user-select: none !important;
+}
+
+.react-flow__pane,
+.react-flow__pane.draggable {
+  cursor: default !important;
+}
+
+.react-flow__pane.dragging {
+  cursor: grabbing !important;
+}

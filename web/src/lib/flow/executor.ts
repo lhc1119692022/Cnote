@@ -38,6 +38,7 @@ import { topologicalSort, getPredecessors } from './graph'
 import { AIClient } from '@/lib/api'
 import { ScraperClient } from '@/lib/scraper'
 import { cancelGenerationTask, runGenerationTask } from '@/lib/generation/client'
+import { runGenerationBatch } from '@/lib/generation/batch'
 import { normalizeGenerationReferences } from '@/lib/generation/defaults'
 import { generationChannelSupportsVariant, generationSecretName, useGenerationStore, type GenerationChannel } from '@/stores/use-generation-store'
 import type { GenerationReference, GenerationTaskState } from '@/types/flow'
@@ -338,6 +339,10 @@ export class FlowExecutor {
       }
 
       context.output = output
+      if (output?.kind === 'generation-result' && output.task?.status !== 'completed') {
+        this.throwIfAborted()
+        throw new Error(output.task?.error || '生成任务尚未全部完成')
+      }
       context.status = 'completed'
       context.endTime = Date.now()
       this.publishProgress(node.id)
@@ -499,7 +504,7 @@ export class FlowExecutor {
 
     const generationStore = useGenerationStore.getState()
     const existingTask = (data.tasks?.[variant] || data.task) as GenerationTaskState | undefined
-    const persisted = existingTask?.requestSnapshot && existingTask.taskId && (existingTask.status === 'queued' || existingTask.status === 'in_progress')
+    const persisted = existingTask?.requestSnapshot && (existingTask.taskId || existingTask.children?.some((child) => child.taskId)) && (existingTask.status === 'queued' || existingTask.status === 'in_progress')
       ? existingTask.requestSnapshot
       : undefined
     const liveChannel = config.channelId
@@ -547,53 +552,50 @@ export class FlowExecutor {
       prompt: [config.prompt, upstreamText].filter(Boolean).join('\n\n'),
       references: mergedReferences,
     }
-    let snapshot = { ...runConfig, references: runConfig.references.map((reference) => ({ ...reference })) }
-    const requestedCount = persisted || variant !== 'image' ? 1 : Math.max(1, Math.min(10, Math.trunc(runConfig.outputCount || 1)))
-    let task: GenerationTaskState | undefined
-    const allResults: GenerationTaskState = { status: 'completed', resultUrls: [], resultResourceIds: [], resultMimeTypes: [], resultFileNames: [] }
-    for (let generationIndex = 0; generationIndex < requestedCount; generationIndex += 1) {
-      const requestConfig = persisted ? runConfig : { ...runConfig, outputCount: 1 }
-      task = await runGenerationTask(
-        { channel, model, config: requestConfig, variant },
-        {
-          taskId: generationIndex === 0 && persisted ? existingTask?.taskId : undefined,
-          submittedAt: generationIndex === 0 && persisted ? existingTask?.submittedAt : undefined,
-          timeoutMs: variant === 'image' ? 15 * 60 * 1000 : 60 * 60 * 1000,
-          signal: this.signal,
-          onCancel: async (taskId) => { await cancelGenerationTask({ channel, model, config: requestConfig, variant }, taskId) },
-          onConfigPrepared: (preparedConfig) => {
-            snapshot = { ...preparedConfig, references: preparedConfig.references.map((reference) => ({ ...reference })) }
+    const initialTasks = persisted && existingTask ? existingTask.children || [existingTask] : undefined
+    const requestedCount = initialTasks?.length || (persisted || variant !== 'image' ? 1 : Math.max(1, Math.min(10, Math.trunc(runConfig.outputCount || 1))))
+    const submittedAt = Date.now()
+    const task = await runGenerationBatch({
+      count: requestedCount,
+      submittedAt,
+      initialTasks,
+      elapsedOffset: persisted ? existingTask?.elapsedMs : 0,
+      onTaskUpdate: (state) => {
+        const current = this.nodes.find((item) => item.id === node.id)?.data as RequestNodeData | undefined
+        this.onNodeDataUpdate?.(node.id, { tasks: { ...(current?.tasks || {}), [variant]: state }, task: state })
+      },
+      run: (generationIndex, update) => {
+        const previous = initialTasks?.[generationIndex]
+        const requestConfig = previous?.requestSnapshot?.config || { ...runConfig, outputCount: 1 }
+        return runGenerationTask(
+          { channel, model, config: requestConfig, variant },
+          {
+            taskId: previous?.taskId,
+            submittedAt,
+            timeoutMs: variant === 'image' ? 15 * 60 * 1000 : 60 * 60 * 1000,
+            signal: this.signal,
+            onCancel: async (taskId) => { await cancelGenerationTask({ channel, model, config: requestConfig, variant }, taskId) },
+            onConfigPrepared: (preparedConfig) => {
+              update({ requestSnapshot: {
+                variant,
+                channelId: channel.id,
+                providerId: channel.providerId,
+                protocol: channel.protocol,
+                baseURL: channel.baseURL,
+                secretName: channel.secretName,
+                mediaTransport: channel.mediaTransport,
+                mediaUploadPath: channel.mediaUploadPath,
+                mediaUploadURL: channel.mediaUploadURL,
+                mediaUploadSecretName: channel.mediaUploadSecretName,
+                model: model.id,
+                config: preparedConfig,
+              } })
+            },
+            onTaskUpdate: update,
           },
-          onTaskUpdate: (nextTask) => {
-            const current = this.nodes.find((item) => item.id === node.id)?.data as RequestNodeData | undefined
-            const previous = current?.tasks?.[variant] || current?.task || { status: 'idle' as const }
-            this.onNodeDataUpdate?.(node.id, {
-              tasks: { ...(current?.tasks || {}), [variant]: { ...previous, ...nextTask, requestSnapshot: {
-              variant,
-              channelId: channel.id,
-              providerId: channel.providerId,
-              protocol: channel.protocol,
-              baseURL: channel.baseURL,
-              secretName: channel.secretName,
-              mediaTransport: channel.mediaTransport,
-              mediaUploadPath: channel.mediaUploadPath,
-              mediaUploadURL: channel.mediaUploadURL,
-              mediaUploadSecretName: channel.mediaUploadSecretName,
-              model: model.id,
-              config: snapshot,
-            } } },
-              task: { ...previous, ...nextTask },
-            })
-          },
-        },
-      )
-      if (task.status !== 'completed') break
-      allResults.resultUrls = [...(allResults.resultUrls || []), ...(task.resultUrls || [])]
-      allResults.resultResourceIds = [...(allResults.resultResourceIds || []), ...(task.resultResourceIds || [])]
-      allResults.resultMimeTypes = [...(allResults.resultMimeTypes || []), ...(task.resultMimeTypes || [])]
-      allResults.resultFileNames = [...(allResults.resultFileNames || []), ...(task.resultFileNames || [])]
-    }
-    task = allResults
+        )
+      },
+    })
     if (task.status === 'completed' && !task.resultUrls?.length && !task.resultResourceIds?.length) {
       throw new Error('生成任务已完成，但服务端没有返回可预览的结果')
     }

@@ -10,6 +10,7 @@ import {
   type ReactNode,
 } from "react";
 import { useParams } from "react-router-dom";
+import { installCanvasSelectionGuard } from "@/lib/flow/canvas-selection";
 import { nanoid } from "nanoid";
 import ReactFlow, {
   Background,
@@ -665,14 +666,7 @@ function FlowEditorInner() {
   }, []);
 
   useEffect(() => {
-    // Native text selection is outside React Flow's selection lifecycle. Clear
-    // it at the application boundary so every pointer click starts cleanly.
-    const clearNativeSelection = () => {
-      const selection = window.getSelection();
-      if (selection && !selection.isCollapsed) selection.removeAllRanges();
-    };
-    document.addEventListener("pointerdown", clearNativeSelection, true);
-    return () => document.removeEventListener("pointerdown", clearNativeSelection, true);
+    if (reactFlowWrapper.current) return installCanvasSelectionGuard(reactFlowWrapper.current);
   }, []);
 
   const showLocalVideoAiWarning = useCallback(() => {

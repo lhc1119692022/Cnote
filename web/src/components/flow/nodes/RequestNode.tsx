@@ -4,7 +4,8 @@ import { Check, ChevronDown, ChevronUp, Image as ImageIcon, LoaderCircle, Mic, S
 import { useFlowStore } from '@/stores/use-flow-store'
 import { generationAdapterForModel, generationChannelSupportsVariant, generationChannelUsesModelInference, generationSecretName, useGenerationStore, type GenerationChannel, type GenerationModel } from '@/stores/use-generation-store'
 import { createGenerationReference, createRequestNodeData, normalizeGenerationReferences } from '@/lib/generation/defaults'
-import { cancelGenerationTask, pollGenerationTask, pollIntervalForModel, submitGenerationTask } from '@/lib/generation/client'
+import { cancelGenerationTask, runGenerationTask } from '@/lib/generation/client'
+import { runGenerationBatch } from '@/lib/generation/batch'
 import { appendGenerationResultContentData } from '@/lib/generation/results'
 import { deleteLocalResource, loadLocalResourceUrl, revokeManagedObjectUrl, storeLocalResource } from '@/lib/resource-storage'
 import { textForAIContextNode } from '@/lib/flow/ai-context'
@@ -243,6 +244,8 @@ export const RequestNode = memo(({ id, data, selected }: NodeProps<RequestNodeDa
   }, [data.task, data.tasks, data.variant, variant])
   const elapsed = task.submittedAt ? Math.max(task.elapsedMs || 0, now - task.submittedAt) : task.elapsedMs || 0
   const waiting = task.status === 'validating' || task.status === 'submitting' || task.status === 'queued' || task.status === 'in_progress'
+  const resultCount = Math.max(task.resultUrls?.length || 0, task.resultResourceIds?.length || 0)
+  const resumableTaskId = task.taskId || task.children?.find((child) => child.taskId && child.status !== 'completed')?.taskId
 
   const updateTask = useCallback((updates: Partial<GenerationTaskState>) => {
     const current = useFlowStore.getState().nodes.find((node) => node.id === id)
@@ -318,6 +321,7 @@ export const RequestNode = memo(({ id, data, selected }: NodeProps<RequestNodeDa
     const generationStore = useGenerationStore.getState()
     const previousNodeData = useFlowStore.getState().nodes.find((node) => node.id === id)?.data as RequestNodeData | undefined
     const previousTask = previousNodeData?.tasks?.[variant] || previousNodeData?.task
+    const resumeChildren = resumeTaskId ? previousTask?.children : undefined
     const persisted = resumeTaskId ? previousTask?.requestSnapshot : undefined
     const liveChannel = config?.channelId ? generationStore.getChannel(config.channelId) : undefined
     const persistedLiveChannel = persisted ? generationStore.getChannel(persisted.channelId) : liveChannel
@@ -366,61 +370,38 @@ export const RequestNode = memo(({ id, data, selected }: NodeProps<RequestNodeDa
       controller.abort()
     }, timeoutMs)
     try {
-      const requestedCount = resumeTaskId || variant !== 'image'
-        ? 1
-        : Math.max(1, Math.min(10, Math.trunc(runConfig.outputCount || 1)))
-      let taskId: string | undefined
-      for (let generationIndex = 0; generationIndex < requestedCount; generationIndex += 1) {
-        taskId = resumeTaskId
-        const requestConfig = resumeTaskId ? runConfig : { ...runConfig, outputCount: 1 }
-        if (!taskId) {
-          updateTask({ status: 'validating', submittedAt, elapsedMs: 0, timeoutAt, error: undefined, resultUrls: undefined })
-          updateTask({ status: 'submitting' })
-          const submitted = await submitGenerationTask({ channel, model, config: requestConfig, variant }, controller.signal)
-          taskId = submitted.taskId
-          const preparedConfig = submitted.preparedConfig || requestConfig
-          if (submitted.preparedConfig?.references && variant === 'video') {
-            // Upstream media belongs to its source node. Persist only references
-            // that were already owned by this request node; the full prepared
-            // config remains in the immutable task snapshot for polling/resume.
-            const ownedReferenceIds = new Set((config?.references || []).map((reference) => reference.id))
-            const persistedReferences = submitted.preparedConfig.references.filter((reference) => ownedReferenceIds.has(reference.id))
-            const current = useFlowStore.getState().nodes.find((node) => node.id === id)
-            if (current && persistedReferences.length) updateNode(id, { data: { ...current.data, [variant]: { ...(current.data as RequestNodeData)[variant], references: persistedReferences } } })
-          }
-          updateTask({ taskId, provider: channel.providerId, channelId: channel.id, model: model.id, status: 'queued', submittedAt, elapsedMs: 0, timeoutAt, error: undefined, requestSnapshot: { variant, channelId: channel.id, providerId: channel.providerId, protocol: channel.protocol, baseURL: channel.baseURL, secretName: channel.secretName, mediaTransport: channel.mediaTransport, mediaUploadPath: channel.mediaUploadPath, mediaUploadURL: channel.mediaUploadURL, mediaUploadSecretName: channel.mediaUploadSecretName, model: model.id, config: preparedConfig } })
-          if (submitted.resultUrls?.length) {
-            updateTask({ status: 'completed', resultUrls: submitted.resultUrls, resultResourceIds: submitted.resultResourceIds, resultMimeTypes: submitted.resultMimeTypes, completedAt: Date.now(), elapsedMs: Date.now() - submittedAt })
-            createResultNodes(submitted.resultUrls, submitted.resultResourceIds, submitted.resultMimeTypes, submitted.resultFileNames, generationIndex, requestedCount)
-            resumeTaskId = undefined
-            continue
-          }
-        } else {
-        updateTask({ taskId, provider: channel.providerId, channelId: channel.id, model: model.id, status: 'in_progress', submittedAt, elapsedMs: elapsedOffset, timeoutAt, error: undefined, requestSnapshot: previousTask?.requestSnapshot })
-        }
-
-        const pollInterval = pollIntervalForModel(model)
-        while (taskId) {
-          if (Date.now() >= timeoutAt) {
-            updateTask({ status: 'timeout', elapsedMs: elapsedOffset + Date.now() - submittedAt, timeoutAt })
-            return
-          }
-          const polled = await pollGenerationTask({ channel, model, config: requestConfig, variant }, taskId, controller.signal)
-          const elapsedMs = elapsedOffset + Date.now() - submittedAt
-          updateTask({ ...polled.task, taskId, submittedAt, elapsedMs, timeoutAt })
-          if (polled.task.status === 'completed') {
-            if (polled.task.resultUrls?.length) createResultNodes(polled.task.resultUrls, polled.task.resultResourceIds, polled.task.resultMimeTypes, polled.task.resultFileNames, generationIndex, requestedCount)
-            else { updateTask({ error: '任务已完成，但服务端没有返回可预览的结果地址' }); return }
-            break
-          }
-          if (polled.task.status === 'failed') return
-          await new Promise<void>((resolve, reject) => {
-            const timer = window.setTimeout(resolve, pollInterval)
-            controller.signal.addEventListener('abort', () => { window.clearTimeout(timer); reject(new DOMException('执行已停止', 'AbortError')) }, { once: true })
+      const requestedCount = resumeChildren?.length || (resumeTaskId || variant !== 'image' ? 1 : Math.max(1, Math.min(10, Math.trunc(runConfig.outputCount || 1))))
+      const result = await runGenerationBatch({
+        count: requestedCount,
+        submittedAt,
+        elapsedOffset,
+        initialTasks: resumeChildren || (resumeTaskId && previousTask ? [previousTask] : undefined),
+        onTaskUpdate: (state) => {
+          if (!unmountingRef.current) updateTask({ ...state, timeoutAt, status: timedOut ? 'timeout' : state.status })
+        },
+        run: async (generationIndex, update) => {
+          const previousChild = resumeChildren?.[generationIndex]
+          const taskId = previousChild?.taskId || (!resumeChildren ? resumeTaskId : undefined)
+          const requestConfig = previousChild?.requestSnapshot?.config || { ...runConfig, outputCount: 1 }
+          return runGenerationTask({ channel, model, config: requestConfig, variant }, {
+            taskId,
+            submittedAt,
+            timeoutMs,
+            signal: controller.signal,
+            onTaskUpdate: update,
+            onConfigPrepared: (preparedConfig) => {
+              if (variant === 'video') {
+                const ownedReferenceIds = new Set((config?.references || []).map((reference) => reference.id))
+                const persistedReferences = preparedConfig.references.filter((reference) => ownedReferenceIds.has(reference.id))
+                const current = useFlowStore.getState().nodes.find((node) => node.id === id)
+                if (current && persistedReferences.length) updateNode(id, { data: { ...current.data, [variant]: { ...(current.data as RequestNodeData)[variant], references: persistedReferences } } })
+              }
+              update({ requestSnapshot: { variant, channelId: channel.id, providerId: channel.providerId, protocol: channel.protocol, baseURL: channel.baseURL, secretName: channel.secretName, mediaTransport: channel.mediaTransport, mediaUploadPath: channel.mediaUploadPath, mediaUploadURL: channel.mediaUploadURL, mediaUploadSecretName: channel.mediaUploadSecretName, model: model.id, config: preparedConfig } })
+            },
           })
-        }
-        resumeTaskId = undefined
-      }
+        },
+      })
+      if (!unmountingRef.current && !controller.signal.aborted && result.status !== 'timeout' && result.resultUrls?.length) createResultNodes(result.resultUrls, result.resultResourceIds, result.resultMimeTypes, result.resultFileNames, 0, result.resultUrls.length)
     } catch (error) {
       if (error instanceof DOMException && error.name === 'AbortError') {
         // Leaving the Flow or closing the window only stops local polling.
@@ -442,9 +423,10 @@ export const RequestNode = memo(({ id, data, selected }: NodeProps<RequestNodeDa
   useEffect(() => { runTaskRef.current = runTask }, [runTask])
 
   useEffect(() => {
-    if (!task.taskId || (task.status !== 'queued' && task.status !== 'in_progress')) return
-    if (!pollingRef.current) void runTaskRef.current(task.taskId)
-  }, [task.status, task.taskId])
+    const resumableId = task.taskId || task.children?.find((child) => child.taskId && child.status !== 'completed')?.taskId
+    if (!resumableId || (task.status !== 'queued' && task.status !== 'in_progress')) return
+    if (!pollingRef.current) void runTaskRef.current(resumableId)
+  }, [task.status, task.taskId, task.children])
 
   useEffect(() => () => {
     unmountingRef.current = true
@@ -452,10 +434,13 @@ export const RequestNode = memo(({ id, data, selected }: NodeProps<RequestNodeDa
   }, [])
 
   const stopTask = () => {
-    const taskId = task.taskId
     const channel = config?.channelId ? useGenerationStore.getState().getChannel(config.channelId) : undefined
     const model = channel && config?.model ? useGenerationStore.getState().getModels(channel.id).find((item) => item.id === config.model) : undefined
-    if (taskId && channel && model && config && variant !== 'body') void cancelGenerationTask({ channel, model, config, variant }, taskId)
+    if (channel && model && config && variant !== 'body') {
+      for (const child of task.children || [task]) {
+        if (child.taskId && child.status !== 'completed') void cancelGenerationTask({ channel, model, config: child.requestSnapshot?.config || config, variant }, child.taskId)
+      }
+    }
     abortRef.current?.abort()
   }
 
@@ -743,9 +728,9 @@ export const RequestNode = memo(({ id, data, selected }: NodeProps<RequestNodeDa
       </div>
 
       {(task.status === 'timeout' || task.status === 'unknown' || (task.status === 'failed' && Boolean(task.error)) || task.status === 'completed') && <div className="shrink-0 px-3 pb-2 text-[10px]">
-        {task.status === 'timeout' && <div className="rounded-lg bg-amber-50 px-2.5 py-2 text-amber-800"><div>任务已超时，任务 ID 已保留。</div>{task.taskId && <div className="mt-1 truncate font-mono" title={task.taskId}>{task.taskId}</div>}<button type="button" className="nodrag mt-1.5 font-semibold underline" onClick={() => void runTask(task.taskId)}>继续查询</button></div>}
+        {task.status === 'timeout' && <div className="rounded-lg bg-amber-50 px-2.5 py-2 text-amber-800"><div>任务已超时，任务 ID 已保留。</div>{task.taskId && <div className="mt-1 truncate font-mono" title={task.taskId}>{task.taskId}</div>}{resumableTaskId && <button type="button" className="nodrag mt-1.5 font-semibold underline" onClick={() => void runTask(resumableTaskId)}>继续查询</button>}</div>}
         {(task.status === 'failed' || task.status === 'unknown') && task.error && <div className="rounded-lg bg-destructive/5 px-2.5 py-2 text-destructive">{task.error}</div>}
-        {task.status === 'completed' && <div className="rounded-lg bg-emerald-50 px-2.5 py-2 text-emerald-800">任务已完成{task.resultUrls?.length ? `，已收到 ${task.resultUrls.length} 个结果` : ''}，耗时 ${formatElapsed(task.elapsedMs || elapsed)}</div>}
+        {task.status === 'completed' && <div className="rounded-lg bg-emerald-50 px-2.5 py-2 text-emerald-800">任务已完成，{variant === 'image' ? `已生成 ${resultCount} 张图片` : `已收到 ${resultCount} 个结果`}，耗时 {formatElapsed(task.elapsedMs ?? elapsed)}</div>}
       </div>}
 
       <div className="relative z-40 flex shrink-0 items-center gap-1.5 border-t border-border px-3 py-2.5" onPointerDown={(event) => event.stopPropagation()}>

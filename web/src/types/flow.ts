@@ -331,6 +331,7 @@ export type GenerationTaskStatus =
   | 'unknown'
 
 export interface GenerationTaskState {
+  children?: GenerationTaskState[]
   taskId?: string
   provider?: string
   channelId?: string

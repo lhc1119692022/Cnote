@@ -895,6 +895,7 @@ export async function runGenerationTask(
         resultUrls: submitted.resultUrls,
         resultResourceIds: submitted.resultResourceIds,
         resultMimeTypes: submitted.resultMimeTypes,
+        resultFileNames: submitted.resultFileNames,
       }
       options.onTaskUpdate?.(completed)
       return completed
