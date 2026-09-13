@@ -7,6 +7,8 @@
   "license": "MIT",
   "repository": "https://github.com/lhc1119692022/Cnote",
   "scripts": {
+    "test:generation-inputs": "node scripts/verify-generation-inputs.mjs",
+    "test:prompt-mentions": "node scripts/verify-prompt-mentions.mjs",
     "test:generation-selection": "node scripts/verify-generation-selection.mjs",
     "test:dialog": "node scripts/verify-dialog.mjs",
     "test:rich-text": "node scripts/verify-rich-text.mjs",

@@ -39,9 +39,9 @@ import { AIClient } from '@/lib/api'
 import { ScraperClient } from '@/lib/scraper'
 import { cancelGenerationTask, runGenerationTask } from '@/lib/generation/client'
 import { runGenerationBatch } from '@/lib/generation/batch'
-import { normalizeGenerationReferences } from '@/lib/generation/defaults'
+import { withGenerationUpstreamInputs } from '@/lib/generation/inputs'
 import { generationChannelSupportsVariant, generationSecretName, useGenerationStore, type GenerationChannel } from '@/stores/use-generation-store'
-import type { GenerationReference, GenerationTaskState } from '@/types/flow'
+import type { GenerationTaskState } from '@/types/flow'
 
 function extractInputTexts(value: unknown): string[] {
   if (typeof value === 'string') return value.trim() ? [value] : []
@@ -59,74 +59,6 @@ function isUnsupportedLocalVideoNode(node?: FlowNode) {
   if (node?.type !== 'content') return false
   const data = node.data as ContentNodeData
   return data.category === 'video' && data.source?.kind === 'file'
-}
-
-function mediaTypeFromValue(value: Record<string, unknown>): GenerationReference['type'] | undefined {
-  const kind = value.type || value.kind || value.category || value.mediaType
-  if (kind === 'image' || kind === 'video' || kind === 'audio') return kind
-  const mime = typeof value.mimeType === 'string'
-    ? value.mimeType
-    : typeof value.contentType === 'string'
-      ? value.contentType
-      : ''
-  if (mime.startsWith('image/')) return 'image'
-  if (mime.startsWith('video/')) return 'video'
-  if (mime.startsWith('audio/')) return 'audio'
-  return undefined
-}
-
-function collectGenerationReferences(value: unknown, references: GenerationReference[] = [], hintedType?: GenerationReference['type']) {
-  if (!value || typeof value !== 'object') return references
-  if (Array.isArray(value)) {
-    value.forEach((child) => collectGenerationReferences(child, references, hintedType))
-    return references
-  }
-  const record = value as Record<string, unknown>
-  const resource = record.resource && typeof record.resource === 'object' ? record.resource as Record<string, unknown> : undefined
-  const source = record.source && typeof record.source === 'object' ? record.source as Record<string, unknown> : undefined
-  const payload = record.payload && typeof record.payload === 'object' ? record.payload as Record<string, unknown> : undefined
-  const merged = { ...record, ...(source || {}), ...(payload || {}), ...(resource || {}) }
-  const type = mediaTypeFromValue(merged) || hintedType
-  const urlCandidate = [
-    resource?.sourceUrl,
-    resource?.url,
-    resource?.src,
-    resource?.file_url,
-    resource?.download_url,
-    record.url,
-    record.src,
-    record.file_url,
-    record.download_url,
-    source?.normalizedUrl,
-    source?.originalUrl,
-  ].find((candidate): candidate is string => typeof candidate === 'string' && candidate.trim().length > 0)
-  const url = urlCandidate?.trim()
-  const resourceId = typeof resource?.resourceId === 'string'
-    ? resource.resourceId
-    : typeof source?.resourceId === 'string'
-      ? source.resourceId
-      : typeof record.resourceId === 'string'
-        ? record.resourceId
-        : undefined
-  if (type && (url || resourceId)) {
-    const duplicate = references.some((reference) => reference.type === type && ((url && reference.url === url) || (resourceId && reference.resourceId === resourceId)))
-    if (!duplicate) references.push({
-      id: `${type}-${references.length + 1}`,
-      type,
-      source: url && /^https?:\/\//i.test(url) ? 'url' : 'local',
-      url,
-      previewUrl: typeof resource?.previewUrl === 'string' ? resource.previewUrl : typeof record.previewUrl === 'string' ? record.previewUrl : undefined,
-      resourceId,
-      fileName: typeof resource?.fileName === 'string' ? resource.fileName : typeof record.label === 'string' ? record.label : undefined,
-      mimeType: typeof resource?.mimeType === 'string' ? resource.mimeType : typeof source?.mimeType === 'string' ? source.mimeType : typeof record.mimeType === 'string' ? record.mimeType : undefined,
-      order: references.length,
-      status: 'ready',
-    })
-  }
-  Object.values(record).forEach((child) => {
-    if (child !== resource && child !== source && child !== value) collectGenerationReferences(child, references, type)
-  })
-  return references
 }
 
 /**
@@ -514,6 +446,8 @@ export class FlowExecutor {
     const channel: GenerationChannel | undefined = persisted
       ? {
           id: persisted.channelId,
+          presetId: persisted.presetId || persistedLiveChannel?.presetId,
+          presetVersion: persisted.presetVersion || persistedLiveChannel?.presetVersion,
           providerId: persisted.providerId as GenerationChannel['providerId'],
           name: persistedLiveChannel?.name || '已提交渠道',
           baseURL: persisted.baseURL,
@@ -535,23 +469,7 @@ export class FlowExecutor {
       : undefined
     if (!channel || !model?.id) throw new Error('请先配置生成渠道和模型')
 
-    const upstreamText = Object.values(inputs).flatMap(extractInputTexts).join('\n\n').trim()
-    const upstreamReferences = Object.values(inputs)
-      .flatMap((value) => collectGenerationReferences(value))
-      .filter((reference) => variant === 'image' ? reference.type === 'image' : true)
-    const baseReferenceCount = config.references?.length || 0
-    const mergedReferences = normalizeGenerationReferences([
-      ...(config.references || []),
-      ...upstreamReferences.map((reference, index) => ({ ...reference, order: baseReferenceCount + index })),
-    ])
-    const runConfig = persisted ? baseConfig : {
-      ...config,
-      capability: variant === 'image'
-        ? mergedReferences.some((reference) => reference.type === 'image') ? 'image-to-image' : 'text-to-image'
-        : config.capability,
-      prompt: [config.prompt, upstreamText].filter(Boolean).join('\n\n'),
-      references: mergedReferences,
-    }
+    const runConfig = persisted ? baseConfig : withGenerationUpstreamInputs(node.id, variant, config, this.nodes, this.edges, inputs)
     const initialTasks = persisted && existingTask ? existingTask.children || [existingTask] : undefined
     const requestedCount = initialTasks?.length || (persisted || variant !== 'image' ? 1 : Math.max(1, Math.min(10, Math.trunc(runConfig.outputCount || 1))))
     const submittedAt = Date.now()
@@ -579,8 +497,11 @@ export class FlowExecutor {
               update({ requestSnapshot: {
                 variant,
                 channelId: channel.id,
+                presetId: channel.presetId,
+                presetVersion: channel.presetVersion,
                 providerId: channel.providerId,
                 protocol: channel.protocol,
+                adapterId: requestConfig.adapterId,
                 baseURL: channel.baseURL,
                 secretName: channel.secretName,
                 mediaTransport: channel.mediaTransport,

@@ -5,7 +5,7 @@ export function createGenerationVariantConfig(variant: 'image' | 'video'): Gener
   return {
     prompt: '',
     references: [],
-    capability: variant === 'image' ? 'text-to-image' : 'text-to-video',
+    capability: variant === 'image' ? 'text-to-image' : 'reference-to-video',
     seconds: variant === 'video' ? 5 : undefined,
     resolution: variant === 'video' ? '720p' : 'auto',
     aspectRatio: '16:9',

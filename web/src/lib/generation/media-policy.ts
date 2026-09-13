@@ -1,9 +1,23 @@
-export type MediaTransport = 'auto' | 'inline' | 'presign' | 'multipart' | 'custom' | 'public-url'
+export type MediaTransport = 'inline' | 'custom'
 
-export function resolveMediaTransport(transport: MediaTransport, providerPath?: string, customConfigured = false): Exclude<MediaTransport, 'auto'> {
-  if (transport !== 'auto') return transport
-  if (providerPath) return 'presign'
-  return customConfigured ? 'custom' : 'public-url'
+export function normalizeMediaTransport(transport: unknown): MediaTransport | undefined {
+  return transport === 'inline' || transport === 'custom' ? transport : undefined
+}
+
+export function resolveMediaTransport(transport: unknown, customConfigured = false): MediaTransport {
+  const selected = normalizeMediaTransport(transport)
+  if (!selected) throw new Error('请在生成渠道中选择本地素材传输方式')
+  if (selected === 'custom' && !customConfigured) throw new Error('请先在“本地存储”中配置自定义媒体存储')
+  return selected
+}
+
+export function mediaTransportStatus(transport: MediaTransport | undefined, customConfigured = false) {
+  let resolved: MediaTransport
+  try { resolved = resolveMediaTransport(transport, customConfigured) } catch (error) {
+    return { canTestUpload: false, message: error instanceof Error ? error.message : String(error) }
+  }
+  if (resolved === 'inline') return { canTestUpload: false, message: '本地素材编码为 Data URL；需渠道明确支持，不经过存储服务。' }
+  return { canTestUpload: true, message: '使用“本地存储”中的自定义媒体存储配置上传。' }
 }
 
 export const MAX_INLINE_REQUEST_BYTES = 128 * 1024 * 1024

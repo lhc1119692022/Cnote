@@ -1,7 +1,8 @@
-import { generationAdapterForConfig, generationAdapterForModel, generationMediaUploadSecretName, generationProtocolForChannel, generationSecretName, type GenerationChannel, type GenerationModel } from '@/stores/use-generation-store'
+import { generationAdapterForConfig, generationAdapterForModel, generationMediaUploadSecretName, generationProtocolForChannel, generationSecretName, generationVideoRequestContractForModel, isVideoGenerationProtocol, type GenerationChannel, type GenerationModel } from '@/stores/use-generation-store'
 import { MEDIA_STORAGE_DEFAULTS, useMediaStorageStore } from '@/stores/use-media-storage-store'
 import type { GenerationReference, GenerationTaskState, GenerationVariantConfig } from '@/types/flow'
 import { normalizeGenerationReferences } from '@/lib/generation/defaults'
+import { normalizeVideoModeConfig, videoReferenceError } from './video-mode'
 import { loadLocalResourceBlob, loadLocalResourceUrl, storeLocalResource } from '@/lib/resource-storage'
 import { desktopFetch } from '@/lib/desktop-fetch'
 import { resolveMediaTransport, assertInlineRequestSize, assertMediaLifetime, signedMediaExpiry, MAX_INLINE_REQUEST_BYTES } from './media-policy'
@@ -65,10 +66,6 @@ function authHeaders(channel: GenerationChannel, adapterId?: string) {
   }
 }
 
-function requestHeaders(channel: GenerationChannel, extra: Record<string, string> = {}, adapterId?: string) {
-  return { ...authHeaders(channel, adapterId), ...extra }
-}
-
 function protocolFor(channel: GenerationChannel, adapterId?: string, modelId?: string) {
   if (adapterId || modelId) return generationAdapterForModel(channel, modelId || '', adapterId)?.protocol || generationProtocolForChannel(channel)
   return channel.protocol || generationAdapterForConfig(channel, undefined)?.protocol || generationProtocolForChannel(channel)
@@ -106,20 +103,29 @@ function normalizeVideoResolution(value: string | undefined) {
   return aliases[normalized] || normalized
 }
 
+function videoResolutionForModel(value: string | undefined, model: GenerationModel) {
+  const normalized = normalizeVideoResolution(value).toLowerCase()
+  return model.resolutions?.find((resolution) => normalizeVideoResolution(resolution).toLowerCase() === normalized) || normalizeVideoResolution(value)
+}
+
 function validateVideoConfig(model: GenerationModel, config: GenerationVariantConfig) {
+  const referenceError = videoReferenceError(model, config)
+  if (referenceError) throw new Error(referenceError)
+  if (config.generateAudio && !model.capabilities.includes('generate-audio')) throw new Error(`${model.name} 未配置生成音频能力`)
+  const inferredVideoModel = model.capabilitySource === 'inferred' && model.capabilities.some((capability) => capability.endsWith('-to-video') || ['video-reference', 'audio-reference', 'video-edit', 'generate-audio'].includes(capability))
   const seconds = config.seconds ?? 5
   if (!Number.isInteger(seconds) || seconds <= 0) throw new Error('视频时长必须是正整数秒数')
-  if (model.allowedDurations?.length && !model.allowedDurations.includes(seconds)) throw new Error(`${model.name} 时长只能为 ${model.allowedDurations.join(' 或 ')} 秒`)
-  if (model.minDuration && seconds < model.minDuration || model.maxDuration && seconds > model.maxDuration) throw new Error(`${model.name} 时长必须为 ${model.minDuration}-${model.maxDuration} 秒`)
-  const resolution = normalizeVideoResolution(config.resolution)
-  if (model.resolutions?.length && !model.resolutions.includes(resolution)) throw new Error(`${model.name} 不支持 ${resolution}`)
-  if (model.aspectRatios?.length && config.aspectRatio && !model.aspectRatios.includes(config.aspectRatio)) throw new Error(`${model.name} 不支持 ${config.aspectRatio} 画幅`)
+  if (!inferredVideoModel && model.allowedDurations?.length && !model.allowedDurations.includes(seconds)) throw new Error(`${model.name} 时长只能为 ${model.allowedDurations.join(' 或 ')} 秒`)
+  if (!inferredVideoModel && (model.minDuration && seconds < model.minDuration || model.maxDuration && seconds > model.maxDuration)) throw new Error(`${model.name} 时长必须为 ${model.minDuration}-${model.maxDuration} 秒`)
+  const resolution = videoResolutionForModel(config.resolution, model)
+  if (!inferredVideoModel && model.resolutions?.length && !model.resolutions.some((item) => normalizeVideoResolution(item).toLowerCase() === normalizeVideoResolution(resolution).toLowerCase())) throw new Error(`${model.name} 不支持 ${resolution}`)
+  if (!inferredVideoModel && model.aspectRatios?.length && config.aspectRatio && !model.aspectRatios.includes(config.aspectRatio)) throw new Error(`${model.name} 不支持 ${config.aspectRatio} 画幅`)
   const images = config.references.filter((reference) => reference.type === 'image')
   const videos = config.references.filter((reference) => reference.type === 'video')
   const audios = config.references.filter((reference) => reference.type === 'audio')
   for (const [type, max] of [['image', model.maxImages], ['video', model.maxVideos], ['audio', model.maxAudios] ] as const) {
     const count = config.references.filter((reference) => reference.type === type).length
-    if (max && count > max) throw new Error(`${model.name} 最多支持 ${max} 个${type}参考素材`)
+    if (max !== undefined && count > max) throw new Error(`${model.name} 最多支持 ${max} 个${type}参考素材`)
   }
   if (model.id === 'gemini-omni-1.1' && audios.length) throw new Error('Gemini Omni 1.1 不支持参考音频')
   const firstFrame = images.filter((reference) => reference.role === 'first_frame')
@@ -129,10 +135,10 @@ function validateVideoConfig(model: GenerationModel, config: GenerationVariantCo
   if (firstFrame.length > 1 || lastFrame.length > 1) throw new Error('首帧和尾帧各只能提供一张')
   if (firstFrame.length && (ordinaryImages.length || videos.length || audios.length) && model.id !== 'gemini-omni-1.1') throw new Error('首尾帧不能与参考媒体混用')
   if (model.id === 'gemini-omni-1.1' && firstFrame.length && ordinaryImages.length) throw new Error('Gemini Omni 1.1 的首帧不能与参考图片混用')
-  if (audios.length && !ordinaryImages.length && !videos.length && model.id !== 'seedance-2.5-pro') throw new Error(`${model.name} 的参考音频必须同时提供参考图片或参考视频`)
+  if (audios.length && !ordinaryImages.length && !videos.length && !model.allowsAudioOnlyReference) throw new Error(`${model.name} 的参考音频必须同时提供参考图片或参考视频`)
   if (model.id === 'gemini-omni-1.1' && videos.length && !ordinaryImages.length && !firstFrame.length) throw new Error('Gemini Omni 1.1 的参考视频必须同时提供首帧或参考图片')
-  if (model.id !== 'gemini-omni-1.1' && !config.prompt.trim()) throw new Error(`${model.name} 需要填写提示词`)
-  if (model.id === 'gemini-omni-1.1' && !config.prompt.trim() && !ordinaryImages.length && !firstFrame.length) throw new Error('Gemini Omni 1.1 省略提示词时必须提供首帧或参考图片')
+  if (model.promptRequired !== false && !config.prompt.trim()) throw new Error(`${model.name} 需要填写提示词`)
+  if (model.promptRequired === false && model.promptlessWithReferences && !config.prompt.trim() && !ordinaryImages.length && !firstFrame.length) throw new Error(`${model.name} 省略提示词时必须提供首帧或参考图片`)
   return resolution
 }
 function isGPTImage25(model: GenerationModel) {
@@ -245,8 +251,6 @@ function uploadedReferenceUrl(payload: any, responsePath = 'url') {
 }
 
 interface MediaUploadEndpoint {
-  mode: 'provider' | 'custom'
-  kind: 'multipart' | 'presign'
   endpoint: string
   fieldName: string
   responsePath: string
@@ -256,66 +260,44 @@ interface MediaUploadEndpoint {
 
 function mediaUploadSettings(channel: GenerationChannel, adapterId?: string) {
   const adapter = generationAdapterForConfig(channel, adapterId)
-  const protocol = protocolFor(channel, adapterId)
-  const providerPath = adapter?.mediaUploadPath || channel.mediaUploadPath
   return {
-    transport: adapter?.mediaTransport || channel.mediaTransport || 'auto',
-    providerPath,
+    transport: adapter?.mediaTransport ?? channel.mediaTransport,
     fieldName: adapter?.mediaUploadField || channel.mediaUploadField || MEDIA_STORAGE_DEFAULTS.fieldName,
     responsePath: adapter?.mediaUploadResponsePath || channel.mediaUploadResponsePath || MEDIA_STORAGE_DEFAULTS.responsePath,
-    protocol,
   }
 }
 
 function mediaUploadEndpoint(channel: GenerationChannel, adapterId?: string): MediaUploadEndpoint {
   const settings = mediaUploadSettings(channel, adapterId)
-  if (settings.transport === 'public-url' || settings.transport === 'inline') {
-    throw new Error('当前渠道仅接受公网 HTTPS 地址，请改用“自动”“multipart”或“自定义”')
-  }
   const mediaStorage = useMediaStorageStore.getState()
   const customConfigured = Boolean(mediaStorage.baseURL || channel.mediaUploadURL)
-  if (settings.transport === 'custom' || (settings.transport === 'auto' && !settings.providerPath && customConfigured)) {
-    const endpoint = mediaStorage.baseURL
-      ? mediaStorage.getUploadEndpoint()
-      : String(channel.mediaUploadURL || '').trim()
-    if (!isHttpsUrl(endpoint)) throw new Error('请先在“本地存储”中配置 HTTPS 自定义上传地址')
-    return {
-      mode: 'custom',
-      kind: 'multipart',
-      endpoint,
-      fieldName: mediaStorage.baseURL ? mediaStorage.fieldName : settings.fieldName,
-      responsePath: mediaStorage.baseURL ? mediaStorage.responsePath : settings.responsePath,
-      token: mediaStorage.baseURL ? mediaStorage.getAccessToken() : channel.mediaUploadApiKey,
-      secretName: mediaStorage.baseURL ? mediaStorage.secretName : channel.mediaUploadSecretName || generationMediaUploadSecretName(channel.id),
-    }
-  }
-  const path = String(settings.providerPath || '').trim()
-  if (!path) throw new Error('当前视频渠道没有配置供应商上传路径，请填写路径或在“本地存储”中配置自定义服务')
+  const transport = resolveMediaTransport(settings.transport, customConfigured)
+  if (transport === 'inline') throw new Error('内联素材直接进入请求体，不使用上传接口')
+  const endpoint = mediaStorage.baseURL
+    ? mediaStorage.getUploadEndpoint()
+    : String(channel.mediaUploadURL || '').trim()
+  if (!isHttpsUrl(endpoint)) throw new Error('请先在“本地存储”中配置 HTTPS 自定义上传地址')
   return {
-    mode: 'provider',
-    kind: settings.transport === 'multipart' ? 'multipart' : 'presign',
-    endpoint: joinVersionedEndpoint(channel.baseURL, path),
-    fieldName: settings.fieldName,
-    responsePath: settings.responsePath,
+    endpoint,
+    fieldName: mediaStorage.baseURL ? mediaStorage.fieldName : settings.fieldName,
+    responsePath: mediaStorage.baseURL ? mediaStorage.responsePath : settings.responsePath,
+    token: mediaStorage.baseURL ? mediaStorage.getAccessToken() : channel.mediaUploadApiKey,
+    secretName: mediaStorage.baseURL ? mediaStorage.secretName : channel.mediaUploadSecretName || generationMediaUploadSecretName(channel.id),
   }
 }
 
-function mediaUploadHeaders(channel: GenerationChannel, endpoint: MediaUploadEndpoint, adapterId?: string) {
-  if (endpoint.mode === 'provider') {
-    return Object.fromEntries(Object.entries(authHeaders(channel, adapterId)).filter(([name]) => name.toLowerCase() !== 'content-type'))
-  }
+function mediaUploadHeaders(endpoint: MediaUploadEndpoint): Record<string, string> {
   return endpoint.token ? { Authorization: `Bearer ${endpoint.token}` } : {}
 }
 
-function mediaUploadSecretRefs(channel: GenerationChannel, endpoint: MediaUploadEndpoint, adapterId?: string) {
-  if (endpoint.mode === 'provider') return authSecretRefs(channel, adapterId)
+function mediaUploadSecretRefs(endpoint: MediaUploadEndpoint) {
   if (!endpoint.secretName || typeof window === 'undefined' || !window.cnoteDesktop) return undefined
   return { Authorization: endpoint.secretName }
 }
 
 async function assertMediaUploadSecretReady(endpoint: MediaUploadEndpoint) {
   const desktop = typeof window !== 'undefined' ? window.cnoteDesktop : undefined
-  if (endpoint.mode !== 'custom' || !desktop?.secrets || !endpoint.secretName) return
+  if (!desktop?.secrets || !endpoint.secretName) return
   if (endpoint.token) {
     await syncDesktopSecret(endpoint.secretName, endpoint.token)
     return
@@ -325,54 +307,20 @@ async function assertMediaUploadSecretReady(endpoint: MediaUploadEndpoint) {
   }
 }
 
-function presignedUploadValue(payload: any, key: 'upload' | 'public') {
-  const candidates = key === 'upload'
-    ? [payload?.upload_url, payload?.uploadUrl, payload?.presigned_url, payload?.presignedUrl, payload?.data?.upload_url, payload?.data?.uploadUrl, payload?.data?.presigned_url, payload?.data?.presignedUrl]
-    : [payload?.public_url, payload?.publicUrl, payload?.data?.public_url, payload?.data?.publicUrl]
-  return firstString(...candidates)
-}
-
-async function uploadWithPresign(channel: GenerationChannel, endpoint: MediaUploadEndpoint, blob: Blob, fileName: string, signal?: AbortSignal, adapterId?: string) {
-  await assertDesktopSecretReady(channel, adapterId)
-  const response = await desktopFetch(endpoint.endpoint, {
-    method: 'POST',
-    headers: { ...requestHeaders(channel, { 'Content-Type': 'application/json' }, adapterId) },
-    body: JSON.stringify({ filename: fileName, content_type: blob.type || 'application/octet-stream', size: blob.size }),
-    signal,
-  }, { secretRefs: authSecretRefs(channel, adapterId) })
-  const payload = await parseResponse(response)
-  if (payload?.error || payload?.success === false) throw new Error('预签名申请失败（HTTP ' + response.status + '）：供应商返回业务错误，请核对上传能力及权限')
-  const uploadURL = presignedUploadValue(payload, 'upload')
-  const publicURL = presignedUploadValue(payload, 'public')
-  if (!uploadURL || !isHttpsUrl(uploadURL)) throw new Error('预签名响应缺少 HTTPS upload_url（HTTP ' + response.status + '；响应类型：' + (response.headers.get('content-type') || '未知') + '）')
-  if (!publicURL || !isHttpsUrl(publicURL)) throw new Error('供应商预签名接口没有返回可公开读取的 HTTPS public_url')
-  const uploadHeaders = payload?.upload_headers && typeof payload.upload_headers === 'object' ? payload.upload_headers : payload?.uploadHeaders && typeof payload.uploadHeaders === 'object' ? payload.uploadHeaders : {}
-  const uploadResponse = await desktopFetch(uploadURL, {
-    method: 'PUT',
-    headers: { 'Content-Type': blob.type || 'application/octet-stream', ...Object.fromEntries(Object.entries(uploadHeaders).filter((entry): entry is [string, string] => typeof entry[0] === 'string' && typeof entry[1] === 'string')) },
-    body: blob,
-    signal,
-  })
-  if (!uploadResponse.ok) throw new Error(`上传参考文件失败：HTTP ${uploadResponse.status}`)
-  assertMediaLifetime(signedMediaExpiry(publicURL))
-  return publicURL
-}
-
 async function uploadReference(channel: GenerationChannel, reference: GenerationReference, signal?: AbortSignal, adapterId?: string) {
   const endpoint = mediaUploadEndpoint(channel, adapterId)
   await assertMediaUploadSecretReady(endpoint)
   const { blob, fileName } = await referenceBlob(reference)
-  if (endpoint.kind === 'presign') return uploadWithPresign(channel, endpoint, blob, fileName, signal, adapterId)
   const form = new FormData()
   form.append(endpoint.fieldName, blob, fileName)
   form.append('purpose', 'generation')
   if (reference.resourceId?.startsWith('sha256-')) form.append('checksum', reference.resourceId.slice('sha256-'.length))
   const response = await desktopFetch(endpoint.endpoint, {
     method: 'POST',
-    headers: mediaUploadHeaders(channel, endpoint, adapterId),
+    headers: mediaUploadHeaders(endpoint),
     body: form,
     signal,
-  }, { secretRefs: mediaUploadSecretRefs(channel, endpoint, adapterId) })
+  }, { secretRefs: mediaUploadSecretRefs(endpoint) })
   const payload = await parseResponse(response)
   const url = uploadedReferenceUrl(payload, endpoint.responsePath)
   if (!url || !isHttpsUrl(url)) throw new Error(`上传参考文件“${reference.label || reference.id}”后没有得到公网 HTTPS 地址`)
@@ -383,26 +331,20 @@ async function uploadReference(channel: GenerationChannel, reference: Generation
 /** Performs a small multipart upload without submitting a generation task. */
 export async function testGenerationMediaUpload(channel: GenerationChannel, adapterId?: string, signal?: AbortSignal): Promise<{ url?: string; message?: string }> {
   const settings = mediaUploadSettings(channel, adapterId)
-  const transport = resolveMediaTransport(settings.transport, settings.providerPath, Boolean(useMediaStorageStore.getState().baseURL || channel.mediaUploadURL))
+  const transport = resolveMediaTransport(settings.transport, Boolean(useMediaStorageStore.getState().baseURL || channel.mediaUploadURL))
   if (transport === 'inline') return { message: '已选择 Data URL；无需上传接口。此检查不代表供应商已接受生成请求。' }
-  if (transport === 'public-url') return { message: '仅使用现有 HTTPS 地址；未执行上传或验证远端可读性。' }
   const endpoint = mediaUploadEndpoint(channel, adapterId)
   await assertMediaUploadSecretReady(endpoint)
-  if (endpoint.kind === 'presign') {
-    const testBlob = new Blob(['cnote upload test'], { type: 'application/octet-stream' })
-    const url = await uploadWithPresign(channel, endpoint, testBlob, 'cnote-upload-test.bin', signal, adapterId)
-    return { url }
-  }
   const form = new FormData()
   const testBlob = new Blob(['cnote upload test'], { type: 'application/octet-stream' })
   form.append(endpoint.fieldName, testBlob, 'cnote-upload-test.bin')
   form.append('purpose', 'generation-test')
   const response = await desktopFetch(endpoint.endpoint, {
     method: 'POST',
-    headers: mediaUploadHeaders(channel, endpoint, adapterId),
+    headers: mediaUploadHeaders(endpoint),
     body: form,
     signal,
-  }, { secretRefs: mediaUploadSecretRefs(channel, endpoint, adapterId) })
+  }, { secretRefs: mediaUploadSecretRefs(endpoint) })
   const payload = await parseResponse(response)
   const url = uploadedReferenceUrl(payload, endpoint.responsePath)
   if (!url || !isHttpsUrl(url)) throw new Error('上传接口响应中没有可匿名访问的公网 HTTPS 地址')
@@ -420,11 +362,7 @@ async function prepareReferenceConfig(context: GenerationRequestContext, signal?
   references.forEach((reference) => assertMediaLifetime(reference.expiresAt ?? signedMediaExpiry(referenceURL(reference))))
   const needsRemote = references.some((reference) => !isHttpsUrl(referenceURL(reference)))
   if (!needsRemote) return orderedConfig
-  const transport = resolveMediaTransport(adapter?.mediaTransport || channel.mediaTransport || 'auto', adapter?.mediaUploadPath || channel.mediaUploadPath, Boolean(useMediaStorageStore.getState().baseURL || channel.mediaUploadURL))
-  if (transport === 'public-url') {
-    if (references.some((reference) => !isHttpsUrl(referenceURL(reference)))) throw new Error('此渠道未声明内联或上传能力，请选择明确支持的传输方式，或配置自定义存储')
-    return orderedConfig
-  }
+  const transport = resolveMediaTransport(adapter?.mediaTransport ?? channel.mediaTransport, Boolean(useMediaStorageStore.getState().baseURL || channel.mediaUploadURL))
   if (transport === 'inline') {
     let inlineBytes = 0
     const prepared = await Promise.all(references.map(async (reference) => {
@@ -571,7 +509,7 @@ function statusFrom(body: any): GenerationTaskState['status'] {
   const status = String(body?.status || body?.state || body?.data?.status || '').toLowerCase()
   if (status === 'completed' || status === 'success' || status === 'succeeded' || status === 'done' || status.startsWith('succeeded')) return 'completed'
   if (status === 'failed' || status === 'error' || status === 'cancelled' || status === 'canceled' || status.startsWith('failed')) return 'failed'
-  if (status === 'in_progress' || status === 'processing' || status === 'running' || status === 'generating') return 'in_progress'
+  if (status === 'queued' || status === 'in_progress' || status === 'processing' || status === 'running' || status === 'generating') return 'in_progress'
   return 'unknown'
 }
 
@@ -621,10 +559,15 @@ function errorFrom(body: any) {
   return String(body?.error?.message || body?.error_message || body?.error || body?.message || status || '生成服务返回失败')
 }
 
+function contractPath(path: string | undefined, taskId: string, fallback: string) {
+  return (path || fallback).replace('{id}', encodeURIComponent(taskId))
+}
+
 function pollPath(context: GenerationRequestContext, taskId: string) {
   const { channel, variant } = context
   const protocol = protocolFor(channel, context.config.adapterId, context.model.id)
   if (variant === 'image' && protocol === 'openai-images') return `/images/tasks/${encodeURIComponent(taskId)}?response_format=url`
+  if (variant === 'video') return contractPath(generationVideoRequestContractForModel(channel, context.model, context.config.adapterId)?.pollPath, taskId, '/v1/videos/{id}')
   return `/v1/${variant === 'image' ? 'images' : 'videos'}/${encodeURIComponent(taskId)}`
 }
 
@@ -632,30 +575,43 @@ function contentPath(context: GenerationRequestContext, taskId: string) {
   const { channel, variant } = context
   const protocol = protocolFor(channel, context.config.adapterId, context.model.id)
   if (variant === 'image' && (protocol === 'openai-images' || protocol === 'google-images')) return undefined
+  if (variant === 'video') {
+    const path = generationVideoRequestContractForModel(channel, context.model, context.config.adapterId)?.contentPath
+    return path ? contractPath(path, taskId, '/v1/videos/{id}/content') : '/v1/videos/' + encodeURIComponent(taskId) + '/content'
+  }
   return `/v1/${variant === 'image' ? 'images' : 'videos'}/${encodeURIComponent(taskId)}/content`
 }
 
-function ensureProviderReadableReferences(references: GenerationReference[]) {
-  const invalid = references.find((reference) => !/^https:\/\//i.test(referenceURL(reference)) && !/^data:/i.test(referenceURL(reference)))
+function ensureProviderReadableReferences(references: GenerationReference[], requiresPublicHttps = false) {
+  const invalid = references.find((reference) => {
+    const value = referenceURL(reference)
+    return requiresPublicHttps ? !/^https:\/\//i.test(value) : !/^https:\/\//i.test(value) && !/^data:/i.test(value)
+  })
   if (invalid) {
-    throw new Error(`参考文件“${invalid.label || invalid.fileName || invalid.id}”尚未转换为公网 HTTPS 地址或内联 Data URL`)
+    throw new Error(requiresPublicHttps
+      ? `参考文件“${invalid.label || invalid.fileName || invalid.id}”必须是公网 HTTPS 地址`
+      : `参考文件“${invalid.label || invalid.fileName || invalid.id}”尚未转换为公网 HTTPS 地址或内联 Data URL`)
   }
 }
 
 export async function submitGenerationTask(context: GenerationRequestContext, signal?: AbortSignal): Promise<GenerationTaskResponse> {
   const { model, variant } = context
-  const initialConfig = context.config
+  const initialConfig = variant === 'video' ? normalizeVideoModeConfig(context.config, model) : context.config
+  let videoResolution: string | undefined
+  if (variant === 'video') {
+    try { videoResolution = validateVideoConfig(model, initialConfig) } catch (error) { throw new GenerationStageError('validation', error instanceof Error ? error.message : String(error), error) }
+  }
   const channel: GenerationChannel = { ...context.channel, protocol: protocolFor(context.channel, initialConfig.adapterId, model.id) }
+  const videoContract = variant === 'video' ? generationVideoRequestContractForModel(channel, model, initialConfig.adapterId) : undefined
   await assertDesktopSecretReady(channel, initialConfig.adapterId)
   const baseURL = normalizeBaseURL(channel.baseURL)
   if (!baseURL || baseURL.startsWith('local://')) throw new Error('当前生成渠道没有可用的公网接口地址')
   let config: GenerationVariantConfig
-  try { config = await prepareReferenceConfig({ ...context, channel }, signal) } catch (error) {
+  try { config = await prepareReferenceConfig({ ...context, config: initialConfig, channel }, signal) } catch (error) {
     throw new GenerationStageError('preparation', error instanceof Error ? error.message : String(error), error)
   }
   const protocol = protocolFor(channel)
-  let videoResolution: string | undefined
-  if (variant === 'video') { try { ensureProviderReadableReferences(config.references); videoResolution = validateVideoConfig(model, config) } catch (error) { throw new GenerationStageError('validation', error instanceof Error ? error.message : String(error), error) } }
+  if (variant === 'video') { try { ensureProviderReadableReferences(config.references, videoContract?.requiresPublicHttps) } catch (error) { throw new GenerationStageError('validation', error instanceof Error ? error.message : String(error), error) } }
 
   let body: Record<string, unknown> | undefined
   let requestURL = ''
@@ -709,7 +665,7 @@ export async function submitGenerationTask(context: GenerationRequestContext, si
     }
     requestURL = geminiGenerateContentEndpoint(baseURL, model.id)
     requestBody = JSON.stringify(body)
-  } else if (variant === 'video' && protocol === 'video-api') {
+  } else if (variant === 'video' && isVideoGenerationProtocol(protocol)) {
     const firstFrame = config.references.find((reference) => reference.role === 'first_frame')
     const lastFrame = config.references.find((reference) => reference.role === 'last_frame')
     const images = config.references.filter((reference) => reference.type === 'image' && !['first_frame', 'last_frame'].includes(reference.role || '')).map(referenceURL)
@@ -717,19 +673,18 @@ export async function submitGenerationTask(context: GenerationRequestContext, si
     const audios = config.references.filter((reference) => reference.type === 'audio').map(referenceURL)
     body = {
       model: model.id,
-      seconds: config.seconds || 5,
-      resolution: videoResolution || normalizeVideoResolution(config.resolution),
-      aspect_ratio: config.aspectRatio || '16:9',
+      [videoContract?.durationField || 'seconds']: config.seconds || model.defaultDuration || 5,
+      [videoContract?.resolutionField || 'resolution']: videoResolution || normalizeVideoResolution(config.resolution),
+      [videoContract?.aspectRatioField || 'aspect_ratio']: config.aspectRatio || '16:9',
       prompt: config.prompt,
-      ...(firstFrame ? { input_reference: referenceURL(firstFrame) } : {}),
-      ...(lastFrame ? { image_end: referenceURL(lastFrame) } : {}),
-      ...(images.length ? { reference_images: images } : {}),
-      ...(videos.length ? { reference_videos: videos } : {}),
-      ...(audios.length ? { reference_audios: audios } : {}),
-      ...(model.id.startsWith('seedance-') ? { sound_effects: config.noMusic ? false : Boolean(config.generateAudio) } : { sound_effects: Boolean(config.generateAudio) }),
-      ...(model.id.startsWith('seedance-') && config.noMusic ? { no_music: true } : {}),
+      ...(firstFrame && videoContract?.firstFrameField ? { [videoContract.firstFrameField]: referenceURL(firstFrame) } : {}),
+      ...(lastFrame && videoContract?.lastFrameField ? { [videoContract.lastFrameField]: referenceURL(lastFrame) } : {}),
+      ...(images.length && videoContract?.imageReferencesField ? { [videoContract.imageReferencesField]: images } : {}),
+      ...(videos.length && videoContract?.videoReferencesField ? { [videoContract.videoReferencesField]: videos } : {}),
+      ...(audios.length && videoContract?.audioReferencesField ? { [videoContract.audioReferencesField]: audios } : {}),
+      ...(model.capabilities.includes('generate-audio') && videoContract?.generateAudioField ? { [videoContract.generateAudioField]: Boolean(config.generateAudio) } : {}),
     }
-    requestURL = joinVersionedEndpoint(baseURL, '/v1/videos')
+    requestURL = joinVersionedEndpoint(baseURL, videoContract?.createPath || '/v1/videos')
     requestBody = JSON.stringify(body)
     try { assertInlineRequestSize(requestBody) } catch (error) {
       throw new GenerationStageError('validation', error instanceof Error ? error.message : String(error), error)

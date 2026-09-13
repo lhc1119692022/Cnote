@@ -4,13 +4,49 @@ import { nanoid } from 'nanoid'
 import { localForageStorage } from '@/lib/localforage-storage'
 import { decryptAPIKey, encryptAPIKey } from '@/lib/secure-storage'
 import { deleteDesktopSecret, syncDesktopSecretInBackground } from '@/lib/desktop-secrets'
+import { normalizeMediaTransport } from '@/lib/generation/media-policy'
 import type { GenerationCapability } from '@/types/flow'
+import { GENERATION_CHANNEL_PRESETS, VIDEO_MODEL_CATALOG } from '@/lib/generation/video-catalog'
+export { GENERATION_CHANNEL_PRESETS } from '@/lib/generation/video-catalog'
 
 export type GenerationProviderId = 'openai' | 'google' | 'video' | 'custom'
-export type GenerationProtocolId = 'openai-images' | 'google-images' | 'video-api'
+export type GenerationProtocolId = 'openai-images' | 'google-images' | 'video-api' | 'video-808relay' | 'video-kacang'
 /** How local video references become provider-readable inputs. */
 export type GenerationMediaTransport = import('@/lib/generation/media-policy').MediaTransport
 export type GenerationNodeVariant = 'image' | 'video'
+
+export interface GenerationVideoRequestContract {
+  createPath: string
+  pollPath: string
+  contentPath?: string
+  durationField: string
+  resolutionField?: string
+  aspectRatioField?: string
+  firstFrameField?: string
+  lastFrameField?: string
+  imageReferencesField?: string
+  videoReferencesField?: string
+  audioReferencesField?: string
+  generateAudioField?: string
+  requiresPublicHttps?: boolean
+}
+
+export interface GenerationChannelPreset {
+  id: string
+  version: string
+  name: string
+  description?: string
+  providerId: GenerationProviderId
+  protocol: GenerationProtocolId
+  defaultBaseURL?: string
+  modelIds: string[]
+  supportsImage: boolean
+  supportsVideo: boolean
+  mediaTransport?: GenerationMediaTransport
+  models?: GenerationModel[]
+  videoRequestContract?: GenerationVideoRequestContract
+  adapters?: GenerationAdapter[]
+}
 
 export interface GenerationModel {
   id: string
@@ -18,6 +54,7 @@ export interface GenerationModel {
   /** Adapter that owns this model when a connection exposes multiple protocols. */
   adapterId?: string
   capabilities: GenerationCapability[]
+  capabilitySource?: 'catalog' | 'inferred'
   inputTypes?: Array<'image' | 'video' | 'audio'>
   maxImages?: number
   maxVideos?: number
@@ -32,10 +69,21 @@ export interface GenerationModel {
   qualities?: Array<'auto' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'>
   defaultQuality?: 'auto' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'
   allowedDurations?: number[]
+  defaultDuration?: number
+  promptRequired?: boolean
+  promptlessWithReferences?: boolean
+  allowsAudioOnlyReference?: boolean
+  videoRequestContract?: Partial<GenerationVideoRequestContract>
 }
 
 export interface GenerationChannel {
   id: string
+  /** Built-in bundle copied when the channel was created. */
+  presetId?: string
+  /** Version of the copied bundle; existing channels may omit this. */
+  presetVersion?: string
+  /** Source metadata is informational and never drives runtime routing. */
+  presetSource?: { id: string; version: string; copiedAt: string }
   /** Legacy provider id retained for persisted channels and old task records. */
   providerId: GenerationProviderId
   /** The request contract used to build the provider request body. */
@@ -51,11 +99,12 @@ export interface GenerationChannel {
   enabled: boolean
   supportsImage?: boolean
   supportsVideo?: boolean
+  modelCatalog?: GenerationModel[]
+  videoRequestContract?: GenerationVideoRequestContract
   /** One connection can expose multiple request contracts. */
   adapters?: GenerationAdapter[]
   /** How local video references are handed to a provider. */
   mediaTransport?: GenerationMediaTransport
-  /** Optional provider-relative upload endpoint used by auto/multipart. */
   mediaUploadPath?: string
   /** Full custom upload service URL used when mediaTransport is custom. */
   mediaUploadURL?: string
@@ -81,6 +130,7 @@ export interface GenerationAdapter {
   mediaUploadURL?: string
   mediaUploadField?: string
   mediaUploadResponsePath?: string
+  videoRequestContract?: GenerationVideoRequestContract
 }
 
 export const GENERATION_PROVIDER_LABELS: Record<GenerationProviderId, string> = {
@@ -91,6 +141,8 @@ export const GENERATION_PROTOCOL_LABELS: Record<GenerationProtocolId, string> = 
   'openai-images': 'OpenAI 图像生成 / 编辑',
   'google-images': 'Google Gemini 图像生成 / 编辑',
   'video-api': '视频 API（文档协议）',
+  'video-808relay': '808Relay 视频',
+  'video-kacang': 'Kacang 视频',
 }
 
 export type GenerationProtocolGroup = 'image' | 'video'
@@ -180,26 +232,19 @@ const IMAGE_MODELS: GenerationModel[] = [  ...['gpt-image-2.5', 'gpt-image-2.5-s
   },
 ]
 
-const VIDEO_MODELS: GenerationModel[] = [
-  { id: 'seedance-2-pro', name: 'Seedance 2 Pro', capabilities: ['text-to-video', 'image-to-video', 'reference-to-video', 'first-last-frame', 'video-reference', 'audio-reference', 'generate-audio'], inputTypes: ['image', 'video', 'audio'], maxImages: 9, maxVideos: 3, maxAudios: 3, minDuration: 4, maxDuration: 15, pollIntervalMs: 10000, resolutions: ['480p', '720p', '1080p', '4k'], aspectRatios: ['21:9', '16:9', '4:3', '1:1', '3:4', '9:16'] },
-  { id: 'seedance-2-fast', name: 'Seedance 2 Fast', capabilities: ['text-to-video', 'image-to-video', 'reference-to-video', 'video-reference', 'generate-audio'], inputTypes: ['image', 'video', 'audio'], maxImages: 9, maxVideos: 3, maxAudios: 3, minDuration: 5, maxDuration: 10, allowedDurations: [5, 10], pollIntervalMs: 10000, resolutions: ['480p', '720p'], aspectRatios: ['21:9', '16:9', '4:3', '1:1', '3:4', '9:16'] },
-  { id: 'seedance-2-mini', name: 'Seedance 2 Mini', capabilities: ['text-to-video', 'image-to-video', 'reference-to-video', 'video-reference', 'generate-audio'], inputTypes: ['image', 'video', 'audio'], maxImages: 9, maxVideos: 3, maxAudios: 3, minDuration: 5, maxDuration: 10, allowedDurations: [5, 10], pollIntervalMs: 10000, resolutions: ['480p', '720p'], aspectRatios: ['21:9', '16:9', '4:3', '1:1', '3:4', '9:16'] },
-  { id: 'seedance-2.5-pro', name: 'Seedance 2.5 Pro', capabilities: ['text-to-video', 'image-to-video', 'reference-to-video', 'first-last-frame', 'video-reference', 'audio-reference', 'video-edit', 'generate-audio'], inputTypes: ['image', 'video', 'audio'], maxImages: 30, maxVideos: 10, maxAudios: 10, minDuration: 4, maxDuration: 30, pollIntervalMs: 10000, resolutions: ['480p', '720p', '1080p'], aspectRatios: ['21:9', '16:9', '4:3', '1:1', '3:4', '9:16'] },
-  { id: 'wan-3', name: 'Wan 3', capabilities: ['text-to-video', 'image-to-video', 'reference-to-video', 'video-reference', 'audio-reference', 'generate-audio'], inputTypes: ['image', 'video', 'audio'], maxImages: 10, maxVideos: 5, maxAudios: 5, minDuration: 2, maxDuration: 30, pollIntervalMs: 10000, resolutions: ['480p', '720p', '1080p'], aspectRatios: ['16:9', '9:16'] },
-  { id: 'gemini-omni-1.1', name: 'Gemini Omni 1.1', capabilities: ['text-to-video', 'image-to-video', 'reference-to-video', 'video-reference', 'generate-audio'], inputTypes: ['image', 'video'], maxImages: 8, maxVideos: 3, minDuration: 3, maxDuration: 10, pollIntervalMs: 10000, resolutions: ['360p', '720p', '1080p', '4k'], aspectRatios: ['16:9', '9:16'] },
-]
-
 export const GENERATION_MODEL_CATALOG: Record<GenerationProviderId, GenerationModel[]> = {
   openai: IMAGE_MODELS.filter((model) => model.id.startsWith('gpt-')),
   google: IMAGE_MODELS.filter((model) => model.id.includes('gemini') || model.id.includes('banana')),
-  video: VIDEO_MODELS,
+  video: VIDEO_MODEL_CATALOG,
   custom: [],
 }
 
 export const GENERATION_PROTOCOL_MODEL_CATALOG: Record<GenerationProtocolId, GenerationModel[]> = {
   'openai-images': IMAGE_MODELS.filter((model) => model.id.startsWith('gpt-') || model.id === 'dall-e-3'),
   'google-images': IMAGE_MODELS.filter((model) => model.id.includes('gemini') || model.id.includes('banana')),
-  'video-api': VIDEO_MODELS,
+  'video-api': VIDEO_MODEL_CATALOG,
+  'video-808relay': VIDEO_MODEL_CATALOG,
+  'video-kacang': GENERATION_CHANNEL_PRESETS.find((preset) => preset.id === 'video-kacang')?.models || [],
 }
 export function defaultGenerationProtocol(providerId: GenerationProviderId): GenerationProtocolId {
   if (providerId === 'openai') return 'openai-images'
@@ -210,6 +255,10 @@ export function defaultGenerationProtocol(providerId: GenerationProviderId): Gen
 
 export function generationProtocolForChannel(channel: Pick<GenerationChannel, 'protocol' | 'providerId'>): GenerationProtocolId {
   return channel.protocol || defaultGenerationProtocol(channel.providerId)
+}
+
+export function isVideoGenerationProtocol(protocol: GenerationProtocolId) {
+  return protocol === 'video-api' || protocol === 'video-808relay' || protocol === 'video-kacang'
 }
 
 export function generationAdaptersForChannel(channel: GenerationChannel): GenerationAdapter[] {
@@ -263,11 +312,64 @@ export function modelsForGenerationProtocol(protocol: GenerationProtocolId) {
   return GENERATION_PROTOCOL_MODEL_CATALOG[protocol] || []
 }
 
+export function generationVideoRequestContractForModel(channel: GenerationChannel, model?: GenerationModel, adapterId?: string) {
+  const adapter = generationAdapterForConfig(channel, adapterId)
+  const preset = generationPresetForId(channel.presetId)
+  const contract = model?.videoRequestContract || adapter?.videoRequestContract || channel.videoRequestContract || preset?.videoRequestContract
+  if (contract) return contract
+  return GENERATION_CHANNEL_PRESETS.find((item) => item.protocol === generationProtocolForChannel(channel))?.videoRequestContract
+    || VIDEO_MODEL_CATALOG[0]?.videoRequestContract as GenerationVideoRequestContract | undefined
+}
+
+export function generationPresetForId(presetId?: string) {
+  return GENERATION_CHANNEL_PRESETS.find((preset) => preset.id === presetId)
+}
+
+const UNKNOWN_VIDEO_MODEL_CAPABILITIES: GenerationCapability[] = [
+  'text-to-video',
+  'image-to-video',
+  'reference-to-video',
+  'first-last-frame',
+  'video-reference',
+  'audio-reference',
+  'video-edit',
+  'generate-audio',
+]
+
+const UNKNOWN_VIDEO_MODEL_INPUT_TYPES: Array<'image' | 'video' | 'audio'> = ['image', 'video', 'audio']
+const UNKNOWN_VIDEO_MODEL_RESOLUTIONS = ['360p', '480p', '720p', '1080p', '2k', '4k', '768']
+const UNKNOWN_VIDEO_MODEL_ASPECT_RATIOS = ['21:9', '16:9', '3:2', '4:3', '1:1', '3:4', '2:3', '9:16']
+
+export function unknownGenerationModelForProtocol(modelId: string, protocol: GenerationProtocolId): GenerationModel {
+  if (!isVideoGenerationProtocol(protocol)) {
+    return {
+      id: modelId,
+      name: modelId,
+      capabilitySource: 'inferred',
+      capabilities: inferGenerationModelCapabilities(modelId, protocol),
+    }
+  }
+
+  return {
+    id: modelId,
+    name: modelId,
+    capabilitySource: 'inferred',
+    capabilities: [...UNKNOWN_VIDEO_MODEL_CAPABILITIES],
+    inputTypes: [...UNKNOWN_VIDEO_MODEL_INPUT_TYPES],
+    minDuration: 1,
+    maxDuration: 60,
+    defaultDuration: 5,
+    resolutions: [...UNKNOWN_VIDEO_MODEL_RESOLUTIONS],
+    aspectRatios: [...UNKNOWN_VIDEO_MODEL_ASPECT_RATIOS],
+    promptRequired: false,
+    allowsAudioOnlyReference: true,
+  }
+}
+
 export function inferGenerationModelCapabilities(modelId: string, protocol: GenerationProtocolId): GenerationCapability[] {
   const value = modelId.trim().toLowerCase()
   if (/image|banana|dall-e|gemini.*flash|gemini.*pro|seedream|flux|imagen/.test(value)) return ['text-to-image', 'image-to-image']
-  if (/video|seedance|minimax|h3|kling|wan|veo|sora/.test(value)) return ['text-to-video', 'image-to-video', 'reference-to-video']
-  if (protocol === 'video-api') return ['text-to-video', 'image-to-video', 'reference-to-video']
+  if (/video|seedance|minimax|h3|kling|wan|veo|sora/.test(value) || isVideoGenerationProtocol(protocol)) return [...UNKNOWN_VIDEO_MODEL_CAPABILITIES]
   if (protocol === 'openai-images' || protocol === 'google-images') return ['text-to-image', 'image-to-image']
   return []
 }
@@ -289,6 +391,8 @@ export function generationChannelUsesModelInference(channel: GenerationChannel):
 
 interface GenerationState {
   channels: GenerationChannel[]
+  generationDefaultsVersion: number
+  initializeDefaultChannels: () => void
   addChannel: (input?: Partial<GenerationChannel>) => GenerationChannel
   updateChannel: (id: string, updates: Partial<GenerationChannel>) => void
   removeChannel: (id: string) => void
@@ -300,16 +404,25 @@ interface GenerationState {
 
 function normalizeChannel(channel: GenerationChannel): GenerationChannel {
   const configuredAdapters = (channel.adapters || []).filter((adapter) => adapter.enabled !== false)
+  const preset = generationPresetForId(channel.presetId)
+  const presetProtocol = preset?.protocol
   const protocol = channel.protocol
-    ? generationProtocolForChannel(channel)
+    ? (channel.protocol === 'video-api' && presetProtocol && presetProtocol !== 'video-api' ? presetProtocol : generationProtocolForChannel(channel))
     : configuredAdapters[0]?.protocol || generationProtocolForChannel(channel)
   const catalog = modelsForGenerationProtocol(protocol)
   const modelIds = channel.modelIds || catalog.map((model) => model.id)
+  const modelCatalog = channel.modelCatalog?.length ? channel.modelCatalog : preset?.models?.length ? preset.models : catalog
   const selectedAdapter = configuredAdapters.find((adapter) => adapter.protocol === protocol) || configuredAdapters[0]
+  const mediaTransport = normalizeMediaTransport(selectedAdapter?.mediaTransport ?? channel.mediaTransport)
+  const videoRequestContract = channel.videoRequestContract || selectedAdapter?.videoRequestContract || preset?.videoRequestContract
   const normalized = {
     ...channel,
     protocol,
     modelIds,
+    modelCatalog,
+    videoRequestContract,
+    baseURL: channel.baseURL.trim().replace(/\/$/, ''),
+    mediaTransport,
     secretName: channel.secretName || generationSecretName(channel.id),
     mediaUploadSecretName: channel.mediaUploadSecretName || generationMediaUploadSecretName(channel.id),
     adapters: [{
@@ -317,11 +430,12 @@ function normalizeChannel(channel: GenerationChannel): GenerationChannel {
       id: selectedAdapter?.id || protocol,
       protocol,
       label: selectedAdapter?.label || GENERATION_PROTOCOL_LABELS[protocol],
-      mediaTransport: selectedAdapter?.mediaTransport ?? channel.mediaTransport,
+      mediaTransport,
       mediaUploadPath: selectedAdapter?.mediaUploadPath ?? channel.mediaUploadPath,
       mediaUploadURL: selectedAdapter?.mediaUploadURL ?? channel.mediaUploadURL,
       mediaUploadField: selectedAdapter?.mediaUploadField ?? channel.mediaUploadField,
       mediaUploadResponsePath: selectedAdapter?.mediaUploadResponsePath ?? channel.mediaUploadResponsePath,
+      videoRequestContract: selectedAdapter?.videoRequestContract || videoRequestContract,
     }],
   }
   return {
@@ -335,22 +449,67 @@ export const useGenerationStore = create<GenerationState>()(
   persist(
     (set, get) => ({
       channels: [],
+      generationDefaultsVersion: 0,
+      initializeDefaultChannels: () => {
+        const state = get()
+        if (state.generationDefaultsVersion >= 1) return
+        const additions = GENERATION_CHANNEL_PRESETS
+          .filter((preset) => {
+            const defaultId = `official-${preset.id}`
+            return !state.channels.some((channel) => channel.id === defaultId || channel.presetId === preset.id || generationProtocolForChannel(channel) === preset.protocol)
+          })
+          .map((preset) => normalizeChannel({
+            id: `official-${preset.id}`,
+            presetId: preset.id,
+            presetVersion: preset.version,
+            presetSource: { id: preset.id, version: preset.version, copiedAt: new Date().toISOString() },
+            providerId: preset.providerId,
+            protocol: preset.protocol,
+            name: preset.name,
+            baseURL: preset.defaultBaseURL || '',
+            apiKey: '',
+            modelIds: preset.modelIds,
+            modelCatalog: preset.models,
+            enabled: true,
+            supportsImage: preset.supportsImage,
+            supportsVideo: preset.supportsVideo,
+            mediaTransport: preset.mediaTransport,
+            videoRequestContract: preset.videoRequestContract,
+            adapters: preset.videoRequestContract ? [{
+              id: preset.protocol,
+              protocol: preset.protocol,
+              label: GENERATION_PROTOCOL_LABELS[preset.protocol],
+              supportsImage: preset.supportsImage,
+              supportsVideo: preset.supportsVideo,
+              mediaTransport: preset.mediaTransport,
+              videoRequestContract: preset.videoRequestContract,
+            }] : undefined,
+          }))
+        additions.forEach((channel) => saveDesktopSecret(channel.secretName || generationSecretName(channel.id), undefined))
+        set({ channels: [...state.channels, ...additions], generationDefaultsVersion: 1 })
+      },
       addChannel: (input = {}) => {
         const providerId = input.providerId || 'custom'
         const protocol = input.protocol || defaultGenerationProtocol(providerId)
         const catalog = modelsForGenerationProtocol(protocol)
         const id = nanoid()
+        const preset = generationPresetForId(input.presetId) || GENERATION_CHANNEL_PRESETS.find((item) => item.protocol === protocol)
+        const endpointURL = input.baseURL || preset?.defaultBaseURL || ''
         const channel = normalizeChannel({
           id,
+          presetId: input.presetId || preset?.id,
+          presetVersion: input.presetVersion || preset?.version,
+          presetSource: input.presetSource || (preset ? { id: preset.id, version: preset.version, copiedAt: new Date().toISOString() } : undefined),
           providerId,
-          protocol,
+          protocol: preset?.protocol || protocol,
           name: input.name || '生成渠道',
-          baseURL: input.baseURL || '',
+          baseURL: endpointURL,
           apiKey: input.apiKey || '',
-          modelIds: input.modelIds || catalog.map((model) => model.id),
+          modelIds: input.modelIds || (preset?.modelIds.length ? preset.modelIds : catalog.map((model) => model.id)),
+          modelCatalog: input.modelCatalog || preset?.models || catalog,
           enabled: input.enabled ?? true,
-          supportsImage: input.supportsImage ?? protocol !== 'video-api',
-          supportsVideo: input.supportsVideo ?? protocol === 'video-api',
+          supportsImage: input.supportsImage ?? !isVideoGenerationProtocol(preset?.protocol || protocol),
+          supportsVideo: input.supportsVideo ?? isVideoGenerationProtocol(preset?.protocol || protocol),
           secretName: input.secretName || generationSecretName(id),
           mediaUploadSecretName: input.mediaUploadSecretName || generationMediaUploadSecretName(id),
           mediaTransport: input.mediaTransport,
@@ -358,8 +517,17 @@ export const useGenerationStore = create<GenerationState>()(
           mediaUploadURL: input.mediaUploadURL,
           mediaUploadField: input.mediaUploadField,
           mediaUploadResponsePath: input.mediaUploadResponsePath,
+          videoRequestContract: input.videoRequestContract || preset?.videoRequestContract,
           mediaUploadApiKey: input.mediaUploadApiKey,
-          adapters: input.adapters,
+          adapters: input.adapters || (preset?.videoRequestContract ? [{
+            id: preset.protocol,
+            protocol: preset.protocol,
+            label: GENERATION_PROTOCOL_LABELS[preset.protocol],
+            supportsImage: preset.supportsImage,
+            supportsVideo: preset.supportsVideo,
+            mediaTransport: input.mediaTransport || preset.mediaTransport,
+            videoRequestContract: preset.videoRequestContract,
+          }] : undefined),
         })
         saveDesktopSecret(channel.secretName || generationSecretName(id), input.apiKey)
         saveDesktopSecret(channel.mediaUploadSecretName || generationMediaUploadSecretName(id), input.mediaUploadApiKey)
@@ -402,17 +570,15 @@ export const useGenerationStore = create<GenerationState>()(
         const channel = channelId ? get().getChannel(channelId) : undefined
         if (!channel) return []
         const adapters = (adapterId ? [generationAdapterForConfig(channel, adapterId)] : generationAdaptersForChannel(channel)).filter((adapter): adapter is GenerationAdapter => Boolean(adapter))
-        const catalogs = adapters.flatMap((adapter) => modelsForGenerationProtocol(adapter.protocol))
+        const catalogs = [...(channel.modelCatalog || []), ...adapters.flatMap((adapter) => modelsForGenerationProtocol(adapter.protocol))]
         return (channel.modelIds || []).map((id) => {
-          const owner = adapters.find((adapter) => modelsForGenerationProtocol(adapter.protocol).some((model) => model.id === id))
+          const owner = adapters.find((adapter) => (channel.modelCatalog || modelsForGenerationProtocol(adapter.protocol)).some((model) => model.id === id))
           const catalogModel = catalogs.find((model) => model.id === id)
           return catalogModel
-            ? { ...catalogModel, adapterId: owner?.id }
+            ? { ...catalogModel, id, adapterId: owner?.id }
             : {
-                id,
-                name: id,
+                ...unknownGenerationModelForProtocol(id, owner?.protocol || adapters[0]?.protocol || generationProtocolForChannel(channel)),
                 adapterId: owner?.id || adapters[0]?.id,
-                capabilities: inferGenerationModelCapabilities(id, owner?.protocol || adapters[0]?.protocol || generationProtocolForChannel(channel)),
               }
         })
       },
@@ -421,6 +587,7 @@ export const useGenerationStore = create<GenerationState>()(
       name: 'cnote-generation',
       storage: createJSONStorage(() => localForageStorage),
       partialize: (state) => ({
+        generationDefaultsVersion: state.generationDefaultsVersion,
         channels: state.channels.map((channel) => ({
           ...channel,
           apiKey: undefined,

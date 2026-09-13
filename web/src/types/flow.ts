@@ -301,6 +301,7 @@ export type GenerationReferenceRole =
   | 'reference_audio'
 
 export interface GenerationReference {
+  upstreamNodeId?: string
   expiresAt?: number
   id: string
   type: GenerationReferenceType
@@ -359,11 +360,14 @@ export interface GenerationTaskState {
 export interface GenerationTaskRequestSnapshot {
   variant: 'image' | 'video'
   channelId: string
+  presetId?: string
+  presetVersion?: string
   providerId: string
   protocol?: string
+  adapterId?: string
   baseURL: string
   secretName?: string
-mediaTransport?: import('@/lib/generation/media-policy').MediaTransport
+  mediaTransport?: import('@/lib/generation/media-policy').MediaTransport
   mediaUploadPath?: string
   mediaUploadURL?: string
   mediaUploadSecretName?: string
@@ -378,8 +382,11 @@ export interface GenerationVariantConfig {
   adapterId?: string
   capability?: GenerationCapability
   prompt: string
+  /** Stable referenceId-to-token bindings used by the prompt @ picker. */
+  promptMentions?: Record<string, string>
   negativePrompt?: string
   references: GenerationReference[]
+  referenceOverrides?: Record<string, { role?: GenerationReferenceRole; order?: number; excluded?: boolean }>
   generateAudio?: boolean
   noMusic?: boolean
   seconds?: number

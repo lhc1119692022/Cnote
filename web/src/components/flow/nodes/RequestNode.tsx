@@ -1,6 +1,7 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { NodeProps, Position } from 'reactflow'
-import { Check, ChevronDown, ChevronUp, Image as ImageIcon, LoaderCircle, Mic, Sparkles, Square, Upload, Video, X } from 'lucide-react'
+import { useShallow } from 'zustand/react/shallow'
+import { ArrowLeftRight, Check, ChevronDown, ChevronUp, Image as ImageIcon, Link2, LoaderCircle, Mic, RotateCcw, Sparkles, Square, Upload, Video, X } from 'lucide-react'
 import { useFlowStore } from '@/stores/use-flow-store'
 import { generationAdapterForModel, generationChannelSupportsVariant, generationChannelUsesModelInference, generationSecretName, useGenerationStore, type GenerationChannel, type GenerationModel } from '@/stores/use-generation-store'
 import { createGenerationReference, createRequestNodeData, normalizeGenerationReferences } from '@/lib/generation/defaults'
@@ -8,30 +9,24 @@ import { cancelGenerationTask, runGenerationTask } from '@/lib/generation/client
 import { runGenerationBatch } from '@/lib/generation/batch'
 import { appendGenerationResultContentData } from '@/lib/generation/results'
 import { deleteLocalResource, loadLocalResourceUrl, revokeManagedObjectUrl, storeLocalResource } from '@/lib/resource-storage'
-import { textForAIContextNode } from '@/lib/flow/ai-context'
-import { getNodeMediaItems } from '@/lib/content-media'
+import { withGenerationUpstreamInputs } from '@/lib/generation/inputs'
+import { normalizeVideoModeConfig, resolveVideoMode, videoInputTypes, videoModesForModel, videoReferenceError, VIDEO_MODE_LABELS, VIDEO_MODE_PLACEHOLDERS } from '@/lib/generation/video-mode'
 import { REQUEST_NODE_MIN_SIZE } from '@/lib/flow/node-dimensions'
-import type { GenerationCapability, GenerationReference, GenerationTaskState, RequestNodeData, RequestVariant } from '@/types/flow'
+import { filterPromptMentionReferences, getPromptMentionContext, getPromptMentionToken, removePromptMention, replacePromptMention, type PromptMentionContext } from '@/lib/generation/prompt-mentions'
+import type { GenerationCapability, GenerationReference, GenerationTaskState, GenerationVariantConfig, RequestNodeData, RequestVariant } from '@/types/flow'
 import { NodeDragGutters, NodeHandle, NodeHoverToolbar, NodeResizeArc } from './NodeChrome'
 
-const CAPABILITY_LABELS: Record<GenerationCapability, string> = {
+const CAPABILITY_LABELS = {
   'text-to-image': '文生图',
   'image-to-image': '图生图',
-  'text-to-video': '文生视频',
-  'image-to-video': '图生视频',
-  'reference-to-video': '多参考视频',
-  'first-last-frame': '首尾帧',
-  'video-reference': '视频参考',
-  'audio-reference': '音频参考',
-  'video-edit': '视频编辑',
-  'generate-audio': '生成音频',
+  ...VIDEO_MODE_LABELS,
 }
 
 const TYPE_LABELS = { image: '图片', video: '视频', audio: '音频' } as const
 const TYPE_ICONS = { image: ImageIcon, video: Video, audio: Mic } as const
 const REFERENCE_DND_TYPE = 'application/x-cnote-generation-reference'
 
-function imageCapabilityForReferences(references: GenerationReference[] = []): GenerationCapability {
+function imageCapabilityForReferences(references: GenerationReference[] = []): 'image-to-image' | 'text-to-image' {
   return references.some((reference) => reference.type === 'image') ? 'image-to-image' : 'text-to-image'
 }
 
@@ -45,28 +40,77 @@ function formatElapsed(milliseconds: number) {
     : `${minutes}:${String(rest).padStart(2, '0')}`
 }
 
-function LocalReferencePreview({ reference }: { reference: GenerationReference }) {
+function LocalReferencePreview({ reference, size = 'large' }: { reference: GenerationReference; size?: 'small' | 'large' }) {
   const [url, setUrl] = useState(reference.previewUrl || reference.url || '')
+  const sizeClass = size === 'small' ? 'h-9 w-9 rounded-md' : 'h-14 w-14 rounded-lg'
 
   useEffect(() => {
     let active = true
     let managedUrl = ''
-    if (reference.previewUrl || reference.url || !reference.resourceId) return () => undefined
+    setUrl(reference.previewUrl || reference.url || '')
+    if (!reference.resourceId) return () => undefined
     void loadLocalResourceUrl(reference.resourceId).then((nextUrl) => {
-      if (!active || !nextUrl) return
+      if (!nextUrl) return
+      if (!active) { revokeManagedObjectUrl(nextUrl); return }
       managedUrl = nextUrl
       setUrl(nextUrl)
-    })
+    }).catch(() => undefined)
     return () => {
       active = false
       revokeManagedObjectUrl(managedUrl)
     }
   }, [reference.previewUrl, reference.resourceId, reference.url])
 
-  if (reference.type === 'audio') return <div className="flex h-14 w-14 items-center justify-center rounded-lg bg-muted text-muted-foreground"><Mic className="h-5 w-5" /></div>
-  if (!url) return <div className="flex h-14 w-14 items-center justify-center rounded-lg bg-muted text-muted-foreground"><Upload className="h-5 w-5" /></div>
-  if (reference.type === 'video') return <video src={url} muted className="h-14 w-14 rounded-lg bg-black object-cover" />
-  return <img src={url} alt={reference.label || '参考图片'} className="h-14 w-14 rounded-lg bg-muted object-cover" />
+  if (reference.type === 'audio') return <div className={`flex ${sizeClass} items-center justify-center bg-muted text-muted-foreground`}><Mic className={size === 'small' ? 'h-4 w-4' : 'h-5 w-5'} /></div>
+  if (!url) return <div className={`flex ${sizeClass} items-center justify-center bg-muted text-muted-foreground`}><Upload className={size === 'small' ? 'h-4 w-4' : 'h-5 w-5'} /></div>
+  if (reference.type === 'video') return <video src={url} muted className={`${sizeClass} bg-black object-cover`} />
+  return <img src={url} alt={reference.label || '参考图片'} className={`${sizeClass} bg-muted object-cover`} />
+}
+
+function PromptMentionMenu({
+  references,
+  promptMentions,
+  query,
+  selectedIndex,
+  onSelect,
+}: {
+  references: GenerationReference[]
+  promptMentions?: Record<string, string>
+  query: string
+  selectedIndex: number
+  onSelect: (reference: GenerationReference) => void
+}) {
+  const candidates = filterPromptMentionReferences(references, query, promptMentions)
+  const optionRefs = useRef<Array<HTMLButtonElement | null>>([])
+
+  useEffect(() => {
+    const option = optionRefs.current[selectedIndex]
+    if (option && typeof option.scrollIntoView === 'function') option.scrollIntoView({ block: 'nearest' })
+  }, [selectedIndex])
+
+  if (!candidates.length) return null
+  return <div id="request-node-prompt-mentions" role="listbox" aria-label="插入参考素材" className="cnote-menu-surface absolute bottom-[calc(100%-8px)] left-3 right-3 z-[70] max-h-[232px] overflow-auto">
+    <div className="px-2 pb-1 pt-1 text-[10px] text-muted-foreground">选择参考素材 · ↑↓ 选择 · Enter 插入</div>
+    {candidates.map((reference, index) => {
+      const TypeIcon = TYPE_ICONS[reference.type]
+      const token = getPromptMentionToken(reference, references, promptMentions)
+      return <button
+        key={reference.id}
+        ref={(element) => { optionRefs.current[index] = element }}
+        type="button"
+        role="option"
+        aria-selected={selectedIndex === index}
+        data-active={selectedIndex === index}
+        className="cnote-menu-item gap-2"
+        onMouseDown={(event) => event.preventDefault()}
+        onClick={() => onSelect(reference)}
+      >
+        <LocalReferencePreview reference={reference} size="small" />
+        <span className="min-w-0 flex-1 truncate">{reference.label || reference.fileName || TYPE_LABELS[reference.type]}</span>
+        <span className="flex shrink-0 items-center gap-1 text-[10px] text-muted-foreground"><TypeIcon className="h-3 w-3" aria-hidden="true" />{token}</span>
+      </button>
+    })}
+  </div>
 }
 
 function defaultRole(type: GenerationReference['type'], variant: RequestVariant): GenerationReference['role'] {
@@ -74,57 +118,9 @@ function defaultRole(type: GenerationReference['type'], variant: RequestVariant)
   return type === 'video' ? 'reference_video' : 'reference_image'
 }
 
-/** 把上游节点的文本并入提示词、图片/视频并入参考素材，与 Flow 执行器的行为保持一致。 */
-function withUpstreamInputs<T extends { prompt?: string; references?: GenerationReference[] }>(nodeId: string, variant: RequestVariant, config: T): T {
+function withUpstreamInputs(nodeId: string, variant: 'image' | 'video', config: GenerationVariantConfig) {
   const { nodes, edges } = useFlowStore.getState()
-  const upstreamNodes = edges
-    .filter((edge) => edge.target === nodeId)
-    .map((edge) => nodes.find((node) => node.id === edge.source))
-    .filter((node): node is NonNullable<typeof node> => Boolean(node && !(node.data as { disabled?: boolean } | undefined)?.disabled))
-  if (!upstreamNodes.length) {
-    return variant === 'image'
-      ? { ...config, capability: imageCapabilityForReferences(config.references) }
-      : config
-  }
-
-  const upstreamText = upstreamNodes
-    .map((node) => textForAIContextNode(node).trim())
-    .filter(Boolean)
-    .join('\n\n')
-  const existingKeys = new Set((config.references || []).map((reference) => reference.url || reference.resourceId).filter(Boolean))
-  const upstreamKinds = variant === 'image' ? (['image'] as const) : (['image', 'video'] as const)
-  const upstreamReferences = upstreamNodes.flatMap((node) => upstreamKinds.flatMap((kind) =>
-    getNodeMediaItems(node, kind).map((item): GenerationReference => ({
-      id: `upstream-${node.id}-${kind}-${item.resource.sourceUrl || item.resource.url || item.resource.resourceId}`,
-      type: kind,
-      role: defaultRole(kind, variant),
-      label: item.label,
-      source: (item.resource.sourceUrl || item.resource.url) && /^https?:\/\//i.test(item.resource.sourceUrl || item.resource.url) ? 'url' : 'local',
-      url: item.resource.sourceUrl || item.resource.url || undefined,
-      previewUrl: item.resource.url || undefined,
-      resourceId: item.resource.resourceId,
-      mimeType: item.resource.mimeType,
-      order: 0,
-      status: 'ready',
-    })),
-  )).filter((reference) => {
-    const key = reference.url || reference.resourceId
-    if (!key || existingKeys.has(key)) return false
-    existingKeys.add(key)
-    return true
-  })
-
-  const baseReferenceCount = config.references?.length || 0
-  const references = normalizeGenerationReferences([
-    ...(config.references || []),
-    ...upstreamReferences.map((reference, index) => ({ ...reference, order: baseReferenceCount + index })),
-  ])
-  return {
-    ...config,
-    prompt: [config.prompt, upstreamText].filter(Boolean).join('\n\n'),
-    ...(variant === 'image' ? { capability: imageCapabilityForReferences(references) } : {}),
-    references,
-  }
+  return withGenerationUpstreamInputs(nodeId, variant, config, nodes, edges)
 }
 
 function formatResolutionLabel(value: string) {
@@ -184,9 +180,10 @@ function modelConfigUpdates(config: NonNullable<RequestNodeData['image']> | unde
   if (model.aspectRatios?.length && (!config.aspectRatio || !model.aspectRatios.includes(config.aspectRatio))) updates.aspectRatio = model.aspectRatios[0]
   if (variant === 'image' && model.thinkingLevels?.length && (!config.thinkingLevel || !model.thinkingLevels.includes(config.thinkingLevel))) updates.thinkingLevel = model.defaultThinkingLevel || model.thinkingLevels[0]
   if (variant === 'video') {
-    const currentSeconds = config.seconds || 30
-    if (model.minDuration && currentSeconds < model.minDuration) updates.seconds = model.minDuration
-    if (model.maxDuration && currentSeconds > model.maxDuration) updates.seconds = model.maxDuration
+    const currentSeconds = config.seconds || model.defaultDuration || model.allowedDurations?.[0] || model.minDuration || 5
+    if (model.allowedDurations?.length && !model.allowedDurations.includes(currentSeconds)) updates.seconds = model.defaultDuration || model.allowedDurations[0]
+    else if (model.minDuration && currentSeconds < model.minDuration) updates.seconds = model.minDuration
+    else if (model.maxDuration && currentSeconds > model.maxDuration) updates.seconds = model.maxDuration
     if (model.capabilities.length && !model.capabilities.includes('generate-audio')) updates.generateAudio = false
   }
   return updates
@@ -196,7 +193,12 @@ export const RequestNode = memo(({ id, data, selected }: NodeProps<RequestNodeDa
   const updateNode = useFlowStore((state) => state.updateNode)
   const addNode = useFlowStore((state) => state.addNode)
   const addEdge = useFlowStore((state) => state.addEdge)
-  const upstreamCount = useFlowStore((state) => state.edges.filter((edge) => edge.target === id).length)
+  const nodes = useFlowStore(useShallow((state) => {
+    const sourceIds = new Set(state.edges.filter((edge) => edge.target === id).map((edge) => edge.source))
+    return state.nodes.filter((node) => sourceIds.has(node.id))
+  }))
+  const edges = useFlowStore(useShallow((state) => state.edges.filter((edge) => edge.target === id)))
+  const upstreamCount = edges.length
   const channels = useGenerationStore((state) => state.channels)
   const getModels = useGenerationStore((state) => state.getModels)
   const [now, setNow] = useState(Date.now())
@@ -205,12 +207,16 @@ export const RequestNode = memo(({ id, data, selected }: NodeProps<RequestNodeDa
   const abortRef = useRef<AbortController | null>(null)
   const unmountingRef = useRef(false)
   const draggedReferenceIdRef = useRef<string | null>(null)
+  const promptRef = useRef<HTMLTextAreaElement>(null)
+  const mentionMenuRef = useRef<HTMLDivElement>(null)
   const [draggedReferenceId, setDraggedReferenceId] = useState<string | null>(null)
+  const [mentionContext, setMentionContext] = useState<PromptMentionContext | null>(null)
+  const [mentionSelectedIndex, setMentionSelectedIndex] = useState(0)
 
   const variant = data.variant || 'body'
   const config = variant === 'body' ? undefined : data[variant]
   const selectedChannel = config?.channelId ? channels.find((channel) => channel.id === config.channelId) : undefined
-  const allModels = useMemo(() => getModels(config?.channelId), [config?.channelId, getModels])
+  const allModels = useMemo(() => selectedChannel ? getModels(selectedChannel.id) : [], [getModels, selectedChannel])
   const models = useMemo(() => {
     if (variant === 'body') return []
     if (!selectedChannel || !generationChannelUsesModelInference(selectedChannel)) return allModels
@@ -221,20 +227,24 @@ export const RequestNode = memo(({ id, data, selected }: NodeProps<RequestNodeDa
   }, [allModels, selectedChannel, variant])
   const selectedModel = models.find((model) => model.id === config?.model)
   const capabilities = useMemo(() => {
-    // The two selectors constrain each other: once a model is selected, the
-    // capability tab only shows capabilities that model can actually run.
-    const sourceModels = selectedModel ? [selectedModel] : models
-    const all = [...new Set(sourceModels.flatMap((model) => model.capabilities))]
-    return all.length ? all : variant === 'image' ? ['text-to-image', 'image-to-image'] as GenerationCapability[] : ['text-to-video', 'image-to-video', 'reference-to-video'] as GenerationCapability[]
-  }, [models, selectedModel, variant])
-  const references = config?.references || []
+    return videoModesForModel(selectedModel)
+  }, [selectedModel])
+  const resolvedConfig = useMemo(() => {
+    if (!config || variant === 'body') return undefined
+    const merged = withGenerationUpstreamInputs(id, variant, config, nodes, edges)
+    return variant === 'video' ? normalizeVideoModeConfig(merged, selectedModel) : merged
+  }, [config, edges, id, nodes, selectedModel, variant])
+  const references = resolvedConfig?.references || []
   const orderedReferences = normalizeGenerationReferences(references)
+  const mentionCandidates = useMemo(() => filterPromptMentionReferences(orderedReferences, mentionContext?.query || '', config?.promptMentions), [config?.promptMentions, mentionContext?.query, orderedReferences])
+  const videoMode = resolveVideoMode(resolvedConfig?.capability, references)
   const effectiveCapability = variant === 'image'
     ? imageCapabilityForReferences(references)
-    : config?.capability || capabilities[0]
+    : videoMode
+  const referenceError = variant === 'video' && selectedModel && resolvedConfig ? videoReferenceError(selectedModel, resolvedConfig) : undefined
   const timeoutMs = variant === 'image' ? 15 * 60 * 1000 : 60 * 60 * 1000
-  const availableAspectRatios = useMemo(() => [...new Set((variant === 'image' ? ['auto', '1:1', '16:9', '9:16'] : ['21:9', '16:9', '4:3', '1:1', '3:4', '9:16']).concat(models.flatMap((model) => model.aspectRatios || [])))], [models, variant])
-  const availableResolutions = useMemo(() => [...new Set((variant === 'image' ? ['auto', '1k', '2k', '3k', '4k'] : ['768', '720p', '1080p', '2K', '4K']).concat(models.flatMap((model) => model.resolutions || [])))], [models, variant])
+  const availableAspectRatios = selectedModel?.aspectRatios || [config?.aspectRatio || '16:9']
+  const availableResolutions = selectedModel?.resolutions || [config?.resolution || (variant === 'image' ? 'auto' : '720p')]
   const selectedResolution = config?.resolution || (variant === 'image' ? 'auto' : '720p')
   const selectedAspectRatio = config?.aspectRatio || '16:9'
   const parameterSummary = `${formatResolutionLabel(selectedResolution)} · ${formatAspectRatioLabel(selectedAspectRatio)}`
@@ -328,6 +338,8 @@ export const RequestNode = memo(({ id, data, selected }: NodeProps<RequestNodeDa
     const channel: GenerationChannel | undefined = persisted
       ? {
           id: persisted.channelId,
+          presetId: persisted.presetId || persistedLiveChannel?.presetId,
+          presetVersion: persisted.presetVersion || persistedLiveChannel?.presetVersion,
           providerId: persisted.providerId as GenerationChannel['providerId'],
           name: persistedLiveChannel?.name || '已提交渠道',
           baseURL: persisted.baseURL,
@@ -396,7 +408,7 @@ export const RequestNode = memo(({ id, data, selected }: NodeProps<RequestNodeDa
                 const current = useFlowStore.getState().nodes.find((node) => node.id === id)
                 if (current && persistedReferences.length) updateNode(id, { data: { ...current.data, [variant]: { ...(current.data as RequestNodeData)[variant], references: persistedReferences } } })
               }
-              update({ requestSnapshot: { variant, channelId: channel.id, providerId: channel.providerId, protocol: channel.protocol, baseURL: channel.baseURL, secretName: channel.secretName, mediaTransport: channel.mediaTransport, mediaUploadPath: channel.mediaUploadPath, mediaUploadURL: channel.mediaUploadURL, mediaUploadSecretName: channel.mediaUploadSecretName, model: model.id, config: preparedConfig } })
+              update({ requestSnapshot: { variant, channelId: channel.id, presetId: channel.presetId, presetVersion: channel.presetVersion, providerId: channel.providerId, protocol: channel.protocol, adapterId: preparedConfig.adapterId, baseURL: channel.baseURL, secretName: channel.secretName, mediaTransport: channel.mediaTransport, mediaUploadPath: channel.mediaUploadPath, mediaUploadURL: channel.mediaUploadURL, mediaUploadSecretName: channel.mediaUploadSecretName, model: model.id, config: preparedConfig } })
             },
           })
         },
@@ -457,6 +469,7 @@ export const RequestNode = memo(({ id, data, selected }: NodeProps<RequestNodeDa
       const target = event.target instanceof Element ? event.target : null
       const activeMenu = target?.closest('details') as HTMLDetailsElement | null
       closeOpenMenus(node, activeMenu && node.contains(activeMenu) ? activeMenu : null)
+      if (target !== promptRef.current && !mentionMenuRef.current?.contains(target)) setMentionContext(null)
     }
     const closeFromKeyboard = (event: KeyboardEvent) => {
       if (event.key === 'Escape') closeOpenMenus(nodeRef.current)
@@ -476,22 +489,109 @@ export const RequestNode = memo(({ id, data, selected }: NodeProps<RequestNodeDa
     const currentData = current.data as RequestNodeData
     const nextConfig = { ...currentData[variant], ...updates }
     const normalizedUpdates = variant === 'image'
-      ? { ...updates, capability: imageCapabilityForReferences(nextConfig.references) }
+      ? { ...updates, capability: withUpstreamInputs(id, variant, nextConfig).capability }
       : updates
     updateNode(id, { data: { ...currentData, [variant]: { ...nextConfig, ...normalizedUpdates } } })
   }, [id, updateNode, variant])
+
+  const updateMentionContext = useCallback((prompt: string, caret: number) => {
+    const nextContext = getPromptMentionContext(prompt, caret)
+    setMentionContext((currentContext) => {
+      const unchanged = currentContext && nextContext
+        && currentContext.start === nextContext.start
+        && currentContext.end === nextContext.end
+        && currentContext.query === nextContext.query
+      if (!unchanged) setMentionSelectedIndex(0)
+      return nextContext
+    })
+  }, [])
+
+  const selectMention = useCallback((reference: GenerationReference) => {
+    if (!mentionContext || !config) return
+    const token = getPromptMentionToken(reference, orderedReferences, config.promptMentions)
+    const nextPrompt = replacePromptMention(config.prompt, mentionContext, token)
+    const promptMentions = { ...(config.promptMentions || {}), [reference.id]: token }
+    const nextCaret = mentionContext.start + token.length
+    updateVariant({ prompt: `${nextPrompt.slice(0, nextCaret)} ${nextPrompt.slice(nextCaret)}`, promptMentions })
+    setMentionContext(null)
+    setMentionSelectedIndex(0)
+    requestAnimationFrame(() => {
+      const textarea = promptRef.current
+      if (!textarea) return
+      textarea.focus()
+      textarea.setSelectionRange(nextCaret + 1, nextCaret + 1)
+    })
+  }, [config, mentionContext, orderedReferences, updateVariant])
+
+  const handlePromptKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (!mentionContext || !mentionCandidates.length) return
+    if (event.key === 'ArrowDown') {
+      event.preventDefault()
+      setMentionSelectedIndex((index) => (index + 1) % mentionCandidates.length)
+    } else if (event.key === 'ArrowUp') {
+      event.preventDefault()
+      setMentionSelectedIndex((index) => (index - 1 + mentionCandidates.length) % mentionCandidates.length)
+    } else if (event.key === 'Enter' || event.key === 'Tab') {
+      event.preventDefault()
+      selectMention(mentionCandidates[mentionSelectedIndex] || mentionCandidates[0])
+    } else if (event.key === 'Escape') {
+      event.preventDefault()
+      setMentionContext(null)
+    }
+  }
+
+  const handlePromptChange = (event: React.ChangeEvent<HTMLTextAreaElement>) => {
+    const prompt = event.target.value
+    updateVariant({ prompt })
+    if (variant !== 'video') {
+      setMentionContext(null)
+      return
+    }
+    updateMentionContext(prompt, event.target.selectionStart ?? prompt.length)
+  }
+
+  const handlePromptCaretChange = (event: React.SyntheticEvent<HTMLTextAreaElement>) => {
+    const nativeEvent = event.nativeEvent as KeyboardEvent
+    if (event.type === 'keyup' && ['ArrowDown', 'ArrowUp', 'Enter', 'Tab', 'Escape'].includes(nativeEvent.key)) return
+    if (variant !== 'video') {
+      setMentionContext(null)
+      return
+    }
+    const textarea = event.currentTarget
+    updateMentionContext(textarea.value, textarea.selectionStart ?? textarea.value.length)
+  }
+
+  useEffect(() => {
+    if (variant !== 'video' || !config?.promptMentions) return
+    const activeReferenceIds = new Set(orderedReferences.map((reference) => reference.id))
+    const staleMentions = Object.entries(config.promptMentions).filter(([referenceId, token]) => !activeReferenceIds.has(referenceId) && config.prompt.includes(token))
+    if (!staleMentions.length) return
+    const prompt = staleMentions.reduce((value, [, token]) => removePromptMention(value, token, '[已移除素材]'), config.prompt)
+    const promptMentions = { ...config.promptMentions }
+    staleMentions.forEach(([referenceId]) => { delete promptMentions[referenceId] })
+    updateVariant({ prompt, promptMentions })
+  }, [config, orderedReferences, updateVariant, variant])
 
   useEffect(() => {
     if (variant !== 'image' || !config || config.capability === effectiveCapability) return
     updateVariant({ capability: effectiveCapability })
   }, [config, effectiveCapability, updateVariant, variant])
 
+  const updateReferences = (nextReferences: GenerationReference[], extraUpdates: Partial<NonNullable<typeof config>> = {}) => {
+    const normalized = nextReferences.map((reference, order) => ({ ...reference, order }))
+    const referenceOverrides = { ...config?.referenceOverrides }
+    for (const reference of normalized) {
+      if (reference.upstreamNodeId) referenceOverrides[reference.id] = { ...referenceOverrides[reference.id], role: reference.role, order: reference.order }
+    }
+    updateVariant({ references: normalized.filter((reference) => !reference.upstreamNodeId), referenceOverrides, ...extraUpdates })
+  }
+
   const moveReference = (referenceId: string, targetId: string, insertAfter = false) => {
     if (referenceId === targetId) return
     const source = orderedReferences.find((reference) => reference.id === referenceId)
     const target = orderedReferences.find((reference) => reference.id === targetId)
     if (!source || !target || source.type !== target.type) return
-    const sameTypeReferences = orderedReferences.filter((reference) => reference.type === source.type)
+    const sameTypeReferences = [...orderedReferences]
     const sourceIndex = sameTypeReferences.findIndex((reference) => reference.id === referenceId)
     let targetIndex = sameTypeReferences.findIndex((reference) => reference.id === targetId)
     if (sourceIndex < 0 || targetIndex < 0) return
@@ -499,9 +599,7 @@ export const RequestNode = memo(({ id, data, selected }: NodeProps<RequestNodeDa
     if (sourceIndex < targetIndex) targetIndex -= 1
     if (insertAfter) targetIndex += 1
     sameTypeReferences.splice(Math.max(0, Math.min(targetIndex, sameTypeReferences.length)), 0, moved)
-    const reorderedById = new Map(sameTypeReferences.map((reference, index) => [reference.id, { ...reference, order: index }]))
-    const nextReferences = orderedReferences.map((reference) => reorderedById.get(reference.id) || reference)
-    updateVariant({ references: normalizeGenerationReferences(nextReferences) })
+    updateReferences(sameTypeReferences)
   }
 
   const switchVariant = (nextVariant: 'image' | 'video') => {
@@ -533,7 +631,7 @@ export const RequestNode = memo(({ id, data, selected }: NodeProps<RequestNodeDa
   }
 
   const addReference = (reference: GenerationReference) => {
-    updateVariant({ references: normalizeGenerationReferences([...orderedReferences, { ...reference, order: orderedReferences.length }]) })
+    updateReferences([...orderedReferences, { ...reference, order: orderedReferences.length }])
   }
 
   const validateReferenceFile = async (file: File, type: GenerationReference['type']) => {
@@ -557,7 +655,7 @@ export const RequestNode = memo(({ id, data, selected }: NodeProps<RequestNodeDa
     }
   }
 
-  const handleFile = async (file: File, type: GenerationReference['type']) => {
+  const handleFile = async (file: File, type: GenerationReference['type'], role?: GenerationReference['role']) => {
     if (variant === 'body') return
     try { await validateReferenceFile(file, type) } catch (error) { updateTask({ status: 'failed', error: error instanceof Error ? error.message : String(error) }); return }
     const stored = await storeLocalResource(file)
@@ -575,7 +673,7 @@ export const RequestNode = memo(({ id, data, selected }: NodeProps<RequestNodeDa
     const providerNeedsUpload = variant === 'video' && selectedAdapter?.protocol !== 'google-images'
     addReference(createGenerationReference({
       type,
-      role: defaultRole(type, variant),
+      role: role || defaultRole(type, variant),
       label: file.name,
       source: 'local',
       resourceId: stored.resourceId,
@@ -593,17 +691,28 @@ export const RequestNode = memo(({ id, data, selected }: NodeProps<RequestNodeDa
   const setImageFrameRole = (reference: GenerationReference, role: '' | 'first_frame' | 'last_frame') => {
     if (reference.type !== 'image') return
     const nextRole = role || undefined
-    updateVariant({ references: normalizeGenerationReferences(orderedReferences.map((item) => {
+    updateReferences(orderedReferences.map((item) => {
       if (item.id === reference.id) return { ...item, role: nextRole }
-      if (nextRole === 'first_frame' && item.role === 'first_frame') return { ...item, role: 'reference_image' as const }
-      if (nextRole === 'last_frame' && item.role === 'last_frame') return { ...item, role: 'reference_image' as const }
+      if (nextRole && item.role === nextRole) return { ...item, role: reference.role }
       return item
-    })) })
+    }))
   }
 
   const removeReference = async (reference: GenerationReference) => {
+    const token = getPromptMentionToken(reference, orderedReferences, config?.promptMentions)
+    const prompt = config?.prompt ? removePromptMention(config.prompt, token, `[已移除${TYPE_LABELS[reference.type]}]`) : config?.prompt
+    const promptMentions = { ...(config?.promptMentions || {}) }
+    delete promptMentions[reference.id]
+    if (reference.upstreamNodeId) {
+      updateVariant({
+        prompt,
+        promptMentions,
+        referenceOverrides: { ...config?.referenceOverrides, [reference.id]: { ...config?.referenceOverrides?.[reference.id], excluded: true } },
+      })
+      return
+    }
     if (reference.resourceId) await deleteLocalResource(reference.resourceId)
-    updateVariant({ references: normalizeGenerationReferences(orderedReferences.filter((item) => item.id !== reference.id)) })
+    updateReferences(orderedReferences.filter((item) => item.id !== reference.id), { prompt, promptMentions })
   }
 
   const modelGroups = useMemo(() => channels
@@ -611,11 +720,16 @@ export const RequestNode = memo(({ id, data, selected }: NodeProps<RequestNodeDa
     .map((channel) => {
       const channelModels = getModels(channel.id)
       const visibleModels = effectiveCapability && generationChannelUsesModelInference(channel)
-        ? channelModels.filter((model) => !model.capabilities.length || model.capabilities.includes(effectiveCapability))
+        ? channelModels.filter((model) => {
+          if (!model.capabilities.length) return true
+          if (variant !== 'video') return model.capabilities.includes(effectiveCapability)
+          if (model.capabilitySource === 'inferred' && !model.capabilities.includes('text-to-video')) return false
+          return videoModesForModel(model).includes(videoMode)
+        })
         : channelModels
       return { channel, models: visibleModels }
     })
-    .filter((group) => group.models.length > 0), [channels, effectiveCapability, getModels, variant])
+    .filter((group) => group.models.length > 0), [channels, effectiveCapability, getModels, variant, videoMode])
 
   const selectModel = (channelId: string, model: GenerationModel) => {
     const nextChannel = channels.find((channel) => channel.id === channelId)
@@ -626,16 +740,14 @@ export const RequestNode = memo(({ id, data, selected }: NodeProps<RequestNodeDa
       adapterId: model.adapterId,
       capability: variant === 'image'
         ? effectiveCapability
-        : model.capabilities.includes(config?.capability as GenerationCapability) ? config?.capability : model.capabilities[0],
+        : !config?.capability ? undefined : videoModesForModel(model).includes(videoMode) ? videoMode : videoModesForModel(model)[0],
       ...modelConfigUpdates(config, model, variant === 'video' ? 'video' : 'image'),
     })
   }
 
   const selectCapability = (capability: GenerationCapability) => {
     if (variant === 'image') return
-    const currentModelSupportsCapability = selectedModel?.capabilities.includes(capability)
-    const nextModel = currentModelSupportsCapability ? selectedModel : models.find((model) => model.capabilities.includes(capability))
-    updateVariant({ capability, model: nextModel?.id || config?.model, adapterId: nextModel?.adapterId || config?.adapterId, ...modelConfigUpdates(config, nextModel, variant) })
+    updateVariant({ capability })
   }
 
   const content = variant === 'body' ? (
@@ -660,12 +772,18 @@ export const RequestNode = memo(({ id, data, selected }: NodeProps<RequestNodeDa
       </div>
     </div>
   ) : (() => {
-    const referenceTypes: Array<GenerationReference['type']> = variant === 'video' ? ['image', 'video', 'audio'] : ['image']
-    const renderReferences = (type: GenerationReference['type']) => {
+    const allowedReferenceTypes: Array<GenerationReference['type']> = variant === 'video' ? videoInputTypes(selectedModel, videoMode) : ['image']
+    const referenceTypes = [...new Set([...allowedReferenceTypes, ...orderedReferences.map((reference) => reference.type)])]
+    const frameRoles: Array<'first_frame' | 'last_frame'> = variant === 'video' && videoMode === 'first-last-frame' ? ['first_frame', 'last_frame'] : []
+    const renderReferences = (type: GenerationReference['type'], frameRole?: 'first_frame' | 'last_frame') => {
       const TypeIcon = TYPE_ICONS[type]
-      const items = orderedReferences.filter((reference) => reference.type === type)
-      const acceptsType = !selectedModel?.inputTypes || selectedModel.inputTypes.includes(type)
-      return <div key={type} role="group" aria-label={`${TYPE_LABELS[type]}参考素材，共 ${items.length} 项`} className="flex min-w-0 items-center gap-1.5">
+      const items = orderedReferences.filter((reference) => reference.type === type && (frameRole ? reference.role === frameRole : !(type === 'image' && frameRoles.includes(reference.role as 'first_frame' | 'last_frame'))))
+      const slotLabel = frameRole === 'first_frame' ? '首帧' : frameRole === 'last_frame' ? '尾帧' : TYPE_LABELS[type]
+      const limit = frameRole ? 1 : type === 'image' ? selectedModel?.maxImages : type === 'video' ? selectedModel?.maxVideos : selectedModel?.maxAudios
+      const acceptsType = allowedReferenceTypes.includes(type) && (!selectedModel?.inputTypes || selectedModel.inputTypes.includes(type)) && !(type === 'image' && frameRoles.length && !frameRole)
+      const canUpload = acceptsType && (limit === undefined || items.length < limit)
+      if (!items.length && !acceptsType) return null
+      return <div key={frameRole || type} role="group" aria-label={`${slotLabel}参考素材，共 ${items.length} 项`} className="flex min-w-0 items-center gap-1.5">
         {items.map((reference) => <div
           key={reference.id}
           draggable
@@ -700,31 +818,56 @@ export const RequestNode = memo(({ id, data, selected }: NodeProps<RequestNodeDa
             setDraggedReferenceId(null)
           }}
           className={`nodrag group relative shrink-0 cursor-grab active:cursor-grabbing ${draggedReferenceId === reference.id ? 'opacity-50' : ''}`}
-          title={`${reference.label || TYPE_LABELS[type]}：拖动调整顺序`}
+          title={`${reference.upstreamNodeId ? '上游引用 · ' : ''}${reference.label || TYPE_LABELS[type]}：拖动调整顺序`}
         >
           <LocalReferencePreview reference={reference} />
-           {variant === 'video' && type === 'image' && <div className="absolute -bottom-1 left-0 flex gap-0.5 rounded bg-card px-0.5 shadow-sm">
-             <button type="button" className={`nodrag px-1 text-[8px] ${reference.role === 'first_frame' ? 'font-semibold text-foreground' : 'text-muted-foreground'}`} onClick={() => setImageFrameRole(reference, reference.role === 'first_frame' ? '' : 'first_frame')} aria-label="设为首帧" title="设为首帧">首</button>
-             <button type="button" className={`nodrag px-1 text-[8px] ${reference.role === 'last_frame' ? 'font-semibold text-foreground' : 'text-muted-foreground'}`} onClick={() => setImageFrameRole(reference, reference.role === 'last_frame' ? '' : 'last_frame')} aria-label="设为尾帧" title="设为尾帧">尾</button>
-           </div>}
-          <button type="button" className="nodrag absolute -right-1.5 -top-1.5 flex h-5 w-5 items-center justify-center rounded-full border border-border bg-card text-muted-foreground opacity-0 shadow-sm transition-opacity hover:text-destructive group-hover:opacity-100" onClick={() => void removeReference(reference)} aria-label={`删除${TYPE_LABELS[type]}素材`} title={`删除${TYPE_LABELS[type]}素材`}><X className="h-3 w-3" /></button>
+          {reference.upstreamNodeId && <span className="absolute left-0 top-0 rounded bg-card/90 p-0.5" title="上游引用：移除不会删除源文件" aria-label="上游引用"><Link2 className="h-3 w-3 text-muted-foreground" /></span>}
+          {frameRole && <span className="pointer-events-none absolute bottom-0 left-0 rounded bg-card/90 px-1 text-[9px]">{slotLabel}</span>}
+          {variant === 'video' && videoMode === 'first-last-frame' && type === 'image' && <button type="button" className="nodrag absolute bottom-0 right-0 flex h-5 w-5 items-center justify-center rounded bg-card/90 text-muted-foreground hover:text-foreground" onClick={() => setImageFrameRole(reference, reference.role === 'first_frame' ? 'last_frame' : 'first_frame')} aria-label={reference.role === 'first_frame' ? '设为尾帧' : '设为首帧'} title="交换首尾帧"><ArrowLeftRight className="h-3 w-3" /></button>}
+          <button type="button" className="nodrag absolute -right-1.5 -top-1.5 flex h-5 w-5 items-center justify-center rounded-full border border-border bg-card text-muted-foreground opacity-0 shadow-sm transition-opacity hover:text-destructive group-hover:opacity-100 focus:opacity-100" onClick={() => void removeReference(reference)} aria-label={reference.upstreamNodeId ? `移除上游${TYPE_LABELS[type]}引用` : `删除${TYPE_LABELS[type]}素材`} title={reference.upstreamNodeId ? '移除引用，不删除上游素材' : `删除${TYPE_LABELS[type]}素材`}><X className="h-3 w-3" /></button>
         </div>)}
-        <label className={`nodrag flex h-14 w-14 shrink-0 cursor-pointer items-center justify-center rounded-lg border border-dashed border-border bg-muted/35 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground ${acceptsType ? '' : 'pointer-events-none opacity-35'}`} aria-label={`上传${TYPE_LABELS[type]}素材`} title={acceptsType ? `上传${TYPE_LABELS[type]}素材` : `当前模型不支持${TYPE_LABELS[type]}输入`}>
+        {canUpload && <label className="nodrag flex h-14 w-14 shrink-0 cursor-pointer flex-col items-center justify-center gap-1 rounded-lg border border-dashed border-border bg-muted/35 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground" aria-label={`上传${slotLabel}素材`} title={`上传${slotLabel}素材`}>
           <TypeIcon className="h-4 w-4" aria-hidden="true" />
-          <input type="file" className="hidden" accept={type === 'image' ? 'image/*' : type === 'video' ? 'video/*' : 'audio/*'} disabled={!acceptsType} onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ''; if (file) void handleFile(file, type) }} />
-        </label>
+          {frameRole && <span className="text-[9px]">{slotLabel}</span>}
+          <input type="file" className="hidden" accept={type === 'image' ? 'image/*' : type === 'video' ? 'video/*' : 'audio/*'} onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ''; if (file) void handleFile(file, type, frameRole) }} />
+        </label>}
       </div>
     }
 
     return <div className="flex min-h-0 flex-1 flex-col">
       <div className="shrink-0 px-3 pb-2 pt-3">
-        <div className="flex max-h-[168px] flex-wrap items-center gap-x-3 gap-y-2 overflow-auto custom-scrollbar">
-          {referenceTypes.map(renderReferences)}
+        <div className="flex max-h-[168px] flex-wrap items-center gap-x-3 gap-y-2 overflow-auto px-1.5 py-2 custom-scrollbar">
+          {frameRoles.map((role) => renderReferences('image', role))}
+          {referenceTypes.map((type) => renderReferences(type))}
+          {Object.values(config?.referenceOverrides || {}).some((override) => override.excluded) && <button type="button" className="nodrag flex h-7 w-7 items-center justify-center rounded-full text-muted-foreground hover:bg-muted" title="恢复已移除的上游引用" aria-label="恢复已移除的上游引用" onClick={() => updateVariant({ referenceOverrides: Object.fromEntries(Object.entries(config?.referenceOverrides || {}).map(([key, override]) => [key, { ...override, excluded: false }])) })}><RotateCcw className="h-3.5 w-3.5" /></button>}
         </div>
+        {referenceError && <div role="status" className="mt-2 text-[10px] text-muted-foreground">{referenceError}</div>}
       </div>
 
       <div className="relative min-h-[156px] min-w-0 flex-1 px-3 pb-3 pt-1">
-        <textarea value={config?.prompt || ''} onChange={(event) => updateVariant({ prompt: event.target.value })} placeholder={variant === 'image' ? '描述你想生成的图片…' : '描述镜头、动作、氛围，或上传图片生成动态视频…'} className="nodrag nowheel absolute inset-0 h-full w-full resize-none bg-transparent px-3 pb-3 pt-2 text-sm leading-6 text-foreground outline-none placeholder:text-muted-foreground/65" aria-label={variant === 'image' ? '图片生成提示词' : '视频生成提示词'} />
+        {variant === 'video' && mentionContext && mentionCandidates.length > 0 && <div ref={mentionMenuRef} onPointerDown={(event) => event.stopPropagation()}>
+          <PromptMentionMenu
+            references={orderedReferences}
+            promptMentions={config?.promptMentions}
+            query={mentionContext.query}
+            selectedIndex={Math.min(mentionSelectedIndex, mentionCandidates.length - 1)}
+            onSelect={selectMention}
+          />
+        </div>}
+        <textarea
+          ref={promptRef}
+          value={config?.prompt || ''}
+          onChange={handlePromptChange}
+          onKeyDown={handlePromptKeyDown}
+          onClick={handlePromptCaretChange}
+          onKeyUp={handlePromptCaretChange}
+          placeholder={variant === 'image' ? '描述你想生成的图片…' : VIDEO_MODE_PLACEHOLDERS[videoMode]}
+          className="nodrag nowheel absolute inset-0 h-full w-full resize-none bg-transparent px-3 pb-3 pt-2 text-sm leading-6 text-foreground outline-none placeholder:text-muted-foreground/65"
+          aria-label={variant === 'image' ? '图片生成提示词' : '视频生成提示词'}
+          aria-autocomplete="list"
+          aria-controls={variant === 'video' && mentionContext && mentionCandidates.length ? 'request-node-prompt-mentions' : undefined}
+          aria-expanded={variant === 'video' && Boolean(mentionContext && mentionCandidates.length)}
+        />
       </div>
 
       {(task.status === 'timeout' || task.status === 'unknown' || (task.status === 'failed' && Boolean(task.error)) || task.status === 'completed') && <div className="shrink-0 px-3 pb-2 text-[10px]">
@@ -740,14 +883,14 @@ export const RequestNode = memo(({ id, data, selected }: NodeProps<RequestNodeDa
             {modelGroups.length ? modelGroups.map((group, groupIndex) => <div key={group.channel.id}>
               {groupIndex > 0 && <div className="my-1 h-px bg-border" />}
               <div className="px-3 pb-1 pt-2 text-[10px] font-medium text-muted-foreground">{group.channel.name}</div>
-              {group.models.map((model) => <button key={`${group.channel.id}:${model.id}`} type="button" className="cnote-menu-item" data-active={group.channel.id === config?.channelId && model.id === config?.model} onClick={() => { selectModel(group.channel.id, model); closeOpenMenus(nodeRef.current) }}><span className="min-w-0 flex-1 truncate">{model.name}</span>{group.channel.id === config?.channelId && model.id === config?.model && <Check className="h-3.5 w-3.5 shrink-0 text-primary" />}</button>)}
+              {group.models.map((model) => <button key={`${group.channel.id}:${model.id}`} type="button" className="cnote-menu-item" title={model.name === model.id ? model.id : `${model.name} · ${model.id}`} data-active={group.channel.id === config?.channelId && model.id === config?.model} onClick={() => { selectModel(group.channel.id, model); closeOpenMenus(nodeRef.current) }}><span className="min-w-0 flex-1 truncate">{model.name}</span>{group.channel.id === config?.channelId && model.id === config?.model && <Check className="h-3.5 w-3.5 shrink-0 text-primary" />}</button>)}
             </div>) : <p className="px-3 py-3 text-xs text-muted-foreground">暂无可用生成模型</p>}
           </div>
         </details>
-        {variant === 'video' && <details className="group/menu relative min-w-0" onToggle={(event) => { if (event.currentTarget.open) closeOpenMenus(nodeRef.current, event.currentTarget) }}>
+        {variant === 'video' && capabilities.length > 0 && <details className="group/menu relative min-w-0" onToggle={(event) => { if (event.currentTarget.open) closeOpenMenus(nodeRef.current, event.currentTarget) }}>
           <summary className="nodrag flex h-8 max-w-[145px] cursor-pointer list-none items-center gap-1.5 rounded-full border border-border bg-card px-3 text-[11px] font-medium text-foreground hover:bg-muted" aria-label="生成模式" title="生成模式"><span className="truncate">{CAPABILITY_LABELS[effectiveCapability || 'text-to-video']}</span><ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" /></summary>
-          <div className="cnote-menu-surface absolute bottom-[calc(100%+8px)] left-0 z-50 max-h-[min(360px,70vh)] min-w-[190px] overflow-auto">
-            {capabilities.map((capability) => <button key={capability} type="button" className="cnote-menu-item" data-active={effectiveCapability === capability} onClick={() => { selectCapability(capability); closeOpenMenus(nodeRef.current) }}><span className="flex-1">{CAPABILITY_LABELS[capability]}</span>{effectiveCapability === capability && <Check className="h-3.5 w-3.5 text-primary" />}</button>)}
+          <div role="listbox" aria-label="生成模式选项" className="cnote-menu-surface absolute bottom-[calc(100%+8px)] left-0 z-50 max-h-[min(360px,70vh)] min-w-[190px] overflow-auto">
+            {capabilities.map((capability) => <button key={capability} type="button" role="option" aria-selected={effectiveCapability === capability} className="cnote-menu-item" data-active={effectiveCapability === capability} onClick={() => { selectCapability(capability); closeOpenMenus(nodeRef.current) }}><span className="flex-1">{CAPABILITY_LABELS[capability]}</span>{effectiveCapability === capability && <Check className="h-3.5 w-3.5 text-primary" />}</button>)}
           </div>
         </details>}
         <details className="group/menu relative min-w-0" onToggle={(event) => { if (event.currentTarget.open) closeOpenMenus(nodeRef.current, event.currentTarget) }}>
@@ -798,29 +941,31 @@ export const RequestNode = memo(({ id, data, selected }: NodeProps<RequestNodeDa
             {variant === 'video' && <>
               <div className="h-px bg-border" />
               <div className="flex items-center justify-between gap-3 px-2 py-1.5">
-                <span className="text-[10px] text-muted-foreground">时长（秒）</span>
-                <input type="number" min={selectedModel?.minDuration || 1} max={selectedModel?.maxDuration || 60} value={config?.seconds || 5} onChange={(event) => updateVariant({ seconds: Number(event.target.value) })} className="nodrag h-7 w-16 rounded-full border border-border bg-background/75 px-2 text-center text-[10px] text-foreground outline-none focus-visible:ring-1 focus-visible:ring-foreground/30" aria-label="时长（秒）" />
+                {selectedModel?.allowedDurations?.length ? <ChoiceRow
+                  label="时长（秒）"
+                  value={String(config?.seconds || selectedModel.defaultDuration || selectedModel.allowedDurations[0])}
+                  options={selectedModel.allowedDurations.map((seconds) => ({ value: String(seconds), label: String(seconds) }))}
+                  onChange={(value) => updateVariant({ seconds: Number(value) })}
+                  ariaLabel="时长（秒）"
+                /> : <><span className="text-[10px] text-muted-foreground">时长（秒）</span>
+                  <input type="number" min={selectedModel?.minDuration || 1} max={selectedModel?.maxDuration || 60} value={config?.seconds || selectedModel?.defaultDuration || 5} onChange={(event) => updateVariant({ seconds: Number(event.target.value) })} className="nodrag h-7 w-16 rounded-full border border-border bg-background/75 px-2 text-center text-[10px] text-foreground outline-none focus-visible:ring-1 focus-visible:ring-foreground/30" aria-label="时长（秒）" /></>}
               </div>
-              <label className={`nodrag flex items-center justify-between gap-3 rounded-lg px-2 py-2 text-[11px] text-foreground hover:bg-muted/70 ${selectedModel && !selectedModel.capabilities.includes('generate-audio') ? 'opacity-45' : ''}`} title={selectedModel && !selectedModel.capabilities.includes('generate-audio') ? '当前模型不支持生成音频' : '生成音频'}>
+              {selectedModel?.capabilities.includes('generate-audio') && <label className="nodrag flex items-center justify-between gap-3 rounded-lg px-2 py-2 text-[11px] text-foreground hover:bg-muted/70" title="生成视频音轨">
                 <span className="flex items-center gap-2"><Mic className="h-3.5 w-3.5 text-muted-foreground" />生成音频</span>
-               {selectedModel?.id.startsWith('seedance-') && <label className="nodrag flex items-center justify-between gap-3 rounded-lg px-2 py-2 text-[11px] text-foreground hover:bg-muted/70" title="关闭音效和音乐">
-                 <span>不要音乐</span>
-                 <input type="checkbox" className="nodrag" checked={Boolean(config?.noMusic)} onChange={(event) => updateVariant({ noMusic: event.target.checked })} aria-label="不要音乐" />
-               </label>}
-                <input type="checkbox" className="nodrag" checked={Boolean(config?.generateAudio)} disabled={Boolean(selectedModel && !selectedModel.capabilities.includes('generate-audio'))} onChange={(event) => updateVariant({ generateAudio: event.target.checked })} aria-label="生成音频" />
-              </label>
+                <input type="checkbox" className="nodrag" checked={Boolean(resolvedConfig?.generateAudio)} onChange={(event) => updateVariant({ generateAudio: event.target.checked, noMusic: undefined })} aria-label="生成音频" />
+              </label>}
             </>}
           </div>
         </details>
         <span className="flex-1" />
         <button
           type="button"
-          disabled={waiting ? false : !config?.channelId || !config?.model || (!config?.prompt?.trim() && !config?.references?.length && !upstreamCount)}
+          disabled={waiting ? false : Boolean(referenceError) || !config?.channelId || !config?.model || (!resolvedConfig?.prompt?.trim() && !references.length)}
+          title={referenceError || (waiting ? '终止生成任务' : '生成')}
           className={`nodrag flex h-10 min-w-[112px] shrink-0 items-center justify-center gap-2 rounded-full px-4 text-xs font-medium transition-colors disabled:bg-muted disabled:text-muted-foreground ${waiting ? 'bg-foreground text-background hover:bg-foreground/90' : 'bg-primary text-primary-foreground hover:bg-primary/90'}`}
           onClick={() => { if (waiting) stopTask(); else void runTask() }}
           aria-busy={waiting}
           aria-label={waiting ? '终止生成任务' : '生成'}
-          title={waiting ? '终止生成任务' : '生成'}
         >
           {waiting ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
           <span>{waiting ? `${task.status === 'queued' ? '排队中' : task.status === 'submitting' || task.status === 'validating' ? '提交中' : '生成中'} · ${formatElapsed(elapsed)}` : '生成'}</span>
