@@ -447,12 +447,12 @@ async function inspectImage(blob: Blob) {
   return metadata
 }
 
-async function materializeRemoteResults(urls: string[], variant: 'image' | 'video', signal?: AbortSignal) {
+async function materializeRemoteResults(urls: string[], variant: 'image' | 'video', signal?: AbortSignal, channel?: GenerationChannel, adapterId?: string) {
   const results: { url: string; resourceId: string; mimeType: string; fileName: string; size: number; width?: number; height?: number }[] = []
   let lastError: unknown
   for (const url of urls) {
     try {
-      const response = await desktopFetch(url, { signal })
+      const response = await desktopFetch(url, { headers: channel ? authHeaders(channel, adapterId) : undefined, signal }, channel ? { secretRefs: authSecretRefs(channel, adapterId) } : undefined)
       if (!response.ok) {
         lastError = new Error(`无法下载生成结果（HTTP ${response.status}）`)
         continue
@@ -701,7 +701,7 @@ export async function submitGenerationTask(context: GenerationRequestContext, si
   let parsed: any
   try { parsed = await parseResponse(response) } catch (error) { throw new GenerationStageError('creation', error instanceof Error ? error.message : String(error), error) }
   const inlineResults = await materializeInlineResults(parsed, variant)
-  const remoteResults = await materializeRemoteResults(resultURLsFrom(parsed), variant, signal)
+  const remoteResults = await materializeRemoteResults(resultURLsFrom(parsed), variant, signal, channel, config.adapterId)
   const immediateResults = [...remoteResults, ...inlineResults]
   const immediateResultUrls = immediateResults.map((result) => result.url)
   const taskId = taskIdFrom(parsed)
@@ -723,7 +723,7 @@ export async function pollGenerationTask(context: GenerationRequestContext, task
   try { parsed = await parseResponse(response) } catch (error) { throw new GenerationStageError('polling', error instanceof Error ? error.message : String(error), error) }
   const status = statusFrom(parsed)
   const inlineResults = await materializeInlineResults(parsed, context.variant)
-  const remoteResults = status === 'completed' ? await materializeRemoteResults(resultURLsFrom(parsed), context.variant, signal) : []
+  const remoteResults = status === 'completed' ? await materializeRemoteResults(resultURLsFrom(parsed), context.variant, signal, channel, context.config.adapterId) : []
   const materializedResults = [...remoteResults, ...inlineResults]
   const resultUrls = materializedResults.map((result) => result.url)
   const task: GenerationTaskState = {
@@ -752,7 +752,7 @@ export async function pollGenerationTask(context: GenerationRequestContext, task
       if (contentResponse.ok && contentResponse.headers.get('content-type')?.includes('application/json')) {
         const contentBody = await contentResponse.json()
         const contentInlineResults = await materializeInlineResults(contentBody, context.variant)
-        const contentRemoteResults = await materializeRemoteResults(resultURLsFrom(contentBody), context.variant, signal)
+        const contentRemoteResults = await materializeRemoteResults(resultURLsFrom(contentBody), context.variant, signal, channel, context.config.adapterId)
         const contentResults = [...contentRemoteResults, ...contentInlineResults]
         task.resultUrls = contentResults.map((result) => result.url)
         task.resultResourceIds = contentResults.length ? contentResults.map((result) => result.resourceId) : undefined

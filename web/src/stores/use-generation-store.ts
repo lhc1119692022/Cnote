@@ -293,7 +293,15 @@ export function generationAdapterForConfig(channel: GenerationChannel, adapterId
 
 export function generationAdapterForModel(channel: GenerationChannel, modelId: string, adapterId?: string) {
   if (adapterId) return generationAdapterForConfig(channel, adapterId)
-  return generationAdaptersForChannel(channel).find((adapter) => modelsForGenerationProtocol(adapter.protocol).some((model) => model.id === modelId)) || generationAdapterForConfig(channel)
+  const adapters = generationAdaptersForChannel(channel)
+  const channelCatalog = channel.modelCatalog || []
+  const channelModelIds = new Set(channel.modelIds || [])
+  const channelModel = channelCatalog.some((model) => model.id === modelId) || channelModelIds.has(modelId)
+  if (channelModel && adapters.length === 1) return adapters[0]
+  return adapters.find((adapter) => {
+    const catalog = channelCatalog.length ? channelCatalog : modelsForGenerationProtocol(adapter.protocol)
+    return catalog.some((model) => model.id === modelId)
+  }) || generationAdapterForConfig(channel)
 }
 
 export function generationSecretName(channelId: string) {
