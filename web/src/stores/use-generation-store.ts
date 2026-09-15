@@ -6,7 +6,7 @@ import { decryptAPIKey, encryptAPIKey } from '@/lib/secure-storage'
 import { deleteDesktopSecret, syncDesktopSecretInBackground } from '@/lib/desktop-secrets'
 import { normalizeMediaTransport } from '@/lib/generation/media-policy'
 import type { GenerationCapability } from '@/types/flow'
-import { GENERATION_CHANNEL_PRESETS, VIDEO_MODEL_CATALOG } from '@/lib/generation/video-catalog'
+import { GENERATION_CHANNEL_PRESETS, VIDEO_808_DEFAULT_BASE_URL, VIDEO_MODEL_CATALOG } from '@/lib/generation/video-catalog'
 export { GENERATION_CHANNEL_PRESETS } from '@/lib/generation/video-catalog'
 
 export type GenerationProviderId = 'openai' | 'google' | 'video' | 'custom'
@@ -423,13 +423,17 @@ function normalizeChannel(channel: GenerationChannel): GenerationChannel {
   const selectedAdapter = configuredAdapters.find((adapter) => adapter.protocol === protocol) || configuredAdapters[0]
   const mediaTransport = normalizeMediaTransport(selectedAdapter?.mediaTransport ?? channel.mediaTransport)
   const videoRequestContract = channel.videoRequestContract || selectedAdapter?.videoRequestContract || preset?.videoRequestContract
+  const normalizedBaseURL = channel.baseURL.trim().replace(/\/$/, '')
+  const baseURL = channel.presetId === 'video-808relay' && /^https:\/\/va\.808relay\.com(?:\/v1)?$/i.test(normalizedBaseURL)
+    ? VIDEO_808_DEFAULT_BASE_URL
+    : normalizedBaseURL
   const normalized = {
     ...channel,
     protocol,
     modelIds,
     modelCatalog,
     videoRequestContract,
-    baseURL: channel.baseURL.trim().replace(/\/$/, ''),
+    baseURL,
     mediaTransport,
     secretName: channel.secretName || generationSecretName(channel.id),
     mediaUploadSecretName: channel.mediaUploadSecretName || generationMediaUploadSecretName(channel.id),

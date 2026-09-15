@@ -30,6 +30,20 @@ HTTPS URL 是远端文件的地址；Data URL 则把文件内容编码在字符�
 - 显式的内联、自定义存储配置保持不变；已提交任务的快照和恢复轮询不受影响。
 - 内联限制按编码后的 JSON UTF-8 总大小检查，包含 Base64 膨胀与提示词。准备错误标为 preparation 阶段，与 creation 区分。
 
+## Kacang 与 HTTP 206
+
+Kacang / Doubao 拉取参考素材时只接受匿名可读的完整 HTTP 200 文件。R2 公共开发域名（`*.r2.dev`）、R2 S3 兼容地址和部分 CDN 在收到 `Range` 时会返回 HTTP 206 Partial Content，上游就会报 `Failed to fetch reference image: HTTP 206`。
+
+自定义媒体存储必须同时满足：
+
+- Cnote 里填写的服务地址是媒体 Worker 的公网源站，例如 `https://cnote-media.your-name.workers.dev`。
+- Worker 的 `MEDIA_PUBLIC_BASE_URL` 也指向这个 Worker 源站，不要填 `pub-*.r2.dev` 或存储桶直链。
+- `GET /media/{key}` 无需登录即可下载完整文件；对 `Range` 请求仍返回 200，而不是 206。
+
+上传成功只说明 Worker 收下了文件。若返回的读取地址仍是对象存储直链，Kacang 还是会失败。改好 Worker 后需要重新上传参考素材，已保存的 `r2.dev` 地址不会自动修复。
+
+创建任务时如果桌面网络层被中止，通常是上游在拉取参考图时卡住或超时，先按上面检查素材地址，而不是反复重试同一条直链。
+
 ## 验证边界
 
 “验证上传”仅在上传方式已明确且配置齐备时提供，不用于内联或已有 HTTPS 素材。它会真实上传一个测试文件，但不提交生成任务；上传成功不等于供应商接受最终视频请求。

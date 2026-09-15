@@ -9,6 +9,7 @@ export interface RuntimeInfo {
 
 export interface NetworkRequest {
   url: string
+  requestId?: string
   method?: string
   headers?: Record<string, string>
   body?: string | Uint8Array

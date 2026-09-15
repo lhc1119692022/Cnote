@@ -1,22 +1,21 @@
 import { create } from 'zustand'
 import { createJSONStorage, persist } from 'zustand/middleware'
 import { nanoid } from 'nanoid'
-import type { Node, Edge } from 'reactflow'
 import { localForageStorage } from '@/lib/localforage-storage'
-import type { Template } from '@/types/flow'
+import type { FlowEdge, FlowNode, Template } from '@/types/flow'
 import { emptyContentData } from '@/lib/content-import'
 import { deleteLocalResource, retainLocalResource } from '@/lib/resource-storage'
 import { cloneFlowValue } from '@/lib/flow/clone'
 import { AI_NODE_DEFAULT_SIZE, BROWSER_NODE_DEFAULT_SIZE } from '@/lib/flow/node-dimensions'
 
-function nodeResourceId(node?: Node) {
+function nodeResourceId(node?: FlowNode) {
   const source = node?.data?.source
   return source?.kind === 'file' || source?.kind === 'clipboard-image'
     ? source.resourceId as string
     : undefined
 }
 
-function resourceCounts(nodes: Node[]) {
+function resourceCounts(nodes: FlowNode[]) {
   const counts = new Map<string, number>()
   nodes.forEach((node) => {
     const resourceId = nodeResourceId(node)
@@ -25,7 +24,7 @@ function resourceCounts(nodes: Node[]) {
   return counts
 }
 
-async function adjustResourceReferences(fromNodes: Node[], toNodes: Node[]) {
+async function adjustResourceReferences(fromNodes: FlowNode[], toNodes: FlowNode[]) {
   const from = resourceCounts(fromNodes)
   const to = resourceCounts(toNodes)
   const resourceIds = new Set([...from.keys(), ...to.keys()])
@@ -46,8 +45,8 @@ interface TemplateState {
   createTemplate: (
     title: string,
     description: string,
-    nodes: Node[],
-    edges: Edge[],
+    nodes: FlowNode[],
+    edges: FlowEdge[],
     category?: string
   ) => Template
   getTemplate: (id: string) => Template | undefined

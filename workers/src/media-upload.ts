@@ -150,7 +150,12 @@ export default {
       headers.set('Cache-Control', 'public, max-age=31536000, immutable')
       headers.set('ETag', object.httpEtag)
       headers.set('Content-Length', String(object.size))
-      return new Response(request.method === 'HEAD' ? null : object.body, { headers })
+      // Kacang/Doubao fetchers send Range and reject HTTP 206. Always serve the
+      // complete object as 200, and make the body non-rangeable so the runtime
+      // does not convert this response into Partial Content.
+      headers.set('Accept-Ranges', 'none')
+      if (request.method === 'HEAD' || !object.body) return new Response(null, { status: 200, headers })
+      return new Response(object.body.pipeThrough(new TransformStream()), { status: 200, headers })
     }
 
     if ((request.method === 'POST' && url.pathname === '/upload') || (request.method === 'DELETE' && key)) {

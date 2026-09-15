@@ -2,16 +2,16 @@ import { askConfirmation, showMessage } from '@/lib/app-dialog'
 import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { FileText, Search, Trash2, Upload } from 'lucide-react'
-import type { Edge, Node } from 'reactflow'
+import { nanoid } from 'nanoid'
 import { AppShell } from '@/components/layout/AppShell'
 import { Button } from '@/components/ui/button'
-import { useFlowStore } from '@/stores/use-flow-store'
+import { legacyFlowToDocument } from '@/runtime/legacy-loader'
+import { createDocument } from '@/storage'
 import { useTemplateStore } from '@/stores/use-template-store'
 
 export function TemplatesManager() {
   const navigate = useNavigate()
   const { templates, deleteTemplate, incrementUsage, getAllCategories, initialize } = useTemplateStore()
-  const createFlow = useFlowStore((state) => state.createFlow)
   const [searchQuery, setSearchQuery] = useState('')
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null)
   const importInputRef = useRef<HTMLInputElement>(null)
@@ -26,15 +26,29 @@ export function TemplatesManager() {
     return matchesSearch && (!selectedCategory || template.category === selectedCategory)
   })
 
-  const handleUseTemplate = (templateId: string) => {
+  const handleUseTemplate = async (templateId: string) => {
     const template = templates.find((item) => item.id === templateId)
     if (!template) return
-    const flow = createFlow(`基于 ${template.title} 的 Flow`, template.description, undefined, {
-      nodes: template.nodes,
-      edges: template.edges,
-    })
-    incrementUsage(template.id)
-    navigate(`/flows/${flow.id}`)
+    const now = Date.now()
+    const name = `基于 ${template.title} 的 Flow`
+    try {
+      const doc = legacyFlowToDocument({
+        id: nanoid(),
+        name,
+        title: name,
+        ...(template.description ? { description: template.description } : {}),
+        nodes: template.nodes,
+        edges: template.edges,
+        viewport: { x: 0, y: 0, zoom: 1 },
+        createdAt: now,
+        updatedAt: now,
+      } as Parameters<typeof legacyFlowToDocument>[0])
+      await createDocument(doc)
+      incrementUsage(template.id)
+      navigate(`/flows/${doc.id}`)
+    } catch {
+      showMessage('使用模板创建 Flow 失败，请稍后重试。')
+    }
   }
 
   const handleDeleteTemplate = async (event: React.MouseEvent, id: string) => {
@@ -53,11 +67,12 @@ export function TemplatesManager() {
       if (!candidate || typeof candidate !== 'object') throw new Error('模板文件格式无效。')
       const template = candidate as { title?: unknown; description?: unknown; nodes?: unknown; edges?: unknown; category?: unknown }
       if (typeof template.title !== 'string' || !template.title.trim() || !Array.isArray(template.nodes) || !Array.isArray(template.edges)) throw new Error('模板文件需要包含 title、nodes 和 edges。')
-      const imported = useTemplateStore.getState().createTemplate(
+      const createTemplate = useTemplateStore.getState().createTemplate
+      const imported = createTemplate(
         `${template.title.trim()}（导入）`,
         typeof template.description === 'string' ? template.description : '',
-        template.nodes as Node[],
-        template.edges as Edge[],
+        template.nodes as Parameters<typeof createTemplate>[2],
+        template.edges as Parameters<typeof createTemplate>[3],
         typeof template.category === 'string' ? template.category : undefined,
       )
       showMessage(`模板“${imported.title}”已导入。`)

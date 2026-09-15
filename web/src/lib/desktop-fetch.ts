@@ -3,6 +3,8 @@ import { runDesktopNativeJob } from '@/lib/desktop-native-jobs'
 export interface DesktopFetchOptions {
   /** Header name -> SafeStorage secret name. Values never enter the renderer job payload. */
   secretRefs?: Record<string, string>
+  /** Maximum time for the native request, including response body download. */
+  timeoutMs?: number
 }
 
 interface NativeNetworkOutput {
@@ -47,6 +49,15 @@ function bytesFromBase64(value: string) {
   return Uint8Array.from(binary, (character) => character.charCodeAt(0))
 }
 
+function abortError() {
+  return new DOMException('执行已停止', 'AbortError')
+}
+
+function nativeAbortError(error: unknown) {
+  return error instanceof DOMException && error.name === 'AbortError'
+    || error instanceof Error && /(?:AbortError|operation was aborted|request was aborted)/i.test(error.message)
+}
+
 async function normalizeBody(url: string, init: RequestInit) {
   const body = init.body
   if (body === undefined || body === null || typeof body === 'string' || body instanceof Uint8Array) {
@@ -82,19 +93,44 @@ export async function desktopFetch(input: RequestInfo | URL, init: RequestInit =
   // in-memory credentials as well as SafeStorage references, which is needed
   // for newly edited channels before their persisted configuration settles.
   if (hasDirectNativeNetwork()) {
-    const output = await window.cnoteDesktop!.network.request({
+    if (init.signal?.aborted) throw abortError()
+    const requestId = crypto.randomUUID()
+    const request = window.cnoteDesktop!.network.request({
       url,
+      requestId,
       method: init.method || 'GET',
       headers: Object.fromEntries(normalized.headers.entries()),
       secretRefs,
       body: normalized.body,
-      timeoutMs: 300_000,
+      timeoutMs: options.timeoutMs ?? 300_000,
     })
-    return new Response(output.body as unknown as BodyInit, {
+    let abortReject: ((reason: unknown) => void) | undefined
+    const abortPromise = init.signal
+      ? new Promise<never>((_resolve, reject) => { abortReject = reject })
+      : undefined
+    const abortNativeRequest = () => {
+      abortReject?.(abortError())
+      const abort = window.cnoteDesktop?.network.abort
+      if (abort) void abort(requestId).catch(() => undefined)
+    }
+    init.signal?.addEventListener('abort', abortNativeRequest, { once: true })
+    try {
+      const output = await (abortPromise ? Promise.race([request, abortPromise]) : request)
+      if (init.signal?.aborted) throw abortError()
+      return new Response(output.body as unknown as BodyInit, {
       status: output.status,
       statusText: output.statusText,
       headers: output.headers,
-    })
+      })
+    } catch (error) {
+      if (init.signal?.aborted || nativeAbortError(error)) {
+        if (init.signal?.aborted) throw abortError()
+        throw new Error('桌面网络请求超时或被原生网络层中止')
+      }
+      throw error
+    } finally {
+      init.signal?.removeEventListener('abort', abortNativeRequest)
+    }
   }
 
   // Older desktop bridges only expose the persisted Native Job API. That API
@@ -115,7 +151,7 @@ export async function desktopFetch(input: RequestInfo | URL, init: RequestInit =
       headers: Object.fromEntries(normalized.headers.entries()),
       secretRefs: options.secretRefs,
       body: normalized.body,
-      timeoutMs: 300_000,
+      timeoutMs: options.timeoutMs ?? 300_000,
     },
     }, init.signal || undefined)
 

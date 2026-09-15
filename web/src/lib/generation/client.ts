@@ -5,7 +5,7 @@ import { normalizeGenerationReferences } from '@/lib/generation/defaults'
 import { normalizeVideoModeConfig, videoReferenceError } from './video-mode'
 import { loadLocalResourceBlob, loadLocalResourceUrl, storeLocalResource } from '@/lib/resource-storage'
 import { desktopFetch } from '@/lib/desktop-fetch'
-import { resolveMediaTransport, assertInlineRequestSize, assertMediaLifetime, signedMediaExpiry, MAX_INLINE_REQUEST_BYTES } from './media-policy'
+import { resolveMediaTransport, assertInlineRequestSize, assertMediaLifetime, assertAnonymousCompleteFileUrl, signedMediaExpiry, MAX_INLINE_REQUEST_BYTES } from './media-policy'
 import { ensureDesktopSecret, syncDesktopSecret } from '@/lib/desktop-secrets'
 
 export interface GenerationRequestContext {
@@ -35,6 +35,13 @@ export class GenerationStageError extends Error {
   constructor(public readonly stage: 'validation' | 'preparation' | 'creation' | 'polling' | 'download', message: string, public readonly cause?: unknown) {
     super(`${stage}: ${message}`)
     this.name = 'GenerationStageError'
+  }
+}
+
+class GenerationHttpError extends Error {
+  constructor(public readonly status: number, message: string) {
+    super(message)
+    this.name = 'GenerationHttpError'
   }
 }
 
@@ -208,8 +215,10 @@ async function referenceBlob(reference: GenerationReference) {
   }
   const url = directURL || (reference.resourceId ? await loadLocalResourceUrl(reference.resourceId) : '')
   if (!url) throw new Error(`参考文件“${reference.label || reference.id}”没有可读取的地址`)
-  const response = await desktopFetch(url)
-  if (!response.ok) throw new Error(`无法读取参考文件“${reference.label || reference.id}”`)
+  const response = await desktopFetch(url, undefined, { timeoutMs: 120_000 })
+  if (!response.ok || response.status === 206) {
+    throw new Error(explainReferenceFetchError(`无法读取参考文件“${reference.label || reference.id}”（HTTP ${response.status}）`, response.status))
+  }
   const blob = await response.blob()
   return { blob, fileName: reference.fileName || `${reference.id}.${blob.type.split('/')[1] || 'bin'}` }
 }
@@ -453,8 +462,8 @@ async function materializeRemoteResults(urls: string[], variant: 'image' | 'vide
   for (const url of urls) {
     try {
       const response = await desktopFetch(url, { headers: channel ? authHeaders(channel, adapterId) : undefined, signal }, channel ? { secretRefs: authSecretRefs(channel, adapterId) } : undefined)
-      if (!response.ok) {
-        lastError = new Error(`无法下载生成结果（HTTP ${response.status}）`)
+      if (!response.ok || response.status === 206) {
+        lastError = new Error(explainReferenceFetchError(`无法下载生成结果（HTTP ${response.status}）`, response.status))
         continue
       }
     const mimeType = response.headers.get('content-type')?.split(';', 1)[0]?.trim() || (variant === 'image' ? 'image/png' : 'video/mp4')
@@ -472,13 +481,19 @@ async function materializeRemoteResults(urls: string[], variant: 'image' | 'vide
   return results
 }
 
+function explainReferenceFetchError(message: string, status?: number) {
+  const partialContent = status === 206 || /(?:reference image|参考素材|Failed to fetch reference)[^\n]*(?:HTTP\s*)?206/i.test(message)
+  if (!partialContent || /Kacang 要求完整的 HTTP 200 文件/.test(message)) return message
+  return `${message}；Kacang 要求参考素材返回完整的 HTTP 200 文件，但当前地址在 Range 请求下返回了 HTTP 206。请使用媒体 Worker 公网源站托管，不要使用 R2 公共开发域名、S3 直链或预览/分段代理地址。`
+}
+
 async function parseResponse(response: Response) {
   const text = await response.text()
   let body: any = undefined
   try { body = text ? JSON.parse(text) : undefined } catch { body = text }
-  if (!response.ok) {
+  if (!response.ok || response.status === 206) {
     const message = body?.error?.message || body?.error || body?.message || `HTTP ${response.status}`
-    throw new Error(String(message))
+    throw new GenerationHttpError(response.status, explainReferenceFetchError(String(message), response.status))
   }
   return body
 }
@@ -502,14 +517,42 @@ function firstString(...values: unknown[]) {
 }
 
 function taskIdFrom(body: any) {
-  return firstString(body?.task_id, body?.taskId, body?.id, body?.data?.task_id, body?.data?.taskId, body?.data?.id)
+  return firstString(
+    body?.task_id,
+    body?.taskId,
+    body?.id,
+    body?.data?.task_id,
+    body?.data?.taskId,
+    body?.data?.id,
+    body?.task?.task_id,
+    body?.task?.taskId,
+    body?.task?.id,
+    body?.data?.task?.task_id,
+    body?.data?.task?.taskId,
+    body?.data?.task?.id,
+  )
+}
+
+function rawStatusFrom(body: any) {
+  return firstString(
+    body?.status,
+    body?.state,
+    body?.data?.status,
+    body?.data?.state,
+    body?.task?.status,
+    body?.task?.state,
+    body?.data?.task?.status,
+    body?.data?.task?.state,
+  ) || ''
 }
 
 function statusFrom(body: any): GenerationTaskState['status'] {
-  const status = String(body?.status || body?.state || body?.data?.status || '').toLowerCase()
+  const status = rawStatusFrom(body).toLowerCase().replace(/[-\s]+/g, '_')
   if (status === 'completed' || status === 'success' || status === 'succeeded' || status === 'done' || status.startsWith('succeeded')) return 'completed'
-  if (status === 'failed' || status === 'error' || status === 'cancelled' || status === 'canceled' || status.startsWith('failed')) return 'failed'
-  if (status === 'queued' || status === 'in_progress' || status === 'processing' || status === 'running' || status === 'generating') return 'in_progress'
+  if (status === 'failed' || status === 'failure' || status === 'error' || status === 'cancelled' || status === 'canceled' || status === 'expired' || status === 'rejected' || status.startsWith('failed')) return 'failed'
+  if (status === 'queued' || status === 'pending' || status === 'created' || status === 'submitted' || status === 'waiting' || status === 'starting' || status === 'in_progress' || status === 'processing' || status === 'running' || status === 'generating' || status === 'rendering' || status === 'uploading') return 'in_progress'
+  if (body?.error || body?.error_message || body?.data?.error || body?.data?.error_message) return 'failed'
+  if (taskIdFrom(body)) return 'in_progress'
   return 'unknown'
 }
 
@@ -538,6 +581,18 @@ function resultURLsFrom(body: any) {
     body?.data?.video_urls?.[0],
     body?.metadata?.url,
     body?.metadata?.result_url,
+    body?.metadata?.video_url,
+    body?.video?.url,
+    body?.data?.metadata?.url,
+    body?.data?.metadata?.result_url,
+    body?.data?.metadata?.video_url,
+    body?.data?.video?.url,
+    body?.task?.url,
+    body?.task?.result_url,
+    body?.task?.video_url,
+    body?.task?.metadata?.url,
+    body?.task?.metadata?.result_url,
+    body?.task?.metadata?.video_url,
     ...(Array.isArray(body?.urls) ? body.urls : []),
     ...(Array.isArray(body?.data?.urls) ? body.data.urls : []),
   ]
@@ -555,8 +610,33 @@ function progressFrom(body: any) {
 }
 
 function errorFrom(body: any) {
-  const status = typeof body?.status === 'string' && body.status.toLowerCase().startsWith('failed') ? body.status.slice(body.status.indexOf(':') + 1).trim() : undefined
-  return String(body?.error?.message || body?.error_message || body?.error || body?.message || status || '生成服务返回失败')
+  const status = typeof rawStatusFrom(body) === 'string' && rawStatusFrom(body).toLowerCase().startsWith('failed') ? rawStatusFrom(body).slice(rawStatusFrom(body).indexOf(':') + 1).trim() : undefined
+  const message = String(body?.error?.message || body?.error_message || body?.error || body?.message || body?.data?.error?.message || body?.data?.error_message || body?.data?.error || body?.task?.error?.message || body?.task?.error || body?.data?.task?.error?.message || body?.data?.task?.error || status || '生成服务返回失败')
+  return explainReferenceFetchError(message)
+}
+
+function httpStatusFrom(error: unknown): number | undefined {
+  if (error instanceof GenerationHttpError) return error.status
+  if (error instanceof GenerationStageError) return httpStatusFrom(error.cause)
+  if (error && typeof error === 'object') {
+    const status = Number((error as { status?: unknown }).status)
+    if (Number.isInteger(status) && status > 0) return status
+  }
+  const match = String(error instanceof Error ? error.message : error).match(/HTTP\s+(\d{3})/i)
+  return match ? Number(match[1]) : undefined
+}
+
+function isRetryablePollingError(error: unknown) {
+  const status = httpStatusFrom(error)
+  if (status !== undefined) return [408, 425, 429, 500, 502, 503, 504].includes(status)
+  return /(?:fetch failed|network request|network error|timed out|timeout|原生网络层中止)/i.test(String(error instanceof Error ? error.message : error))
+}
+
+function generateAudioFieldName(model: GenerationModel, videoContract?: { generateAudioField?: string }) {
+  if (!model.capabilities.includes('generate-audio')) return undefined
+  const field = videoContract?.generateAudioField
+  if (!field || field === 'sound_effects') return 'generate_audio'
+  return field
 }
 
 function contractPath(path: string | undefined, taskId: string, fallback: string) {
@@ -592,6 +672,7 @@ function ensureProviderReadableReferences(references: GenerationReference[], req
       ? `参考文件“${invalid.label || invalid.fileName || invalid.id}”必须是公网 HTTPS 地址`
       : `参考文件“${invalid.label || invalid.fileName || invalid.id}”尚未转换为公网 HTTPS 地址或内联 Data URL`)
   }
+  if (requiresPublicHttps) references.forEach((reference) => assertAnonymousCompleteFileUrl(referenceURL(reference)))
 }
 
 export async function submitGenerationTask(context: GenerationRequestContext, signal?: AbortSignal): Promise<GenerationTaskResponse> {
@@ -671,6 +752,7 @@ export async function submitGenerationTask(context: GenerationRequestContext, si
     const images = config.references.filter((reference) => reference.type === 'image' && !['first_frame', 'last_frame'].includes(reference.role || '')).map(referenceURL)
     const videos = config.references.filter((reference) => reference.type === 'video').map(referenceURL)
     const audios = config.references.filter((reference) => reference.type === 'audio').map(referenceURL)
+    const generateAudioField = generateAudioFieldName(model, videoContract)
     body = {
       model: model.id,
       [videoContract?.durationField || 'seconds']: config.seconds || model.defaultDuration || 5,
@@ -682,7 +764,7 @@ export async function submitGenerationTask(context: GenerationRequestContext, si
       ...(images.length && videoContract?.imageReferencesField ? { [videoContract.imageReferencesField]: images } : {}),
       ...(videos.length && videoContract?.videoReferencesField ? { [videoContract.videoReferencesField]: videos } : {}),
       ...(audios.length && videoContract?.audioReferencesField ? { [videoContract.audioReferencesField]: audios } : {}),
-      ...(model.capabilities.includes('generate-audio') && videoContract?.generateAudioField ? { [videoContract.generateAudioField]: Boolean(config.generateAudio) } : {}),
+      ...(generateAudioField ? { [generateAudioField]: Boolean(config.generateAudio) } : {}),
     }
     requestURL = joinVersionedEndpoint(baseURL, videoContract?.createPath || '/v1/videos')
     requestBody = JSON.stringify(body)
@@ -732,11 +814,12 @@ export async function pollGenerationTask(context: GenerationRequestContext, task
     channelId: channel.id,
     model: context.model.id,
     status,
-    rawStatus: String(parsed?.status || parsed?.state || parsed?.data?.status || ''),
+    rawStatus: rawStatusFrom(parsed),
     rawResponse: diagnosticResponse(parsed, statusFrom(parsed)),
     resultUrls,
-    resultResourceIds: inlineResults.length ? inlineResults.map((result) => result.resourceId) : undefined,
-    resultMimeTypes: inlineResults.length ? inlineResults.map((result) => result.mimeType) : undefined,
+    resultResourceIds: materializedResults.map((result) => result.resourceId),
+    resultMimeTypes: materializedResults.map((result) => result.mimeType),
+    resultFileNames: materializedResults.map((result) => result.fileName),
     progress: progressFrom(parsed),
     error: status === 'failed' ? errorFrom(parsed) : undefined,
     lastPolledAt: Date.now(),
@@ -771,7 +854,8 @@ export async function pollGenerationTask(context: GenerationRequestContext, task
           task.resultMimeTypes = [contentType]
         }
       }
-    } catch {
+    } catch (error) {
+      if (error instanceof DOMException && error.name === 'AbortError') throw error
       // Some providers expose the content endpoint only as an authenticated
       // binary stream. Keep the task ID and let the next persistence pass save it.
     }
@@ -807,11 +891,22 @@ function waitForPoll(intervalMs: number, signal?: AbortSignal) {
       reject(new DOMException('执行已停止', 'AbortError'))
       return
     }
-    const timer = globalThis.setTimeout(resolve, intervalMs)
-    signal?.addEventListener('abort', () => {
+    let settled = false
+    const cleanup = () => signal?.removeEventListener('abort', onAbort)
+    const onAbort = () => {
+      if (settled) return
+      settled = true
       globalThis.clearTimeout(timer)
+      cleanup()
       reject(new DOMException('执行已停止', 'AbortError'))
-    }, { once: true })
+    }
+    const timer = globalThis.setTimeout(() => {
+      if (settled) return
+      settled = true
+      cleanup()
+      resolve()
+    }, intervalMs)
+    signal?.addEventListener('abort', onAbort, { once: true })
   })
 }
 
@@ -868,18 +963,38 @@ export async function runGenerationTask(
   }
 
   const interval = pollIntervalForModel(context.model)
+  let transientPollFailures = 0
   try {
     while (taskId) {
-    const elapsedMs = Date.now() - submittedAt
-    if (Date.now() >= timeoutAt) {
-      const timeout: GenerationTaskState = { taskId, provider: context.channel.providerId, channelId: context.channel.id, model: context.model.id, status: 'timeout', submittedAt, elapsedMs, timeoutAt }
-      options.onTaskUpdate?.(timeout)
-      return timeout
-    }
-    const polled = await pollGenerationTask(context, taskId, options.signal)
-    const next: GenerationTaskState = { ...polled.task, taskId, submittedAt, elapsedMs: Date.now() - submittedAt, timeoutAt }
-    options.onTaskUpdate?.(next)
-    if (next.status === 'completed' || next.status === 'failed' || next.status === 'unknown') return next
+      const elapsedMs = Date.now() - submittedAt
+      if (Date.now() >= timeoutAt) {
+        const timeout: GenerationTaskState = { taskId, provider: context.channel.providerId, channelId: context.channel.id, model: context.model.id, status: 'timeout', submittedAt, elapsedMs, timeoutAt }
+        options.onTaskUpdate?.(timeout)
+        return timeout
+      }
+      let polled: GenerationPollResponse
+      try {
+        polled = await pollGenerationTask(context, taskId, options.signal)
+        transientPollFailures = 0
+      } catch (error) {
+        if (options.signal?.aborted || !isRetryablePollingError(error)) throw error
+        transientPollFailures += 1
+        options.onTaskUpdate?.({
+          taskId,
+          provider: context.channel.providerId,
+          channelId: context.channel.id,
+          model: context.model.id,
+          status: 'in_progress',
+          rawStatus: 'poll_retry',
+          error: error instanceof Error ? error.message : String(error),
+          lastPolledAt: Date.now(),
+        })
+        await waitForPoll(Math.min(interval * Math.min(transientPollFailures, 3), 30_000), options.signal)
+        continue
+      }
+      const next: GenerationTaskState = { ...polled.task, taskId, submittedAt, elapsedMs: Date.now() - submittedAt, timeoutAt }
+      options.onTaskUpdate?.(next)
+      if (next.status === 'completed' || next.status === 'failed' || next.status === 'unknown') return next
       await waitForPoll(interval, options.signal)
     }
   } catch (error) {

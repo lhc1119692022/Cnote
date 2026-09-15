@@ -27,8 +27,8 @@ import { GenerationChannelsManager } from '@/components/settings/GenerationChann
 import { AIClient, PROVIDERS, getProvider, inferProviderId, type ProtocolType } from '@/lib/api'
 import { localForageStorage } from '@/lib/localforage-storage'
 import { MAX_BROWSER_STORAGE_BYTES } from '@/lib/resource-storage'
+import { listDocuments } from '@/storage'
 import { useAIStore, type APIChannel, type APIChannelInput } from '@/stores/use-ai-store'
-import { useFlowStore } from '@/stores/use-flow-store'
 import { useGenerationStore } from '@/stores/use-generation-store'
 import { MEDIA_STORAGE_DEFAULTS, useMediaStorageStore, type MediaStorageObject } from '@/stores/use-media-storage-store'
 import { useSourceStore } from '@/stores/use-source-store'
@@ -88,7 +88,7 @@ export function APIKeysManager() {
     getAPIKey,
     getProxyHeaderValue,
   } = useAIStore()
-  const flowCount = useFlowStore((state) => state.flows.length)
+  const [flowCount, setFlowCount] = useState(0)
   const generationChannels = useGenerationStore((state) => state.channels)
   const mediaStorage = useMediaStorageStore()
   const sourceCount = useSourceStore((state) => state.sources.length)
@@ -167,6 +167,20 @@ export function APIKeysManager() {
   useEffect(() => {
     initializeDefaultChannels()
   }, [initializeDefaultChannels])
+
+  useEffect(() => {
+    let cancelled = false
+    void listDocuments()
+      .then((docs) => {
+        if (!cancelled) setFlowCount(docs.length)
+      })
+      .catch(() => {
+        if (!cancelled) setFlowCount(0)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   useEffect(() => {
     if (!showProtocolMenu) return

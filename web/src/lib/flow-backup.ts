@@ -9,7 +9,8 @@ import {
   storeLocalResource,
 } from '@/lib/resource-storage'
 import { safeFileName, saveBlobToFile } from '@/lib/file-save'
-import { useFlowStore } from '@/stores/use-flow-store'
+import { legacyFlowToDocument } from '@/runtime/legacy-loader'
+import { createDocument } from '@/storage'
 
 export const MAX_FLOW_BACKUP_FILE_BYTES = 500 * 1024 * 1024
 
@@ -179,9 +180,10 @@ export async function restoreFlowBackup(file: Blob) {
       temporaryResourceIds.push(stored.resourceId)
     }
 
-    useFlowStore.getState().importFlowFromJSON(JSON.stringify(manifest.flow))
+    const document = legacyFlowToDocument(manifest.flow)
+    await createDocument(document)
     await Promise.all(temporaryResourceIds.map((resourceId) => deleteLocalResource(resourceId)))
-    return { flowId: useFlowStore.getState().currentFlowId, warnings: [...warnings] } satisfies FlowRestoreResult
+    return { flowId: document.id, warnings: [...warnings] } satisfies FlowRestoreResult
   } catch (error) {
     await Promise.all(temporaryResourceIds.map((resourceId) => deleteLocalResource(resourceId)))
     throw error

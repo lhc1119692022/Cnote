@@ -11,6 +11,7 @@ let runtime: DesktopRuntime | null = null
 let mainWindow: BrowserWindow | null = null
 let rendererHealthTimer: NodeJS.Timeout | null = null
 let emergencyRendererShown = false
+const activeNetworkRequests = new Map<string, AbortController>()
 const hasSingleInstanceLock = app.requestSingleInstanceLock()
 
 const ALLOWED_WEBVIEW_PROTOCOLS = new Set(['http:', 'https:', 'about:'])
@@ -297,8 +298,26 @@ function registerIpcHandlers() {
   ipcMain.handle('content:parse-html', (_event, input: unknown) => getRuntime().ports.content.parseHtml(assertContentParseInput(input)))
   ipcMain.handle('network:request', async (_event, input: unknown) => {
     const request = assertNativeNetworkRequest(input)
-    const headers = await resolveSecretHeaders(request, false)
-    return getRuntime().ports.network.request({ ...request, headers })
+    const controller = new AbortController()
+    const requestId = request.requestId
+    if (requestId) activeNetworkRequests.set(requestId, controller)
+    try {
+      const headers = await resolveSecretHeaders(request, false)
+      return await getRuntime().ports.network.request({ ...request, headers, signal: controller.signal })
+    } catch (error) {
+      if (error instanceof Error && (error.name === 'AbortError' || /operation was aborted/i.test(error.message))) {
+        throw new Error(controller.signal.aborted ? '桌面网络请求已停止' : '桌面网络请求超时或被中止')
+      }
+      throw error
+    } finally {
+      if (requestId && activeNetworkRequests.get(requestId) === controller) activeNetworkRequests.delete(requestId)
+    }
+  })
+  ipcMain.handle('network:abort', (_event, requestId: unknown) => {
+    const controller = activeNetworkRequests.get(assertString(requestId, 'network request id'))
+    if (!controller) return false
+    controller.abort()
+    return true
   })
   ipcMain.handle('system:open-file', (_event, request: unknown) => getRuntime().ports.system.openFile(assertOpenFileRequest(request)))
   ipcMain.handle('system:save-file', (_event, request: unknown) => getRuntime().ports.system.saveFile(assertSaveFileRequest(request)))
@@ -439,6 +458,7 @@ function normalizeNativeNetworkRequest(request: Record<string, unknown>, parsed:
   }
   return {
     url: parsed.toString(),
+    requestId: typeof request.requestId === 'string' && request.requestId.trim() ? request.requestId.trim() : undefined,
     method: typeof request.method === 'string' ? request.method.toUpperCase() : undefined,
     headers: persistedHeaders,
     secretRefs,

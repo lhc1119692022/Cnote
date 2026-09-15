@@ -26,6 +26,7 @@ const api = {
   },
   network: {
     request: (input: NetworkRequest & { secretRefs?: Record<string, string> }) => invoke<NetworkResponse>('network:request', input),
+    abort: (requestId: string) => invoke<boolean>('network:abort', requestId),
   },
   system: {
     openFile: (request?: { title?: string; filters?: FileDialogFilter[] }) =>

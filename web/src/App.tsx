@@ -2,7 +2,7 @@ import { Routes, Route, Navigate } from 'react-router-dom'
 import { lazy, Suspense, useEffect } from 'react'
 
 const Dashboard = lazy(() => import('@/pages/Dashboard').then((module) => ({ default: module.Dashboard })))
-const FlowEditor = lazy(() => import('@/components/flow/FlowEditor').then((module) => ({ default: module.FlowEditor })))
+const CanvasEditor = lazy(() => import('@/pages/CanvasEditorPage').then((module) => ({ default: module.CanvasEditorPage })))
 const TemplatesManager = lazy(() => import('@/pages/TemplatesManager').then((module) => ({ default: module.TemplatesManager })))
 const SourcesManager = lazy(() => import('@/pages/SourcesManager').then((module) => ({ default: module.SourcesManager })))
 const APIKeysManager = lazy(() => import('@/components/settings/APIKeysManager').then((module) => ({ default: module.APIKeysManager })))
@@ -19,7 +19,7 @@ function App() {
       <Routes>
         <Route path="/" element={<Navigate to="/dashboard" replace />} />
         <Route path="/dashboard" element={<Dashboard />} />
-        <Route path="/flows/:flowId" element={<FlowEditor />} />
+        <Route path="/flows/:flowId" element={<CanvasEditor />} />
         <Route path="/templates" element={<TemplatesManager />} />
         <Route path="/sources" element={<SourcesManager />} />
         <Route path="/outputs" element={<Navigate to="/settings/api-keys" replace />} />

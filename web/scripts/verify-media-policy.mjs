@@ -26,6 +26,9 @@ assert.throws(() => vm.runInContext("resolveMediaTransport('custom')", context),
 assert.equal(vm.runInContext("resolveMediaTransport('custom', true)", context), 'custom')
 assert.throws(() => vm.runInContext("resolveMediaTransport('multipart', true)", context), /选择本地素材传输方式/)
 assert.throws(() => vm.runInContext('assertMediaLifetime(Date.now())', context), /有效期/)
+assert.equal(vm.runInContext("isRangeIncompatiblePublicHost('https://pub-123.r2.dev/media/sha256-abc')", context), true)
+assert.equal(vm.runInContext("isRangeIncompatiblePublicHost('https://cnote-media.example.workers.dev/media/sha256-abc')", context), false)
+assert.throws(() => vm.runInContext("assertAnonymousCompleteFileUrl('https://pub-123.r2.dev/media/sha256-abc')", context), /HTTP 206/)
 assert.equal(vm.runInContext("signedMediaExpiry('https://cdn.test/a?X-Amz-Date=20260912T000000Z&X-Amz-Expires=7200')", context), Date.parse('2026-09-12T02:00:00Z'))
 assert.throws(() => vm.runInContext("assertInlineRequestSize('x'.repeat(MAX_INLINE_REQUEST_BYTES + 1))", context), /128 MiB/)
 

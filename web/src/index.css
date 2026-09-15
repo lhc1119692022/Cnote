@@ -312,11 +312,30 @@
 
 .canvas-viewport-moving .react-flow__node {
   pointer-events: none;
+  contain: paint;
 }
 
 .canvas-viewport-moving .node-panel-shadow,
 .canvas-viewport-moving .node-selected {
   box-shadow: none;
+}
+
+/* Native webviews/videos inside a CSS-transformed canvas are extremely
+   expensive in Electron. Hide them while the viewport or a node is moving.
+   Keep visibility (not display) so guests are not reloaded when shown again. */
+.canvas-viewport-moving webview,
+.canvas-viewport-moving iframe,
+.canvas-viewport-moving video,
+.react-flow__node.dragging webview,
+.react-flow__node.dragging iframe,
+.react-flow__node.dragging video {
+  visibility: hidden !important;
+  pointer-events: none !important;
+}
+
+.canvas-viewport-moving .browser-webview-shield,
+.react-flow__node.dragging .browser-webview-shield {
+  pointer-events: auto;
 }
 
 .react-flow__node:not(.react-flow__node-group):hover {

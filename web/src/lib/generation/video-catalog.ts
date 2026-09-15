@@ -4,6 +4,8 @@ import type {
   GenerationVideoRequestContract,
 } from '@/stores/use-generation-store'
 
+export const VIDEO_808_DEFAULT_BASE_URL = 'https://api.808relay.com'
+
 const VIDEO_808_CONTRACT: GenerationVideoRequestContract = {
   createPath: '/v1/videos',
   pollPath: '/v1/videos/{id}',
@@ -16,7 +18,7 @@ const VIDEO_808_CONTRACT: GenerationVideoRequestContract = {
   imageReferencesField: 'reference_images',
   videoReferencesField: 'reference_videos',
   audioReferencesField: 'reference_audios',
-  generateAudioField: 'sound_effects',
+  generateAudioField: 'generate_audio',
 }
 
 const KACANG_CAMEL_CONTRACT: GenerationVideoRequestContract = {
@@ -380,7 +382,7 @@ export const GENERATION_CHANNEL_PRESETS: GenerationChannelPreset[] = [
     description: '现有视频中转站的异步视频接口与六个已确认模型',
     providerId: 'video',
     protocol: 'video-808relay',
-    defaultBaseURL: 'https://va.808relay.com',
+    defaultBaseURL: VIDEO_808_DEFAULT_BASE_URL,
     modelIds: VIDEO_808_MODELS.map((model) => model.id),
     models: VIDEO_808_MODELS,
     supportsImage: false,

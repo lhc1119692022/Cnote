@@ -12,10 +12,11 @@ function normalizeHeaders(headers: Headers) {
 export class NativeNetworkPort implements NetworkPort {
   async request(input: NetworkRequest): Promise<NetworkResponse> {
     const maxResponseBytes = 256 * 1024 * 1024
+    const timeoutMs = Math.max(1_000, input.timeoutMs ?? 300_000)
     const controller = new AbortController()
     const abortFromCaller = () => controller.abort()
     input.signal?.addEventListener('abort', abortFromCaller, { once: true })
-    const timeout = setTimeout(() => controller.abort(), Math.max(1_000, input.timeoutMs ?? 30_000))
+    const timeout = setTimeout(() => controller.abort(), timeoutMs)
 
     try {
       // Use Chromium's network stack so desktop requests follow the user's
@@ -39,6 +40,10 @@ export class NativeNetworkPort implements NetworkPort {
         body,
         url: response.url,
       }
+    } catch (error) {
+      if (input.signal?.aborted) throw error
+      if (controller.signal.aborted) throw new Error(`网络请求超时或被中止（${Math.round(timeoutMs / 1000)} 秒）`)
+      throw error
     } finally {
       clearTimeout(timeout)
       input.signal?.removeEventListener('abort', abortFromCaller)

@@ -50,7 +50,7 @@ const generationStore = {
   generationChannelUsesModelInference: () => false,
   generationProtocolForChannel: (value) => value.protocol,
   isVideoGenerationProtocol: (value) => value === 'video-api' || value === 'video-808relay' || value === 'video-kacang',
-  generationVideoRequestContractForModel: (_channel, selectedModel) => selectedModel?.videoRequestContract || ({ createPath: '/v1/videos', pollPath: '/v1/videos/{id}', contentPath: '/v1/videos/{id}/content', durationField: 'seconds', resolutionField: 'resolution', aspectRatioField: 'aspect_ratio', firstFrameField: 'input_reference', lastFrameField: 'image_end', imageReferencesField: 'reference_images', videoReferencesField: 'reference_videos', audioReferencesField: 'reference_audios', generateAudioField: 'sound_effects' }),
+  generationVideoRequestContractForModel: (_channel, selectedModel) => selectedModel?.videoRequestContract || ({ createPath: '/v1/videos', pollPath: '/v1/videos/{id}', contentPath: '/v1/videos/{id}/content', durationField: 'seconds', resolutionField: 'resolution', aspectRatioField: 'aspect_ratio', firstFrameField: 'input_reference', lastFrameField: 'image_end', imageReferencesField: 'reference_images', videoReferencesField: 'reference_videos', audioReferencesField: 'reference_audios', generateAudioField: 'generate_audio' }),
   generationSecretName: () => 'mock-secret',
   generationMediaUploadSecretName: () => 'mock-upload-secret',
 }
@@ -162,9 +162,29 @@ assert.equal(referenceRequest.body.input_reference, undefined)
 assert.equal(referenceRequest.body.reference_images.length, 2)
 assert.equal(referenceRequest.body.reference_videos.length, 1)
 const silentRequest = await submit({ ...base, noMusic: true, generateAudio: true })
-assert.equal(silentRequest.body.sound_effects, false)
+assert.equal(silentRequest.body.generate_audio, false)
+assert.equal(silentRequest.body.sound_effects, undefined)
 assert.equal(silentRequest.body.no_music, undefined)
-assert.equal((await submit({ ...base, generateAudio: true })).body.sound_effects, true)
+const audioRequest = await submit({ ...base, generateAudio: true })
+assert.equal(audioRequest.body.generate_audio, true)
+assert.equal(audioRequest.body.sound_effects, undefined)
+const legacyAudioField = await submitGenerationTask({
+  variant: 'video',
+  model: { ...model, videoRequestContract: { ...model.videoRequestContract, generateAudioField: 'sound_effects' } },
+  channel,
+  config: { ...base, generateAudio: true },
+})
+assert.equal(legacyAudioField.taskId, 'mock-task')
+assert.equal(JSON.parse(requests.at(-1).body).generate_audio, true, 'legacy sound_effects contracts still submit generate_audio')
+assert.equal(JSON.parse(requests.at(-1).body).sound_effects, undefined)
+requests.length = 0
+await submitGenerationTask({
+  variant: 'video',
+  model: { ...model, videoRequestContract: { ...model.videoRequestContract, generateAudioField: undefined } },
+  channel,
+  config: { ...base, generateAudio: true },
+})
+assert.equal(JSON.parse(requests.at(-1).body).generate_audio, true, 'audio-capable models still submit generate_audio when the contract omits the field')
 const kacangModel = kacangModels.find((item) => item.id === 'doubao-seedance-2.0')
 assert(kacangModel, 'Kacang model catalog contains the documented Doubao model')
 const kacangConfig = { ...base, model: kacangModel.id, seconds: 8, resolution: '720P', references: [merged.references[0]] }
@@ -180,8 +200,16 @@ assert.equal(kacangBody.duration_seconds, 8, 'Kacang uses duration_seconds')
 assert.equal(kacangBody.seconds, undefined, 'Kacang does not use the 808Relay seconds field')
 assert.deepEqual(kacangBody.reference_images, ['https://cdn.test/first.png'], 'Doubao uses its documented reference_images field')
 assert.equal(kacangBody.referenceImages, undefined, 'Doubao does not use the MiniMax camelCase field')
+assert.equal(kacangBody.generate_audio, true, 'Doubao submits generate_audio')
+await assert.rejects(() => submitGenerationTask({
+  variant: 'video',
+  model: kacangModel,
+  channel: { ...channel, id: 'kacang-channel', protocol: 'video-kacang', baseURL: 'https://kacang.test/v1', mediaTransport: 'inline' },
+  config: { ...base, model: kacangModel.id, references: [{ ...merged.references[0], url: 'https://pub-123.r2.dev/media/sha256-abc' }] },
+}), /HTTP 206/)
 requests.length = 0
 await submitGenerationTask({ variant: 'video', model: { ...model, capabilities: ['text-to-video'] }, channel, config: base })
+assert.equal(JSON.parse(requests[0].body).generate_audio, undefined, 'hidden unsupported audio parameters are not submitted')
 assert.equal(JSON.parse(requests[0].body).sound_effects, undefined, 'hidden unsupported audio parameters are not submitted')
 
 const localConfig = { ...base, references: [{ ...localCopy, url: undefined, previewUrl: undefined }] }

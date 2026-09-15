@@ -1,7 +1,28 @@
-import type { Node, Edge } from 'reactflow'
-
-export type FlowNode = Node
-export type FlowEdge = Edge
+export interface FlowNodePosition { x: number; y: number }
+export interface FlowNodeStyle { width?: number; height?: number; [key: string]: unknown }
+export interface FlowNode {
+  id: string
+  type?: string
+  position: FlowNodePosition
+  style?: FlowNodeStyle
+  width?: number
+  height?: number
+  data?: any
+  parentNode?: string
+  zIndex?: number
+  selected?: boolean
+  [key: string]: unknown
+}
+export interface FlowEdge {
+  id: string
+  source: string
+  target: string
+  sourceHandle?: string | null
+  targetHandle?: string | null
+  type?: string
+  selected?: boolean
+  [key: string]: unknown
+}
 
 export type NodeType = 'content' | 'ai' | 'request' | 'browser' | 'sticky' | 'group'
 
@@ -458,11 +479,11 @@ export interface StickyNodeData extends BaseNodeData {
 export interface GroupNodeData extends BaseNodeData { memberCount: number; padding?: number }
 
 export interface Flow {
-  id: string; name: string; title: string; description?: string; nodes: Node[]; edges: Edge[]
+  id: string; name: string; title: string; description?: string; nodes: FlowNode[]; edges: FlowEdge[]
   viewport?: { x: number; y: number; zoom: number }; thumbnail?: string; folderId?: string; createdAt: number; updatedAt: number
 }
 export interface Folder { id: string; name: string; color?: string; createdAt: number }
-export interface Template { id: string; title: string; description?: string; thumbnail?: string; nodes: Node[]; edges: Edge[]; category?: string; usageCount: number; createdAt: number }
+export interface Template { id: string; title: string; description?: string; thumbnail?: string; nodes: FlowNode[]; edges: FlowEdge[]; category?: string; usageCount: number; createdAt: number }
 export interface Source { id: string; title: string; nodeData: ContentNodeData; createdAt: number; updatedAt: number }
 
 

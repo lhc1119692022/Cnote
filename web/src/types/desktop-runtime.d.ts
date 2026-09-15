@@ -34,6 +34,7 @@ interface CnoteDesktopApi {
   network: {
     request: (input: {
       url: string
+      requestId?: string
       method?: string
       headers?: Record<string, string>
       secretRefs?: Record<string, string>
@@ -46,6 +47,7 @@ interface CnoteDesktopApi {
       body: Uint8Array
       url: string
     }>
+    abort: (requestId: string) => Promise<boolean>
   }
   system: {
     openFile: (request?: { title?: string; filters?: Array<{ name: string; extensions: string[] }> }) => Promise<{ name: string; data: Uint8Array } | null>

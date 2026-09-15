@@ -46,3 +46,18 @@ export function assertMediaLifetime(expiresAt?: number, now = Date.now()) {
     throw new Error('素材读取地址已过期或剩余有效期不足一小时，请重新上传或更换地址')
   }
 }
+
+export function isRangeIncompatiblePublicHost(url: string) {
+  try {
+    const host = new URL(url).hostname.toLowerCase()
+    return host.endsWith('.r2.dev') || host.endsWith('.r2.cloudflarestorage.com') || /\.s3[.-][a-z0-9-]*\.amazonaws\.com$/i.test(host)
+  } catch {
+    return false
+  }
+}
+
+export function assertAnonymousCompleteFileUrl(url: string) {
+  if (isRangeIncompatiblePublicHost(url)) {
+    throw new Error(`素材地址 ${new URL(url).hostname} 会在 Range 请求时返回 HTTP 206，Kacang 无法读取。请把自定义媒体存储的服务地址和 Worker 的 MEDIA_PUBLIC_BASE_URL 都设为媒体 Worker 公网源站，不要使用 R2 公共开发域名或 S3 直链。`)
+  }
+}

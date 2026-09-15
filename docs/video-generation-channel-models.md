@@ -15,7 +15,7 @@
 
 ## 当前预设
 
-- `video-808relay`：对应 `D:\Desktop\视频模型调用文档.md`，默认地址为 `https://va.808relay.com`，包含文档确认的六个模型，使用 `seconds`、`reference_images` 等字段。
+- `video-808relay`：对应 808Relay 视频调用文档，默认地址为 `https://api.808relay.com`，包含文档确认的六个模型，使用 `seconds`、`reference_images`、`generate_audio` 等字段。
 - `video-kacang`：对应 `D:\Downloads\kacang-api-docs.md`，默认地址为 `https://newapi.prompt-hubs.com/v1`，包含文档列出的二十个视频模型。模型合同可以单独指定，例如 Doubao 使用 `reference_images`，MiniMax/S 系列使用文档中的 camelCase 字段。
 
 两套预设均为视频专用，默认不提供图片生成能力。`baseURL` 不是不可变配置；用户可以直接编辑它，模型 ID 也可以继续通过“拉取模型”或手动输入扩展。
@@ -33,4 +33,4 @@
 
 ## 素材地址
 
-Kacang 视频预设的文档合同标记为 `requiresPublicHttps`。因此设置页不会为该预设提供内联 Data URL 选项；本地素材应通过自定义媒体存储转换为公网 HTTPS 地址。已经是公网 HTTPS 的上游素材可直接引用，不需要再次上传。
+Kacang 视频预设的文档合同标记为 `requiresPublicHttps`。因此设置页不会为该预设提供内联 Data URL 选项；本地素材应通过自定义媒体存储转换为公网 HTTPS 地址。已经是公网 HTTPS 的上游素材可直接引用，不需要再次上传。读取地址必须是媒体 Worker 源站上的完整 HTTP 200 文件；R2 公共开发域名在 Range 请求下会返回 206，Kacang 无法使用。
