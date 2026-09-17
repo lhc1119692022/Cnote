@@ -45,6 +45,47 @@ export interface NetworkPort {
   request(input: NetworkRequest): Promise<NetworkResponse>
 }
 
+export interface BrowserSessionSummary {
+  id: string
+  name: string
+  partition: string
+  persistent: boolean
+  url: string
+  title: string
+  visible: boolean
+  presentation: 'embedded' | 'popup' | 'hidden'
+  createdAt: string
+  canGoBack: boolean
+  canGoForward: boolean
+}
+
+export interface BrowserViewportRequest {
+  width: number
+  height: number
+  scale: number
+}
+
+export interface BrowserFrame {
+  sessionId: string
+  width: number
+  height: number
+  data: Buffer
+}
+
+export type BrowserInputEvent =
+  | { type: 'mouseDown' | 'mouseUp' | 'mouseMove' | 'mouseEnter' | 'mouseLeave'; x: number; y: number; button?: 'left' | 'middle' | 'right'; clickCount?: number; modifiers?: string[] }
+  | { type: 'mouseWheel'; x: number; y: number; deltaX: number; deltaY: number; modifiers?: string[] }
+  | { type: 'keyDown' | 'keyUp' | 'char'; keyCode: string; modifiers?: string[] }
+
+export interface BrowserCapture {
+  sessionId: string
+  capturedAt: string
+  url: string
+  title: string
+  text: string
+  html: string
+}
+
 export interface ContentParseInput {
   html: string
   url?: string
@@ -111,8 +152,29 @@ export interface SystemPort {
   restart(): Promise<void>
 }
 
+export interface StoragePort {
+  read(key: string): Promise<Uint8Array | null>
+  write(key: string, data: Uint8Array): Promise<void>
+  remove(key: string): Promise<void>
+}
+
 export interface BrowserPort {
   popout(url: string, title?: string): void
+  createSession(options?: { id?: string; name?: string; persistent?: boolean; url?: string }): Promise<BrowserSessionSummary>
+  listSessions(): BrowserSessionSummary[]
+  onSessionUpdated(listener: (session: BrowserSessionSummary) => void): () => void
+  onFrame(listener: (frame: BrowserFrame) => void): () => void
+  onCursorChanged(listener: (change: { sessionId: string; cursor: string }) => void): () => void
+  setSessionViewport(id: string, viewport: BrowserViewportRequest): void
+  sendInput(id: string, event: BrowserInputEvent): void
+  showSession(id: string): void
+  popoutSession(id: string): void
+  navigate(id: string, url: string): Promise<BrowserSessionSummary>
+  reload(id: string): Promise<BrowserSessionSummary>
+  goBack(id: string): Promise<BrowserSessionSummary>
+  goForward(id: string): Promise<BrowserSessionSummary>
+  capture(id: string): Promise<BrowserCapture>
+  closeSession(id: string): Promise<void>
 }
 
 export interface SecretPort {
@@ -159,6 +221,7 @@ export interface RuntimePorts {
   browser: BrowserPort
   content: ContentPort
   system: SystemPort
+  storage: StoragePort
   secrets: SecretPort
   jobs: JobPort
   nativeJobs: NativeJobPort

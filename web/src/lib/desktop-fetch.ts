@@ -76,7 +76,7 @@ async function normalizeBody(url: string, init: RequestInit) {
  * preview still uses the browser fetch path, so this helper keeps one API
  * contract for both runtimes.
  */
-export async function desktopFetch(input: RequestInfo | URL, init: RequestInit = {}, options: DesktopFetchOptions = {}) {
+async function performDesktopFetch(input: RequestInfo | URL, init: RequestInit = {}, options: DesktopFetchOptions = {}) {
   const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
   const headers = new Headers()
   appendHeaders(headers, input instanceof Request ? input.headers : undefined)
@@ -84,14 +84,10 @@ export async function desktopFetch(input: RequestInfo | URL, init: RequestInit =
 
   const normalized = await normalizeBody(url, { ...init, headers })
   const secretRefs = options.secretRefs
-  const hasSensitiveHeader = [...headers.keys()].some((name) => /^(authorization|proxy-authorization|cookie|set-cookie|x-api-key|api-key)$/i.test(name))
   // Electron's native network stack intentionally accepts only HTTP(S).
   // Local renderer resources such as blob/data URLs must stay on browser fetch
   // so exports and generation references work in the desktop app as well.
   if (!supportsNativeNetwork(url)) return fetch(input, { ...init, headers })
-  // The direct Electron bridge is the primary desktop transport. It accepts
-  // in-memory credentials as well as SafeStorage references, which is needed
-  // for newly edited channels before their persisted configuration settles.
   if (hasDirectNativeNetwork()) {
     if (init.signal?.aborted) throw abortError()
     const requestId = crypto.randomUUID()
@@ -133,14 +129,6 @@ export async function desktopFetch(input: RequestInfo | URL, init: RequestInit =
     }
   }
 
-  // Older desktop bridges only expose the persisted Native Job API. That API
-  // deliberately rejects inline sensitive headers because job checkpoints are
-  // durable. Keep an unsaved credential usable in that compatibility runtime;
-  // current desktop builds always take the direct branch above.
-  if (hasNativeDesktop() && hasSensitiveHeader && !Object.keys(secretRefs || {}).length) {
-    return fetch(input, { ...init, headers })
-  }
-
   if (!hasNativeDesktop()) return fetch(input, { ...init, headers })
 
   const output = await runDesktopNativeJob<NativeNetworkOutput>({
@@ -164,4 +152,32 @@ export async function desktopFetch(input: RequestInfo | URL, init: RequestInit =
 
 export function desktopNativeAvailable() {
   return hasDirectNativeNetwork() || hasNativeDesktop()
+}
+
+export async function desktopFetch(input: RequestInfo | URL, init: RequestInit = {}, options: DesktopFetchOptions = {}) {
+  const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
+  if (!supportsNativeNetwork(url) || !desktopNativeAvailable()) return performDesktopFetch(input, init, options)
+  const headers = new Headers(input instanceof Request ? input.headers : undefined)
+  appendHeaders(headers, init.headers)
+  const secretRefs = Object.fromEntries(Object.entries(options.secretRefs || {}).map(([header, name]) => [header.toLowerCase(), name]))
+  const temporarySecrets: string[] = []
+  const secrets = window.cnoteDesktop?.secrets
+  try {
+    for (const [header, value] of [...headers.entries()]) {
+      if (secretRefs[header]) {
+        headers.delete(header)
+      } else if (/^(authorization|proxy-authorization|cookie|set-cookie|x-api-key|api-key|x-goog-api-key)$/i.test(header)) {
+        if (!secrets) throw new Error('桌面密钥存储不可用，请更新或重启桌面端。')
+        const name = 'cnote:request:' + crypto.randomUUID()
+        temporarySecrets.push(name)
+        await secrets.set(name, value)
+        secretRefs[header] = name
+        headers.delete(header)
+      }
+    }
+    if (init.signal?.aborted) throw abortError()
+    return await performDesktopFetch(url, { ...init, headers }, { ...options, secretRefs })
+  } finally {
+    await Promise.all(temporarySecrets.map((name) => secrets!.delete(name)))
+  }
 }

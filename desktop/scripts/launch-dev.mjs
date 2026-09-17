@@ -14,6 +14,7 @@ const electron = require('electron')
 const environment = {
   ...process.env,
   CNOTE_DEV_LAUNCH: '1',
+  CNOTE_DEVTOOLS_PORT: process.env.CNOTE_DEVTOOLS_PORT || '9222',
 }
 delete environment.ELECTRON_RUN_AS_NODE
 

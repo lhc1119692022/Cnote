@@ -36,13 +36,15 @@ export class JobManager implements JobPort {
       }
       await this.persist()
     } catch (error) {
+      const missing = Boolean(error && typeof error === 'object' && 'code' in error && (error as { code: unknown }).code === 'ENOENT')
+      if (missing) return
       // Keep the desktop shell usable, but preserve evidence for recovery
       // instead of silently discarding a damaged task journal.
       console.warn('Cnote runtime job journal could not be read:', error)
       try {
         await fs.copyFile(this.filePath, `${this.filePath}.corrupt-${Date.now()}`)
       } catch {
-        // The file may simply not exist yet.
+        // The backup copy is best-effort.
       }
     }
   }

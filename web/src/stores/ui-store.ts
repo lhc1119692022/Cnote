@@ -18,6 +18,8 @@ export interface UiStoreState {
   panelSearch: string
   selectionMode: boolean
   selectedPanelIds: string[]
+  selectedEdgeId: string | null
+  nodeChrome: Record<string, { settings?: boolean; systemPrompt?: boolean }>
 }
 
 export interface UiStoreActions {
@@ -31,6 +33,8 @@ export interface UiStoreActions {
   setPanelSearch: (search: string) => void
   setSelectionMode: (enabled: boolean) => void
   setSelectedPanelIds: (ids: string[]) => void
+  setSelectedEdgeId: (id: string | null) => void
+  setNodeChrome: (id: string, patch: { settings?: boolean; systemPrompt?: boolean }) => void
 }
 
 export type UiStore = UiStoreState & UiStoreActions
@@ -45,6 +49,8 @@ export const useUiStore = create<UiStore>((set) => ({
   panelFilter: 'all',
   panelSearch: '',
   selectionMode: false,
+  selectedEdgeId: null,
+  nodeChrome: {},
   selectedPanelIds: [],
 
   setShowNodePanel: (show) => set({ showNodePanel: show }),
@@ -56,5 +62,12 @@ export const useUiStore = create<UiStore>((set) => ({
   setPanelFilter: (filter) => set({ panelFilter: filter }),
   setPanelSearch: (search) => set({ panelSearch: search }),
   setSelectionMode: (enabled) => set({ selectionMode: enabled }),
+  setSelectedEdgeId: (id) => set({ selectedEdgeId: id }),
+  setNodeChrome: (id, patch) => set((state) => ({
+    nodeChrome: {
+      ...state.nodeChrome,
+      [id]: { ...state.nodeChrome[id], ...patch },
+    },
+  })),
   setSelectedPanelIds: (ids) => set({ selectedPanelIds: ids }),
 }))

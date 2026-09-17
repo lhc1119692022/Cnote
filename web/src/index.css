@@ -338,7 +338,8 @@
   pointer-events: auto;
 }
 
-.react-flow__node:not(.react-flow__node-group):hover {
+.react-flow__node:not(.react-flow__node-group):hover,
+[data-node-id]:not([data-node-kind='group']):hover {
   z-index: 1000 !important;
 }
 
@@ -730,16 +731,63 @@
   box-shadow: none;
 }
 
+[data-content-node]:has(details[open] > [data-node-menu]) {
+  --canvas-content-order: 2;
+}
+
 .node-hover-toolbar {
   position: absolute;
-  right: 0;
-  bottom: 100%;
+  left: 50%;
+  top: 0;
   z-index: 30;
   padding-bottom: 8px;
   opacity: 0;
   pointer-events: none;
-  transform: translateY(4px);
+  transform: translate(-50%, calc(-100% + 4px));
   transition: opacity 140ms ease, transform 140ms ease;
+}
+
+.node-hover-toolbar.is-visible {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translate(-50%, -100%);
+}
+
+.node-hover-toolbar[data-placement='bottom'] {
+  top: 100%;
+  padding-bottom: 0;
+  padding-top: 8px;
+  transform: translate(-50%, 0);
+}
+
+.node-hover-toolbar[data-placement='bottom'].is-visible {
+  transform: translate(-50%, 0);
+}
+
+.node-hover-toolbar[data-horizontal='left'] {
+  left: 0;
+  transform: translate(0, -100%);
+}
+
+.node-hover-toolbar[data-horizontal='left'].is-visible {
+  transform: translate(0, -100%);
+}
+
+.node-hover-toolbar[data-placement='bottom'][data-horizontal='left'] {
+  transform: translate(0, 0);
+}
+
+.node-hover-toolbar[data-horizontal='right'] {
+  left: 100%;
+  transform: translate(-100%, -100%);
+}
+
+.node-hover-toolbar[data-horizontal='right'].is-visible {
+  transform: translate(-100%, -100%);
+}
+
+.node-hover-toolbar[data-placement='bottom'][data-horizontal='right'] {
+  transform: translate(-100%, 0);
 }
 
 .node-hover-toolbar-surface {
@@ -770,18 +818,6 @@
 
 .sticky-color-button.is-active {
   box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--sticky-dot-color) 75%, transparent);
-}
-
-.react-flow__node:hover .node-hover-toolbar,
-.react-flow__node:focus-within .node-hover-toolbar {
-  opacity: 1;
-  pointer-events: auto;
-  transform: translateY(0);
-}
-
-.react-flow__node.dragging .node-hover-toolbar {
-  opacity: 0;
-  pointer-events: none;
 }
 
 .ai-node-toolbar {
@@ -1089,12 +1125,14 @@
   z-index: 18 !important;
 }
 
-.react-flow__handle-left.node-connection-handle {
+.react-flow__handle-left.node-connection-handle,
+.node-connection-handle[data-canvas-handle='target'] {
   left: -32px !important;
   transform: translateY(-50%);
 }
 
-.react-flow__handle-right.node-connection-handle {
+.react-flow__handle-right.node-connection-handle,
+.node-connection-handle[data-canvas-handle='source'] {
   right: -32px !important;
   transform: translateY(-50%);
 }
@@ -1113,7 +1151,22 @@
   transition: transform 160ms ease, background-color 160ms ease, color 160ms ease;
 }
 
-.react-flow__node:hover .node-connection-handle {
+[data-node-id][data-node-connection-target='valid'] .node-connection-handle-surface {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--primary) 20%, transparent);
+}
+
+[data-node-id][data-node-connection-target='invalid'] .node-connection-handle-surface {
+  border-color: var(--destructive);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--destructive) 16%, transparent);
+}
+
+.react-flow__node:hover .node-connection-handle,
+[data-node-id]:hover .node-connection-handle,
+[data-node-id][data-node-hovered='true'] .node-connection-handle,
+[data-node-id][data-node-connection-target] .node-connection-handle,
+[data-node-id][data-node-selected='true'] .node-connection-handle,
+[data-node-id]:focus-within .node-connection-handle {
   opacity: 1;
   pointer-events: auto !important;
 }
@@ -1159,6 +1212,7 @@
 
 .react-flow__node:hover .node-resize-arc,
 .react-flow__node.selected .node-resize-arc,
+[data-node-id][data-node-hovered='true'] .node-resize-arc,
 .node-resize-arc:hover,
 .node-resize-arc.is-resizing {
   opacity: 1;
@@ -1217,4 +1271,8 @@
 
 .react-flow__pane.dragging {
   cursor: grabbing !important;
+}
+
+[data-canvas-content-presentation]:not([data-canvas-content-presentation="group"]) > :first-child {
+  border-radius: var(--canvas-node-radius, 24px);
 }

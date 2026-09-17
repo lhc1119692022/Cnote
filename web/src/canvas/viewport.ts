@@ -13,6 +13,14 @@ import type { Point, Rect, Size, Viewport } from '@/domain'
 export const MIN_ZOOM = 0.1
 export const MAX_ZOOM = 4
 
+/** Normalize WheelEvent deltas without turning trackpad input into fixed steps. */
+export function wheelDeltaToPixels(deltaY: number, deltaMode = 0, viewportHeight = 800): number {
+  if (!Number.isFinite(deltaY)) return 0
+  if (deltaMode === 1) return deltaY * 16
+  if (deltaMode === 2) return deltaY * Math.max(1, viewportHeight)
+  return deltaY
+}
+
 export function clampZoom(zoom: number): number {
   if (!Number.isFinite(zoom)) return 1
   return Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, zoom))
@@ -78,10 +86,51 @@ export function panBy(viewport: Viewport, delta: Point): Viewport {
   }
 }
 
-/** Scale `bounds` to fit `screenSize` (centered), then clamp zoom. */
-export function fitBounds(bounds: Rect, screenSize: Size, padding = 0): Viewport {
-  const availW = screenSize.width - padding * 2
-  const availH = screenSize.height - padding * 2
+export interface ViewportInsets {
+  left?: number
+  right?: number
+  top?: number
+  bottom?: number
+}
+
+export type ViewportPadding = number | ViewportInsets
+
+export function normalizeViewportInsets(padding: ViewportPadding = 0): Required<ViewportInsets> {
+  if (typeof padding === 'number') {
+    const value = Number.isFinite(padding) && padding > 0 ? padding : 0
+    return { left: value, right: value, top: value, bottom: value }
+  }
+  return {
+    left: Math.max(0, padding.left || 0),
+    right: Math.max(0, padding.right || 0),
+    top: Math.max(0, padding.top || 0),
+    bottom: Math.max(0, padding.bottom || 0),
+  }
+}
+
+export function visibleScreenRect(screenSize: Size, padding: ViewportPadding = 0): Rect {
+  const inset = normalizeViewportInsets(padding)
+  return {
+    x: inset.left,
+    y: inset.top,
+    width: Math.max(0, screenSize.width - inset.left - inset.right),
+    height: Math.max(0, screenSize.height - inset.top - inset.bottom),
+  }
+}
+
+export function visibleScreenCenter(screenSize: Size, padding: ViewportPadding = 0): Point {
+  const visible = visibleScreenRect(screenSize, padding)
+  return {
+    x: visible.x + visible.width / 2,
+    y: visible.y + visible.height / 2,
+  }
+}
+
+/** Scale `bounds` to fit `screenSize` (centered in the padded area), then clamp zoom. */
+export function fitBounds(bounds: Rect, screenSize: Size, padding: ViewportPadding = 0): Viewport {
+  const visible = visibleScreenRect(screenSize, padding)
+  const availW = visible.width
+  const availH = visible.height
   const bw = bounds.width
   const bh = bounds.height
 
@@ -103,10 +152,7 @@ export function fitBounds(bounds: Rect, screenSize: Size, padding = 0): Viewport
     x: bounds.x + bounds.width / 2,
     y: bounds.y + bounds.height / 2,
   }
-  const screenCenter = {
-    x: screenSize.width / 2,
-    y: screenSize.height / 2,
-  }
+  const screenCenter = visibleScreenCenter(screenSize, padding)
 
   return {
     x: screenCenter.x - boundsCenter.x * zoom,

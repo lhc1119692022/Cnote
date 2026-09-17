@@ -3,61 +3,37 @@
  * 不接入旧 reactflow / use-flow-store。路由替换由后续阶段完成。
  */
 
-import { useCallback, useEffect, useRef, useState, type ReactNode, type RefObject } from 'react'
+import { useCallback, useEffect, useRef, useState, type RefObject } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
-import {
-  ArrowLeft,
-  Globe,
-  Layers3,
-  Lock,
-  Map,
-  Plus,
-  Redo2,
-  Save,
-  Sparkles,
-  StickyNote,
-  Undo2,
-  Unlock,
-  type LucideIcon,
-} from 'lucide-react'
 import { nanoid } from 'nanoid'
-import { screenToWorld } from '@/canvas'
+import { CanvasToolbar, type SaveStatus } from '@/canvas/components/CanvasToolbar'
 import { CanvasViewport } from '@/canvas/components'
-import { AIContent, BrowserContent, ContentContent, RequestContent, StickyContent } from '@/canvas/contents'
-import type { FlowDocument, GenerationConfig, NodeKind, NodeSpec, Point, Size, Viewport } from '@/domain'
+import { handleCanvasCopy, handleCanvasPaste, isEditableTarget } from '@/canvas/clipboard-import'
+import { AIContent, BrowserContent, ContentContent, GroupContent, RequestContent, StickyContent } from '@/canvas/contents'
+import type { FlowDocument, NodeSpec, Size } from '@/domain'
 import { showMessage } from '@/lib/app-dialog'
-import {
-  AI_NODE_DEFAULT_SIZE,
-  BROWSER_NODE_DEFAULT_SIZE,
-  CONTENT_NODE_DEFAULT_SIZE,
-  REQUEST_NODE_DEFAULT_SIZE,
-  STICKY_NODE_DEFAULT_SIZE,
-} from '@/lib/flow/node-dimensions'
 import { migrateLegacyFlows } from '@/runtime/legacy-loader'
-import { appendDocumentIndex, listDocuments, loadDocument, saveDocument } from '@/storage'
+import {
+  GRAPH_AUTOSAVE_DELAY_MS,
+  cancelScheduledGraphPersist,
+  createDocument,
+  deleteDocument,
+  flushGraphPersist,
+  hydrateRuntimeStore,
+  isGraphDirty,
+  listDocuments,
+  loadDocument,
+  rememberOpenedGraph,
+  removeDocumentIndex,
+  scheduleGraphPersist,
+} from '@/storage'
+import { canvasOverlayInsets } from '@/canvas/overlay-insets'
 import { useGraphStore } from '@/stores/graph-store'
 import { useUiStore } from '@/stores/ui-store'
 
-type AddableKind = Exclude<NodeKind, 'group'>
-
-const DEFAULT_BROWSER_URL = 'https://www.google.com/'
-
-const ADD_MENU_ITEMS: ReadonlyArray<{
-  kind: AddableKind
-  label: string
-  icon: LucideIcon
-  iconClass: string
-}> = [
-  { kind: 'sticky', label: '贴纸', icon: StickyNote, iconClass: 'text-amber-500' },
-  { kind: 'browser', label: '浏览器节点', icon: Globe, iconClass: 'text-cyan-600' },
-  { kind: 'ai', label: 'AI 节点', icon: Sparkles, iconClass: 'text-violet-500' },
-  { kind: 'request', label: '请求体', icon: Sparkles, iconClass: 'text-primary' },
-  { kind: 'content', label: '内容类型选择', icon: Layers3, iconClass: 'text-blue-500' },
-]
-
-function isEditableTarget(target: EventTarget | null): boolean {
-  const element = target instanceof HTMLElement ? target : null
-  return Boolean(element?.closest('input, textarea, select, [contenteditable="true"], [role="textbox"]'))
+function currentGraphSource() {
+  const { currentDocument, view } = useGraphStore.getState()
+  return { doc: currentDocument, view }
 }
 
 /** 量画布容器，给屏幕中心 → 世界坐标换算用。 */
@@ -120,311 +96,62 @@ function renderNodeContent(node: NodeSpec) {
     case 'content':
       return <ContentContent node={node} />
     case 'group':
-      return null
+      return <GroupContent node={node} />
     default:
       return null
   }
 }
 
-function defaultSizeFor(kind: AddableKind): Size {
-  switch (kind) {
-    case 'sticky':
-      return { width: STICKY_NODE_DEFAULT_SIZE.width, height: STICKY_NODE_DEFAULT_SIZE.height }
-    case 'browser':
-      return { width: BROWSER_NODE_DEFAULT_SIZE.width, height: BROWSER_NODE_DEFAULT_SIZE.height }
-    case 'ai':
-      return { width: AI_NODE_DEFAULT_SIZE.width, height: AI_NODE_DEFAULT_SIZE.height }
-    case 'request':
-      return { width: REQUEST_NODE_DEFAULT_SIZE.width, height: REQUEST_NODE_DEFAULT_SIZE.height }
-    case 'content':
-      return { width: CONTENT_NODE_DEFAULT_SIZE.width, height: CONTENT_NODE_DEFAULT_SIZE.height }
-  }
-}
-
-function defaultLabelFor(kind: AddableKind): string {
-  switch (kind) {
-    case 'sticky':
-      return '贴纸'
-    case 'browser':
-      return '浏览器节点'
-    case 'ai':
-      return 'AI 节点'
-    case 'request':
-      return '请求体'
-    case 'content':
-      return '内容类型选择'
-  }
-}
-
-function emptyGenerationConfig(variant: 'image' | 'video'): GenerationConfig {
-  if (variant === 'image') {
-    return { prompt: '', capability: 'text-to-image', resolution: 'auto', aspectRatio: '16:9' }
-  }
-  return {
-    prompt: '',
-    capability: 'reference-to-video',
-    seconds: 5,
-    resolution: '720p',
-    aspectRatio: '16:9',
-    generateAudio: true,
-  }
-}
-
-function createAddableNode(kind: AddableKind, position: Point): NodeSpec {
-  const size = defaultSizeFor(kind)
-  const label = defaultLabelFor(kind)
-  const id = nanoid()
-  switch (kind) {
-    case 'sticky':
-      return { id, kind, position, size, label, content: '', color: 'yellow', background: 'solid' }
-    case 'browser':
-      return { id, kind, position, size, label, url: DEFAULT_BROWSER_URL }
-    case 'ai':
-      return { id, kind, position, size, label }
-    case 'request':
-      return {
-        id,
-        kind,
-        position,
-        size,
-        label,
-        variant: 'body',
-        image: emptyGenerationConfig('image'),
-        video: emptyGenerationConfig('video'),
-      }
-    case 'content':
-      return { id, kind, position, size, label, category: null, subtype: null, source: null }
-  }
-}
-
-/** 屏幕中心换世界坐标，再把节点中心对齐到该点。 */
-function viewportCenterPosition(container: Size, view: Viewport, nodeSize: Size): Point {
-  const width = container.width > 0 ? container.width : window.innerWidth
-  const height = container.height > 0 ? container.height : window.innerHeight
-  const world = screenToWorld({ x: width / 2, y: height / 2 }, view)
-  return {
-    x: world.x - nodeSize.width / 2,
-    y: world.y - nodeSize.height / 2,
-  }
-}
-
-function updateDocumentName(name: string): void {
-  const doc = useGraphStore.getState().currentDocument
-  if (!doc) return
-  const nextName = name.trim() || '未命名画布'
-  if (doc.name === nextName && doc.title === nextName) return
-  useGraphStore.setState({
-    currentDocument: {
-      ...doc,
-      name: nextName,
-      title: nextName,
-      updatedAt: Date.now(),
-    },
-  })
-}
-
-function ToolbarButton({
-  label,
-  onClick,
-  pressed,
-  disabled,
-  children,
-}: {
-  label: string
-  onClick: () => void
-  pressed?: boolean
-  disabled?: boolean
-  children: ReactNode
-}) {
-  return (
-    <button
-      type="button"
-      title={label}
-      aria-label={label}
-      aria-pressed={pressed}
-      disabled={disabled}
-      className="flex h-8 w-8 items-center justify-center rounded-full text-muted-foreground hover:bg-muted hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40"
-      onClick={onClick}
-    >
-      {children}
-    </button>
-  )
-}
-
-function EditorToolbar({
-  containerSize,
-  nameDraft,
-  saving,
-  onNameDraftChange,
-  onNameCommit,
-  onSave,
-}: {
-  containerSize: Size
-  nameDraft: string
-  saving: boolean
-  onNameDraftChange: (value: string) => void
-  onNameCommit: () => void
-  onSave: () => void
-}) {
-  const navigate = useNavigate()
-  const documentName = useGraphStore((state) => state.currentDocument?.name ?? '')
-  const isLocked = useGraphStore((state) => state.isLocked)
-  const canUndo = useGraphStore((state) => state.canUndo())
-  const canRedo = useGraphStore((state) => state.canRedo())
-  const showMinimap = useUiStore((state) => state.showMinimap)
-
-  const [showAddMenu, setShowAddMenu] = useState(false)
-  const addMenuRef = useRef<HTMLDivElement>(null)
-
-  useEffect(() => {
-    if (!showAddMenu) return
-    const close = (event: Event) => {
-      if (event instanceof KeyboardEvent) {
-        if (event.key === 'Escape') setShowAddMenu(false)
-        return
-      }
-      if (addMenuRef.current?.contains(event.target as Node)) return
-      setShowAddMenu(false)
-    }
-    document.addEventListener('pointerdown', close, true)
-    document.addEventListener('keydown', close, true)
-    return () => {
-      document.removeEventListener('pointerdown', close, true)
-      document.removeEventListener('keydown', close, true)
-    }
-  }, [showAddMenu])
-
-  const addNodeOfKind = useCallback(
-    (kind: AddableKind) => {
-      const view = useGraphStore.getState().view
-      const size = defaultSizeFor(kind)
-      const position = viewportCenterPosition(containerSize, view, size)
-      useGraphStore.getState().addNode(createAddableNode(kind, position))
-      setShowAddMenu(false)
-    },
-    [containerSize],
-  )
-
-  return (
-    <div
-      className="pointer-events-none absolute inset-x-0 top-0 z-50 flex h-14 items-center justify-between px-3"
-      onPointerDown={(event) => event.stopPropagation()}
-    >
-      <div className="cnote-toolbar-surface pointer-events-auto flex items-center gap-1 px-1.5 py-1">
-        <ToolbarButton label="返回控制台" onClick={() => navigate('/dashboard')}>
-          <ArrowLeft className="h-4 w-4" />
-        </ToolbarButton>
-        <input
-          value={nameDraft}
-          aria-label="画布名称"
-          title="画布名称"
-          onChange={(event) => onNameDraftChange(event.target.value)}
-          onBlur={onNameCommit}
-          onKeyDown={(event) => {
-            if (event.key === 'Enter') event.currentTarget.blur()
-            if (event.key === 'Escape') {
-              event.preventDefault()
-              onNameDraftChange(documentName)
-            }
-          }}
-          className="h-8 w-44 bg-transparent px-2 text-sm font-medium text-foreground outline-none"
-        />
-      </div>
-
-      <div className="cnote-toolbar-surface pointer-events-auto relative flex items-center gap-0.5 px-1.5 py-1">
-        <div ref={addMenuRef} className="relative">
-          <ToolbarButton
-            label="新增节点"
-            pressed={showAddMenu}
-            onClick={() => setShowAddMenu((open) => !open)}
-          >
-            <Plus className="h-4 w-4" />
-          </ToolbarButton>
-          {showAddMenu ? (
-            <div
-              role="menu"
-              aria-label="新增节点"
-              className="cnote-menu-surface absolute right-0 top-[calc(100%+8px)] z-50 w-48"
-            >
-              {ADD_MENU_ITEMS.map((item) => {
-                const Icon = item.icon
-                return (
-                  <button
-                    key={item.kind}
-                    type="button"
-                    role="menuitem"
-                    className="cnote-menu-item"
-                    onClick={() => addNodeOfKind(item.kind)}
-                  >
-                    <span className="flex h-6 w-6 shrink-0 items-center justify-center">
-                      <Icon className={`h-3.5 w-3.5 ${item.iconClass}`} />
-                    </span>
-                    <span className="min-w-0 flex-1 truncate text-left">{item.label}</span>
-                  </button>
-                )
-              })}
-            </div>
-          ) : null}
-        </div>
-        <ToolbarButton label={saving ? '正在保存' : '保存'} disabled={saving} onClick={onSave}>
-          <Save className="h-4 w-4" />
-        </ToolbarButton>
-        <ToolbarButton label="撤销" disabled={!canUndo} onClick={() => useGraphStore.getState().undo()}>
-          <Undo2 className="h-4 w-4" />
-        </ToolbarButton>
-        <ToolbarButton label="重做" disabled={!canRedo} onClick={() => useGraphStore.getState().redo()}>
-          <Redo2 className="h-4 w-4" />
-        </ToolbarButton>
-        <ToolbarButton
-          label={isLocked ? '解锁画布' : '锁定画布'}
-          pressed={isLocked}
-          onClick={() => useGraphStore.getState().toggleLock()}
-        >
-          {isLocked ? <Unlock className="h-4 w-4" /> : <Lock className="h-4 w-4" />}
-        </ToolbarButton>
-        <ToolbarButton
-          label={showMinimap ? '隐藏小地图' : '显示小地图'}
-          pressed={showMinimap}
-          onClick={() => useUiStore.getState().toggleMinimap()}
-        >
-          <Map className="h-4 w-4" />
-        </ToolbarButton>
-      </div>
-    </div>
-  )
-}
-
 export function CanvasEditorPage() {
   const { flowId } = useParams<{ flowId?: string }>()
+  const navigate = useNavigate()
   const currentDocument = useGraphStore((state) => state.currentDocument)
-  const documentName = currentDocument?.name ?? ''
+  const view = useGraphStore((state) => state.view)
   const canvasRef = useRef<HTMLDivElement>(null)
   const containerSize = useContainerSize(canvasRef)
-  const [nameDraft, setNameDraft] = useState(documentName)
   const [saving, setSaving] = useState(false)
-  const nameDraftRef = useRef(nameDraft)
-  const savingRef = useRef(false)
-  nameDraftRef.current = nameDraft
+  const [persistTick, setPersistTick] = useState(0)
+  const showNodePanel = useUiStore((state) => state.showNodePanel)
+  const showExtensionPanel = useUiStore((state) => state.showExtensionPanel)
+  const extensionWidth = useUiStore((state) => state.extensionWidth)
+  const overlayInsets = canvasOverlayInsets({ showNodePanel, showExtensionPanel, extensionWidth })
+  const leftInset = overlayInsets.left
+  const rightInset = overlayInsets.right
+  const dirty = persistTick >= 0 && isGraphDirty(currentDocument, view)
+  const saveStatus: SaveStatus = saving ? 'saving' : dirty ? 'unsaved' : 'saved'
+
+  const saveCurrentDocument = useCallback(async () => {
+    setSaving(true)
+    try {
+      await flushGraphPersist(currentGraphSource)
+      setPersistTick((value) => value + 1)
+    } catch (error) {
+      showMessage(error instanceof Error && error.message.trim() ? error.message : '保存失败，请稍后重试。')
+      throw error
+    } finally {
+      setSaving(false)
+    }
+  }, [])
+
+  const openLoaded = useCallback((doc: FlowDocument) => {
+    useGraphStore.getState().openDocument(doc)
+    rememberOpenedGraph(doc, doc.viewport)
+    setPersistTick((value) => value + 1)
+  }, [])
 
   useEffect(() => {
     let cancelled = false
 
-    async function openFirstListed(): Promise<boolean> {
-      const docs = await listDocuments()
-      if (cancelled) return true
-      const first = docs[0]
-      if (!first) return false
-      useGraphStore.getState().openDocument(first)
-      return true
-    }
-
     async function boot() {
       try {
+        await hydrateRuntimeStore()
+        if (cancelled) return
+
         if (flowId) {
           const loaded = await loadDocument(flowId)
           if (cancelled) return
           if (loaded.ok) {
-            useGraphStore.getState().openDocument(loaded.doc)
+            openLoaded(loaded.doc)
             return
           }
         }
@@ -436,69 +163,126 @@ export function CanvasEditorPage() {
           const retried = await loadDocument(flowId)
           if (cancelled) return
           if (retried.ok) {
-            useGraphStore.getState().openDocument(retried.doc)
+            openLoaded(retried.doc)
             return
           }
         }
 
-        if (await openFirstListed()) return
+        const docs = await listDocuments()
         if (cancelled) return
-        useGraphStore.getState().openDocument(createEmptyDocument())
-      } catch {
-        if (!cancelled && !useGraphStore.getState().currentDocument) {
-          useGraphStore.getState().openDocument(createEmptyDocument())
+        const first = docs[0]
+        if (first) {
+          openLoaded(first)
+          if (first.id !== flowId) navigate(`/flows/${first.id}`, { replace: true })
+          return
         }
+
+        const empty = createEmptyDocument()
+        await createDocument(empty)
+        if (cancelled) {
+          await deleteDocument(empty.id).catch(() => undefined)
+          await removeDocumentIndex(empty.id).catch(() => undefined)
+          return
+        }
+        openLoaded(empty)
+        if (empty.id !== flowId) navigate(`/flows/${empty.id}`, { replace: true })
+      } catch {
+        if (cancelled) return
+        if (useGraphStore.getState().currentDocument) return
+        const empty = createEmptyDocument()
+        try {
+          await createDocument(empty)
+        } catch {
+          // Keep the in-memory canvas even if the first persist fails.
+        }
+        if (cancelled) {
+          await deleteDocument(empty.id).catch(() => undefined)
+          await removeDocumentIndex(empty.id).catch(() => undefined)
+          return
+        }
+        openLoaded(empty)
       }
     }
 
     void boot()
     return () => {
       cancelled = true
+      const { currentDocument: doc, view: currentView } = useGraphStore.getState()
+      void flushGraphPersist(() => ({ doc, view: currentView }))
     }
-  }, [flowId])
+  }, [flowId, navigate, openLoaded])
 
   useEffect(() => {
-    setNameDraft(documentName)
-  }, [documentName])
+    if (!currentDocument) return
+    if (!isGraphDirty(currentDocument, view)) return
+    scheduleGraphPersist(currentGraphSource, GRAPH_AUTOSAVE_DELAY_MS, {
+      onSaved: () => setPersistTick((value) => value + 1),
+    })
+    return () => cancelScheduledGraphPersist()
+  }, [currentDocument, view])
 
-  const saveCurrentDocument = useCallback(async () => {
-    if (savingRef.current) return
-    updateDocumentName(nameDraftRef.current)
-    const { currentDocument: doc, view } = useGraphStore.getState()
-    if (!doc) return
-    const next: FlowDocument = {
-      ...doc,
-      viewport: view,
-      updatedAt: Date.now(),
+  useEffect(() => {
+    const flushOpenGraph = () => {
+      const { currentDocument: doc, view: currentView } = useGraphStore.getState()
+      void flushGraphPersist(() => ({ doc, view: currentView }))
     }
-    useGraphStore.setState({ currentDocument: next })
-    savingRef.current = true
-    setSaving(true)
-    try {
-      await saveDocument(next)
-      await appendDocumentIndex(next.id)
-    } catch (error) {
-      showMessage(error instanceof Error && error.message.trim() ? error.message : '保存失败，请稍后重试。')
-    } finally {
-      savingRef.current = false
-      setSaving(false)
+    const onVisibility = () => {
+      if (document.visibilityState === 'hidden') flushOpenGraph()
+    }
+    window.addEventListener('pagehide', flushOpenGraph)
+    window.addEventListener('beforeunload', flushOpenGraph)
+    document.addEventListener('visibilitychange', onVisibility)
+    return () => {
+      window.removeEventListener('pagehide', flushOpenGraph)
+      window.removeEventListener('beforeunload', flushOpenGraph)
+      document.removeEventListener('visibilitychange', onVisibility)
     }
   }, [])
 
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
+  const handleKeyDown = useCallback(
+    (event: KeyboardEvent) => {
       const isMod = event.metaKey || event.ctrlKey
-      if (!isMod) return
       const key = event.key.toLowerCase()
 
-      if (key === 's') {
+      if (isMod && key === 's') {
         event.preventDefault()
-        void saveCurrentDocument()
+        void saveCurrentDocument().catch(() => undefined)
         return
       }
 
       if (isEditableTarget(event.target)) return
 
+      if (!isMod && (event.key === 'Delete' || event.key === 'Backspace')) {
+        event.preventDefault()
+        const graph = useGraphStore.getState()
+        if (graph.isLocked) return
+        const selectedEdgeId = useUiStore.getState().selectedEdgeId
+        if (selectedEdgeId) {
+          graph.deleteEdge(selectedEdgeId)
+          useUiStore.getState().setSelectedEdgeId(null)
+        } else {
+          graph.deleteSelected()
+        }
+        return
+      }
+
+      if (!isMod) return
+
+      if (key === 'g' && event.shiftKey) {
+        event.preventDefault()
+        useGraphStore.getState().ungroupSelected()
+        return
+      }
+      if (key === 'g') {
+        event.preventDefault()
+        useGraphStore.getState().groupSelected()
+        return
+      }
+      if (key === 'd') {
+        event.preventDefault()
+        useGraphStore.getState().duplicateSelected()
+        return
+      }
       if (key === 'z' && event.shiftKey) {
         event.preventDefault()
         useGraphStore.getState().redo()
@@ -513,11 +297,29 @@ export function CanvasEditorPage() {
         event.preventDefault()
         useGraphStore.getState().redo()
       }
-    }
+    },
+    [saveCurrentDocument],
+  )
 
-    window.addEventListener('keydown', onKeyDown)
-    return () => window.removeEventListener('keydown', onKeyDown)
-  }, [saveCurrentDocument])
+  useEffect(() => {
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [handleKeyDown])
+
+  useEffect(() => {
+    const onPaste = (event: ClipboardEvent) => {
+      void handleCanvasPaste(event)
+    }
+    const onCopy = (event: ClipboardEvent) => {
+      handleCanvasCopy(event)
+    }
+    window.addEventListener('copy', onCopy)
+    document.addEventListener('paste', onPaste)
+    return () => {
+      document.removeEventListener('paste', onPaste)
+      window.removeEventListener('copy', onCopy)
+    }
+  }, [])
 
   return (
     <div ref={canvasRef} className="relative h-dvh w-full overflow-hidden bg-background">
@@ -527,15 +329,12 @@ export function CanvasEditorPage() {
         </div>
       ) : (
         <>
-          <EditorToolbar
+          <CanvasToolbar
             containerSize={containerSize}
-            nameDraft={nameDraft}
-            saving={saving}
-            onNameDraftChange={setNameDraft}
-            onNameCommit={() => updateDocumentName(nameDraft)}
-            onSave={() => {
-              void saveCurrentDocument()
-            }}
+            saveStatus={saveStatus}
+            onSave={() => saveCurrentDocument()}
+            leftInset={leftInset}
+            rightInset={rightInset}
           />
           <CanvasViewport className="h-full w-full">{renderNodeContent}</CanvasViewport>
         </>

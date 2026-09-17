@@ -31,10 +31,11 @@ export interface PointerInput {
 export type CanvasInteractionEvent =
   | { type: 'marquee-start'; start: Point; current: Point }
   | { type: 'marquee-move'; start: Point; current: Point }
-  | { type: 'marquee-end'; start: Point; current: Point }
+  | { type: 'marquee-end'; start: Point; current: Point; shiftKey?: boolean }
   | { type: 'pan-start' }
   | { type: 'pan-move'; delta: Point }
   | { type: 'pan-end' }
+  | { type: 'gesture-cancel' }
   | { type: 'node-drag-start'; nodeId: string }
   | { type: 'node-drag-move'; nodeId: string; deltaWorld: Point }
   | { type: 'node-drag-end'; nodeId: string; deltaWorld: Point }
@@ -62,6 +63,16 @@ export class CanvasInteraction {
 
   setSpacePressed(pressed: boolean): void {
     this.spacePressed = pressed
+  }
+
+  /** Abort an interrupted pointer gesture without committing a drag or marquee. */
+  cancel(): void {
+    if (this.mode === 'idle') return
+    if (this.mode === 'panning') this.emit({ type: 'pan-end' })
+    this.emit({ type: 'gesture-cancel' })
+    this.mode = 'idle'
+    this.dragNodeId = null
+    this.connectSourceId = null
   }
 
   /**
@@ -150,6 +161,7 @@ export class CanvasInteraction {
           type: 'marquee-end',
           start: this.startWorld,
           current: this.worldOf(input),
+          shiftKey: input.shiftKey,
         })
         break
       case 'dragging-nodes':

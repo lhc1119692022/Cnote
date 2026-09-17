@@ -14,6 +14,7 @@ export function MarqueeOverlay() {
 
   return (
     <div
+      data-canvas-chrome="true"
       className="pointer-events-none absolute z-30"
       style={{
         left: rect.x,

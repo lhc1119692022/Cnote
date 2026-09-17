@@ -1,3 +1,17 @@
+interface CnoteDesktopBrowserSession {
+  id: string
+  name: string
+  partition: string
+  persistent: boolean
+  url: string
+  title: string
+  visible: boolean
+  presentation: 'embedded' | 'popup' | 'hidden'
+  createdAt: string
+  canGoBack: boolean
+  canGoForward: boolean
+}
+
 interface CnoteDesktopApi {
   getRuntimeInfo: () => Promise<{
     platform: string
@@ -15,8 +29,41 @@ interface CnoteDesktopApi {
     isMaximized: () => Promise<boolean>
     onStateChanged: (listener: (state: { maximized: boolean }) => void) => () => void
   }
+  session: {
+    onFlushRequest: (listener: () => void | Promise<void>) => () => void
+    notifyFlushed: () => void
+  }
   browser: {
+    setPresentation: (guestId: number, viewport: { width: number; height: number; scale: number }) => Promise<void>
+    createSession: (options?: { id?: string; name?: string; persistent?: boolean; url?: string }) => Promise<CnoteDesktopBrowserSession>
+    listSessions: () => Promise<CnoteDesktopBrowserSession[]>
+    onSessionUpdated: (listener: (session: CnoteDesktopBrowserSession) => void) => () => void
+    onFrame: (listener: (frame: { sessionId: string; width: number; height: number; data: Uint8Array<ArrayBuffer> }) => void) => () => void
+    onCursorChanged: (listener: (change: { sessionId: string; cursor: string }) => void) => () => void
+    setViewport: (id: string, viewport: { width: number; height: number; scale: number }) => Promise<void>
+    sendInput: (
+      id: string,
+      event:
+        | { type: 'mouseDown' | 'mouseUp' | 'mouseMove' | 'mouseEnter' | 'mouseLeave'; x: number; y: number; button?: 'left' | 'middle' | 'right'; clickCount?: number; modifiers?: string[] }
+        | { type: 'mouseWheel'; x: number; y: number; deltaX: number; deltaY: number; modifiers?: string[] }
+        | { type: 'keyDown' | 'keyUp' | 'char'; keyCode: string; modifiers?: string[] },
+    ) => Promise<void>
     popout: (url: string, title?: string) => Promise<void>
+    popoutSession: (id: string) => Promise<void>
+    showSession: (id: string) => Promise<void>
+    navigate: (id: string, url: string) => Promise<CnoteDesktopBrowserSession>
+    reload: (id: string) => Promise<CnoteDesktopBrowserSession>
+    goBack: (id: string) => Promise<CnoteDesktopBrowserSession>
+    goForward: (id: string) => Promise<CnoteDesktopBrowserSession>
+    capture: (id: string) => Promise<{
+      sessionId: string
+      capturedAt: string
+      url: string
+      title: string
+      text: string
+      html: string
+    }>
+    closeSession: (id: string) => Promise<void>
   }
   content: {
     parseHtml: (input: { html: string; url?: string; title?: string }) => Promise<{
@@ -73,6 +120,11 @@ interface CnoteDesktopApi {
       restartRequired: boolean
     }>
     restart: () => Promise<void>
+  }
+  storage: {
+    read: (key: string) => Promise<Uint8Array | null>
+    write: (key: string, data: Uint8Array) => Promise<void>
+    remove: (key: string) => Promise<void>
   }
   jobs: {
     list: () => Promise<DesktopJobRecord[]>
@@ -131,6 +183,7 @@ declare global {
       webview: React.DetailedHTMLProps<React.HTMLAttributes<HTMLElement> & {
         partition?: string
         allowpopups?: boolean
+        src?: string
       }, HTMLElement>
     }
   }

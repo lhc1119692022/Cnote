@@ -2,7 +2,8 @@
  * Runtime-entity store (sessions, captures, assets, AI, generation runs).
  *
  * These live outside FlowDocument. Graph nodes reference them by id.
- * In-memory only — persistence is the caller's job via `@/storage`.
+ * In-memory store; `@/storage/runtime-persistence` writes each entity to its
+ * own key. Do not persist actions, Blob URLs, or UI-only fields from here.
  * Updates are immutable: only the touched session/capture/run (and the
  * replaced array element inside it) is a new object.
  */
@@ -27,6 +28,19 @@ function omitRecord<T>(record: Record<string, T>, id: string): Record<string, T>
   const next = { ...record }
   delete next[id]
   return next
+}
+
+function assignDefined<T extends { id: string }>(base: T, patch: Partial<T>): T | null {
+  const next: T = { ...base, id: base.id }
+  let changed = false
+  ;(Object.keys(patch) as Array<keyof T>).forEach((key) => {
+    if (key === 'id') return
+    const value = patch[key]
+    if (value === undefined || next[key] === value) return
+    next[key] = value as T[keyof T]
+    changed = true
+  })
+  return changed ? next : null
 }
 
 export interface RuntimeStoreState {
@@ -214,12 +228,9 @@ export const useRuntimeStore = create<RuntimeStore>((set) => ({
     set((state) => {
       const run = state.runs[id]
       if (!run) return state
-      return {
-        runs: {
-          ...state.runs,
-          [id]: { ...run, ...patch, id: run.id },
-        },
-      }
+      const next = assignDefined(run, patch)
+      if (!next) return state
+      return { runs: { ...state.runs, [id]: next } }
     })
   },
 
@@ -230,8 +241,10 @@ export const useRuntimeStore = create<RuntimeStore>((set) => ({
       let changed = false
       const tasks = run.tasks.map((task) => {
         if (task.id !== taskId) return task
+        const next = assignDefined(task, patch)
+        if (!next) return task
         changed = true
-        return { ...task, ...patch, id: task.id }
+        return next
       })
       if (!changed) return state
       return {

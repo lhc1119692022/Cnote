@@ -380,6 +380,8 @@ export interface GenerationTaskState {
 
 export interface GenerationTaskRequestSnapshot {
   variant: 'image' | 'video'
+  /** Stable identifier for the exact submit-time input used by the task. */
+  inputVersion?: string
   channelId: string
   presetId?: string
   presetVersion?: string

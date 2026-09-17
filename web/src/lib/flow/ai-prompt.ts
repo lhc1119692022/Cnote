@@ -40,14 +40,17 @@ export function compileAiPromptParts(prompt: string, entries: AIContextEntry[]) 
     if (text) parts.push({ type: 'text', text })
   }
   const matches = [...prompt.matchAll(AI_VARIABLE_PATTERN)]
+  const attached = new Set<string>()
   if (matches.length) {
     let cursor = 0
     matches.forEach((match) => {
       const index = match.index || 0
       pushText(prompt.slice(cursor, index))
       const entry = byId.get(match[1])
-      if (entry) appendEntryParts(parts, entry)
-      else pushText(`[${'未连接变量'}]`)
+      if (entry) {
+        appendEntryParts(parts, attached.has(entry.nodeId) ? { ...entry, images: [] } : entry)
+        attached.add(entry.nodeId)
+      } else pushText(`[${'未连接变量'}]`)
       cursor = index + match[0].length
     })
     pushText(prompt.slice(cursor))

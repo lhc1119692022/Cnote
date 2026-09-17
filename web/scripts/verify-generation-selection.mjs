@@ -1,103 +1,229 @@
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
-import vm from 'node:vm'
+import { existsSync, readFileSync } from 'node:fs'
+import { createRequire } from 'node:module'
+import { dirname, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import ts from 'typescript'
 import { JSDOM } from 'jsdom'
-import { createRequire } from 'node:module'
-import { renderToStaticMarkup } from 'react-dom/server'
 
 const require = createRequire(import.meta.url)
-function evaluate(source, bindings) {
+const sourceRoot = fileURLToPath(new URL('../src/', import.meta.url))
+const mocks = new Map()
+const modules = new Map()
+
+const dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'https://cnote.test' })
+for (const key of ['window', 'document', 'localStorage']) {
+  Object.defineProperty(globalThis, key, { configurable: true, value: dom.window[key] })
+}
+
+function evaluate(source, requireModule = require) {
   const code = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.ReactJSX } }).outputText
   const module = { exports: {} }
-  const execute = new Function('module', 'exports', 'require', ...Object.keys(bindings), code)
-  execute(module, module.exports, require, ...Object.values(bindings))
+  new Function('module', 'exports', 'require', code)(module, module.exports, requireModule)
   return module.exports
 }
-function findNode(source, predicate) {
-  let result
-  function visit(node) {
-    if (predicate(node)) result = node
-    else ts.forEachChild(node, visit)
+
+function sourcePath(relativeOrAbsolute) {
+  const base = resolve(sourceRoot, relativeOrAbsolute)
+  if (existsSync(base) && /\.(ts|tsx)$/.test(base)) return base
+  for (const ext of ['.ts', '.tsx', '/index.ts']) {
+    if (existsSync(base + ext)) return base + ext
   }
-  visit(source)
-  assert.ok(result, 'expected production function or JSX is present')
+  return base
+}
+
+function load(relativePath) {
+  const path = sourcePath(relativePath)
+  if (modules.has(path)) return modules.get(path)
+  const result = evaluate(readFileSync(path, 'utf8'), (specifier) => {
+    if (mocks.has(specifier)) return mocks.get(specifier)
+    if (specifier.startsWith('@/')) return load(specifier.slice(2))
+    if (specifier.startsWith('.')) return load(resolve(dirname(path), specifier))
+    return require(specifier)
+  })
+  modules.set(path, result)
   return result
 }
 
-function load(path) {
-  const source = readFileSync(new URL('../src/' + path, import.meta.url), 'utf8')
-  const code = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText
-  const module = { exports: {} }
-  vm.runInThisContext('(function(exports, module) {' + code + '\n})')(module.exports, module)
-  return module.exports
-}
-const { runGenerationBatch } = load('lib/generation/batch.ts')
-const requestSource = ts.createSourceFile('RequestNode.tsx', readFileSync(new URL('../src/components/flow/nodes/RequestNode.tsx', import.meta.url), 'utf8'), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX)
-const clientSource = ts.createSourceFile('client.ts', readFileSync(new URL('../src/lib/generation/client.ts', import.meta.url), 'utf8'), ts.ScriptTarget.Latest, true)
-const runSource = findNode(requestSource, (node) => ts.isVariableDeclaration(node) && node.name.getText(requestSource) === 'runTask').initializer.arguments[0].getText(requestSource)
-const clientRunSource = findNode(clientSource, (node) => ts.isFunctionDeclaration(node) && node.name?.text === 'runGenerationTask').getText(clientSource)
-const formatSource = findNode(requestSource, (node) => ts.isFunctionDeclaration(node) && node.name?.text === 'formatElapsed').getText(requestSource)
-const statusSource = findNode(requestSource, (node) => ts.isJsxExpression(node) && node.expression?.getText(requestSource).startsWith("task.status === 'completed' &&")).expression.getText(requestSource)
+mocks.set('@/lib/localforage-storage', {
+  localForageStorage: { getItem: async () => null, setItem: async () => {}, removeItem: async () => {} },
+})
+mocks.set('@/lib/secure-storage', { decryptAPIKey: (value) => value, encryptAPIKey: (value) => value })
+mocks.set('@/lib/desktop-secrets', { deleteDesktopSecret: async () => {}, syncDesktopSecretInBackground: () => {} })
 
-async function verifyGenerateButton(polled) {
-  const submitted = []
-  const releases = []
-  const resultNodes = []
-  const statusUpdates = []
-  const node = { id: 'request', data: {} }
-  const channel = { id: 'channel', providerId: 'openai', baseURL: 'https://mock.test' }
-  const model = { id: 'mock-image', capabilities: [] }
-  const runGenerationTask = evaluate(clientRunSource, {
-    submitGenerationTask: async (context) => {
-      const index = submitted.length
-      submitted.push(context)
-      await new Promise((resolve) => { releases[index] = resolve })
-      return polled ? { taskId: `remote-${index}` } : { resultUrls: [`image-${index}`], resultFileNames: [`${index}.png`] }
-    },
-    pollGenerationTask: async (_, taskId) => ({ task: { status: 'completed', resultUrls: [`image-${taskId.slice(-1)}`] } }),
-    pollIntervalForModel: () => 0,
-    waitForPoll: async () => {},
-  }).runGenerationTask
-  const bindings = {
-    variant: 'image', id: node.id,
-    config: { channelId: channel.id, model: model.id, outputCount: 3, prompt: 'mock', references: [] },
-    timeoutMs: 60000,
-    pollingRef: { current: false }, abortRef: { current: null }, unmountingRef: { current: false },
-    useGenerationStore: { getState: () => ({ getChannel: () => channel, getModels: () => [model] }) },
-    useFlowStore: { getState: () => ({ nodes: [node] }) },
-    withUpstreamInputs: (_, __, config) => config,
-    window: { setTimeout, clearTimeout },
-    runGenerationTask, runGenerationBatch,
-    updateTask: (update) => { node.data.task = { ...node.data.task, ...update }; statusUpdates.push(node.data.task) },
-    updateNode: () => {},
-    createResultNodes: (...args) => resultNodes.push(args),
+const { runGenerationBatch } = load('lib/generation/batch.ts')
+const { generationChannelSupportsVariant } = load('stores/use-generation-store.ts')
+const {
+  generationRequestContextFromSnapshot,
+  generationRunStatusFromTasks,
+  generationTaskResumeBlockReason,
+  isGenerationTaskResumable,
+} = load('lib/generation/resume-context.ts')
+
+function channel(extra) {
+  return {
+    id: extra.id,
+    providerId: extra.providerId || 'custom',
+    protocol: extra.protocol,
+    name: extra.name || extra.id,
+    baseURL: extra.baseURL || '',
+    modelIds: extra.modelIds || [],
+    enabled: extra.enabled !== false,
+    supportsImage: extra.supportsImage,
+    supportsVideo: extra.supportsVideo,
   }
-  const runTask = evaluate('module.exports = ' + runSource, bindings)
-  const pending = runTask()
-  assert.equal(submitted.length, 3, 'actual Generate button submits all three before first completion')
-  assert.ok(submitted.every((context) => context.config.outputCount === 1))
-  releases[2]()
-  await new Promise(setImmediate)
-  assert.equal(node.data.task.status, 'in_progress')
-  releases[0]()
-  releases[1]()
-  await pending
-  assert.equal(node.data.task.status, 'completed')
-  assert.deepEqual(node.data.task.resultUrls, ['image-0', 'image-1', 'image-2'])
-  assert.equal(resultNodes.length, 1, 'results are materialized as one ordered batch')
-  assert.deepEqual(resultNodes[0][0], node.data.task.resultUrls)
-  assert.ok(statusUpdates.filter((state) => state.status === 'completed').every((state) => state.resultUrls.length === 3))
-  const status = evaluate(formatSource + '\nmodule.exports = (' + statusSource + ')', {
-    task: { ...node.data.task, elapsedMs: 7000 }, resultCount: 3, variant: 'image', elapsed: 999999,
-  })
-  const rendered = renderToStaticMarkup(status)
-  assert.match(rendered, /已生成 3 张图片/)
-  assert.match(rendered, /耗时 0:07/)
-  assert.doesNotMatch(rendered, /\$/)
 }
-await verifyGenerateButton(false)
-await verifyGenerateButton(true)
+
+const imageChannel = channel({ id: 'img', providerId: 'openai', protocol: 'openai-images', modelIds: ['gpt-image-2'], supportsImage: true, supportsVideo: false })
+const videoChannel = channel({ id: 'vid', providerId: 'video', protocol: 'video-api', modelIds: ['seedance-2.5-pro'], supportsImage: false, supportsVideo: true })
+const dualChannel = channel({ id: 'dual', providerId: 'custom', protocol: 'openai-images', modelIds: ['gpt-image-2'], supportsImage: true, supportsVideo: true })
+const disabledImage = channel({ id: 'off', providerId: 'openai', protocol: 'openai-images', modelIds: ['gpt-image-2'], enabled: false, supportsImage: true, supportsVideo: false })
+const inferredVideo = channel({ id: 'inferred-video', providerId: 'video', protocol: 'video-api', modelIds: ['seedance-2.5-pro'] })
+const inferredImage = channel({ id: 'inferred-image', providerId: 'openai', protocol: 'openai-images', modelIds: ['gpt-image-2'] })
+
+assert.equal(generationChannelSupportsVariant(imageChannel, 'image'), true)
+assert.equal(generationChannelSupportsVariant(imageChannel, 'video'), false)
+assert.equal(generationChannelSupportsVariant(videoChannel, 'image'), false)
+assert.equal(generationChannelSupportsVariant(videoChannel, 'video'), true)
+assert.equal(generationChannelSupportsVariant(dualChannel, 'image'), true)
+assert.equal(generationChannelSupportsVariant(dualChannel, 'video'), true)
+assert.equal(generationChannelSupportsVariant(inferredImage, 'image'), true)
+assert.equal(generationChannelSupportsVariant(inferredImage, 'video'), false)
+assert.equal(generationChannelSupportsVariant(inferredVideo, 'image'), false)
+assert.equal(generationChannelSupportsVariant(inferredVideo, 'video'), true)
+
+function channelsForVariant(channels, variant) {
+  if (variant === 'body') return []
+  return channels.filter((item) => item.enabled && generationChannelSupportsVariant(item, variant))
+}
+
+const catalog = [imageChannel, videoChannel, dualChannel, disabledImage, inferredImage, inferredVideo]
+assert.deepEqual(channelsForVariant(catalog, 'image').map((item) => item.id), ['img', 'dual', 'inferred-image'])
+assert.deepEqual(channelsForVariant(catalog, 'video').map((item) => item.id), ['vid', 'dual', 'inferred-video'])
+assert.deepEqual(channelsForVariant(catalog, 'body'), [], 'body does not use generation channel capability filtering')
+
+const requestText = readFileSync(new URL('../src/canvas/contents/RequestContent.tsx', import.meta.url), 'utf8')
+const requestSource = ts.createSourceFile('RequestContent.tsx', requestText, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX)
+
+function findBinding(name) {
+  let found = false
+  function visit(node) {
+    if (
+      (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.name.text === name) ||
+      (ts.isFunctionDeclaration(node) && node.name?.text === name)
+    ) found = true
+    else ts.forEachChild(node, visit)
+  }
+  visit(requestSource)
+  return found
+}
+
+function callArguments(name) {
+  const calls = []
+  function visit(node) {
+    if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === name) {
+      calls.push(node.arguments.map((argument) => argument.getText(requestSource)))
+    }
+    ts.forEachChild(node, visit)
+  }
+  visit(requestSource)
+  return calls
+}
+
+assert.ok(findBinding('modelGroups'), 'RequestContent builds modelGroups')
+assert.ok(findBinding('selectedGroup'), 'RequestContent resolves selectedGroup')
+assert.ok(findBinding('chooseModel'), 'RequestContent exposes chooseModel')
+assert.match(requestText, /type GenerationVariant = Exclude<RequestVariant, 'body'>/)
+
+const supportCalls = callArguments('generationChannelSupportsVariant')
+assert.ok(supportCalls.length >= 1, 'RequestContent calls generationChannelSupportsVariant')
+assert.ok(supportCalls.every((args) => args[1] === 'generationVariant' || args[1] === 'variant'))
+assert.ok(supportCalls.every((args) => !["'body'", '"body"'].includes(args[1])), 'body never queries generation channel support')
+
+const batchCalls = callArguments('runGenerationBatch')
+assert.equal(batchCalls.length, 2, 'RequestContent submits and resumes through runGenerationBatch')
+assert.match(requestText, /requestedGenerationCount\(variant, runConfig\.outputCount\)/)
+assert.ok(batchCalls.some((args) => args[0].includes('initialTasks')))
+
+assert.ok(findBinding('resumeWaitingGeneration'), 'RequestContent can resume waiting-for-user polling')
+assert.ok(findBinding('abandonWaitingGeneration'), 'RequestContent can abandon a waiting-for-user run')
+assert.ok(findBinding('buildRequestSnapshot'), 'RequestContent snapshots the request before submit')
+assert.match(requestText, /run\?\.status === 'waiting-for-user'/)
+assert.match(requestText, /继续查询/)
+assert.match(requestText, /放弃/)
+assert.match(requestText, /已暂停/)
+assert.match(requestText, /requestSnapshot,/)
+assert.match(requestText, /generationRequestContextFromSnapshot/)
+assert.match(requestText, /generationRunStatusFromTasks/)
+assert.match(requestText, /isGenerationTaskResumable/)
+assert.match(requestText, /domainTask\.id/)
+assert.match(requestText, /parkGenerationRunForResume/)
+assert.match(requestText, /findWaitingGenerationRun/)
+assert.match(requestText, /elapsedOffset: 0/)
+assert.equal([...requestText.matchAll(/\bputRun\(/g)].length, 2, 'submit creates a run; unmount parks the same run')
+assert.equal([...requestText.matchAll(/\bnanoid\(\)/g)].length, 2, 'resume polling reuses the existing run and creates one id per child task')
+
+const generationTaskCalls = callArguments('runGenerationTask')
+assert.equal(generationTaskCalls.length, 2, 'RequestContent submits new tasks and resumes waiting tasks via runGenerationTask')
+assert.ok(
+  generationTaskCalls.some((args) => args[1]?.includes('taskId: remoteTaskId')),
+  'waiting-for-user resume polls the existing remoteTaskId',
+)
+assert.ok(
+  generationTaskCalls.some((args) => args[1] && !args[1].includes('taskId:')),
+  'new submissions do not pass a remote taskId',
+)
+assert.ok(
+  generationTaskCalls.some((args) => args[1]?.includes('onRemoteTaskId')),
+  'new submissions persist remoteTaskId as soon as the provider returns it',
+)
+
+const snapshot = {
+  variant: 'image',
+  channelId: 'ch-1',
+  providerId: 'openai',
+  protocol: 'openai-images',
+  adapterId: 'adapter-old',
+  baseURL: 'https://old.example/v1',
+  secretName: 'cnote:generation:ch-1',
+  model: 'gpt-image-2',
+  config: { prompt: 'a cat', references: [], adapterId: 'adapter-old' },
+}
+const editedChannel = {
+  id: 'ch-1',
+  providerId: 'google',
+  protocol: 'google-images',
+  name: 'edited',
+  baseURL: 'https://new.example/v1',
+  apiKey: 'sk-current',
+  secretName: 'cnote:generation:ch-1',
+  modelIds: ['gpt-image-2'],
+  enabled: true,
+  adapters: [{ id: 'adapter-new', protocol: 'google-images' }],
+}
+const resumeContext = generationRequestContextFromSnapshot(
+  { ...snapshot, apiKey: 'sk-stolen' },
+  { channel: editedChannel, model: { id: 'gpt-image-2', name: 'GPT Image 2', capabilities: [] } },
+)
+assert.equal(resumeContext.channel.baseURL, 'https://old.example/v1', 'resume routing uses the snapshot endpoint')
+assert.equal(resumeContext.channel.protocol, 'openai-images')
+assert.equal(resumeContext.channel.providerId, 'openai')
+assert.equal(resumeContext.channel.adapters[0].id, 'adapter-old')
+assert.equal(resumeContext.channel.adapters[0].protocol, 'openai-images')
+assert.equal(resumeContext.channel.apiKey, 'sk-current', 'resume keeps the current secret, not a snapshot key')
+assert.equal(Object.hasOwn(resumeContext.channel, 'apiKey') && resumeContext.channel.apiKey !== 'sk-stolen', true)
+assert.equal(generationRunStatusFromTasks([{ status: 'completed' }, { status: 'running' }]), 'running')
+assert.equal(generationRunStatusFromTasks([{ status: 'completed' }, { status: 'completed' }]), 'completed')
+assert.equal(generationRunStatusFromTasks([{ status: 'completed' }, { status: 'failed' }]), 'failed')
+assert.equal(isGenerationTaskResumable({ status: 'running', remoteTaskId: 'r1', requestSnapshot: snapshot }), true)
+assert.equal(isGenerationTaskResumable({ status: 'running', requestSnapshot: snapshot }), false)
+assert.equal(generationTaskResumeBlockReason({ status: 'running', requestSnapshot: snapshot }), '缺少远程任务，无法继续查询')
+assert.equal(generationTaskResumeBlockReason({ status: 'running', remoteTaskId: 'r1' }), '缺少请求快照，无法继续查询')
+
+const resolveCalls = callArguments('resolveRequestGenerationInputs')
+assert.ok(resolveCalls.length >= 1, 'RequestContent uses resolveRequestGenerationInputs')
+assert.ok(resolveCalls.every((args) => args[0].includes('requestNodeId') && args[0].includes('nodes') && args[0].includes('edges')))
+
 const states = []
 const started = []
 const releases = []
@@ -161,44 +287,123 @@ try {
   Date.now = originalNow
 }
 
-const dom = new JSDOM('<div id="canvas"><div class="react-flow"><div id="pane"></div><div id="node">unselected text</div><textarea id="editor"></textarea><div contenteditable="true" id="rich">editable</div></div></div><div id="outside">outside</div>')
-globalThis.window = dom.window
-globalThis.document = dom.window.document
-globalThis.Element = dom.window.Element
-const { installCanvasSelectionGuard } = load('lib/flow/canvas-selection.ts')
-const canvas = document.getElementById('canvas')
-const dispose = installCanvasSelectionGuard(canvas)
-const mouse = (target, type, keys = {}) => {
-  const event = new window.MouseEvent(type, { bubbles: true, cancelable: true, ...keys })
-  target.dispatchEvent(event)
-  return event
+{
+  const { parkGenerationRunForResume, parkInflightGenerationRuns, isGenerationRunResumable, resolveRequestGenerationInputs } = load('canvas/contents/request-generation.ts')
+  const { useRuntimeStore } = load('stores/runtime-store.ts')
+  const parked = parkGenerationRunForResume({
+    id: 'run-1',
+    status: 'running',
+    createdAt: 1,
+    requestNodeId: 'req-1',
+    tasks: [{
+      id: 't1',
+      status: 'running',
+      remoteTaskId: 'remote-1',
+      requestSnapshot: {
+        variant: 'image',
+        channelId: 'ch-1',
+        providerId: 'openai',
+        baseURL: 'https://api.example.com',
+        model: 'gpt-image',
+        inputVersion: 'v1',
+        config: { prompt: 'x' },
+      },
+      recovery: {
+        requestNodeId: 'req-1',
+        variant: 'image',
+        channelId: 'ch-1',
+        model: 'gpt-image',
+        inputVersion: 'v1',
+        state: 'submitted',
+        updatedAt: 1,
+      },
+    }],
+  })
+  assert.equal(parked.status, 'waiting-for-user')
+  assert.equal(parked.tasks[0].recovery.state, 'waiting-for-user')
+  assert.equal(isGenerationRunResumable(parked), true)
+  assert.equal(parkGenerationRunForResume({ ...parked, status: 'completed' }).status, 'completed')
+
+  const parkedWithoutRecovery = parkGenerationRunForResume({
+    id: 'run-2',
+    status: 'queued',
+    createdAt: 1,
+    requestNodeId: 'req-2',
+    variant: 'image',
+    tasks: [{
+      id: 't2',
+      status: 'queued',
+      remoteTaskId: 'remote-2',
+      requestNodeId: 'req-2',
+      variant: 'image',
+      channelId: 'ch-1',
+      model: 'gpt-image',
+      inputVersion: 'v1',
+      requestSnapshot: {
+        variant: 'image',
+        channelId: 'ch-1',
+        providerId: 'openai',
+        baseURL: 'https://api.example.com',
+        model: 'gpt-image',
+        inputVersion: 'v1',
+        config: { prompt: 'x' },
+      },
+    }],
+  })
+  assert.equal(parkedWithoutRecovery.status, 'waiting-for-user')
+  assert.equal(parkedWithoutRecovery.tasks[0].status, 'queued')
+  assert.equal(parkedWithoutRecovery.tasks[0].recovery?.state, 'waiting-for-user')
+  assert.equal(isGenerationRunResumable(parkedWithoutRecovery), true)
+
+  useRuntimeStore.setState({
+    runs: {
+      'run-live': { ...parkedWithoutRecovery, id: 'run-live', status: 'running' },
+      'run-done': { id: 'run-done', status: 'completed', createdAt: 1, tasks: [] },
+    },
+  })
+  const parkedIds = parkInflightGenerationRuns()
+  assert.deepEqual(parkedIds, ['run-live'])
+  assert.equal(useRuntimeStore.getState().runs['run-live']?.status, 'waiting-for-user')
+  assert.equal(useRuntimeStore.getState().runs['run-done']?.status, 'completed')
+
+  const captured = resolveRequestGenerationInputs({
+    requestNodeId: 'req-1',
+    variant: 'image',
+    config: { prompt: 'draw this' },
+    nodes: [
+      { id: 'req-1', kind: 'request', position: { x: 0, y: 0 }, size: { width: 100, height: 80 }, label: '生成', variant: 'image' },
+      {
+        id: 'cap-img',
+        kind: 'content',
+        position: { x: 0, y: 0 },
+        size: { width: 100, height: 80 },
+        label: '截图',
+        category: 'image',
+        source: { kind: 'url', url: 'https://cdn.example.com/shot.jpg', provider: 'generic' },
+        captureId: 'cap-1',
+      },
+      {
+        id: 'cap-text',
+        kind: 'content',
+        position: { x: 0, y: 0 },
+        size: { width: 100, height: 80 },
+        label: '正文',
+        category: 'text',
+        content: 'Captured article',
+        source: { kind: 'url', url: 'https://example.com/article', provider: 'generic' },
+        captureId: 'cap-2',
+      },
+    ],
+    edges: [
+      { id: 'e1', source: 'cap-img', target: 'req-1' },
+      { id: 'e2', source: 'cap-text', target: 'req-1' },
+    ],
+    assets: {},
+    runs: {},
+  })
+  assert.ok(captured)
+  assert.match(captured.prompt, /Captured article/)
+  assert.equal(captured.references.some((reference) => reference.upstreamNodeId === 'cap-img' && reference.type === 'image'), true)
 }
-for (const modifier of ['ctrlKey', 'shiftKey', 'metaKey']) {
-  const selection = window.getSelection()
-  selection.selectAllChildren(document.getElementById('node'))
-  assert.equal(mouse(document.getElementById('pane'), 'mousedown', { [modifier]: true }).defaultPrevented, true)
-  assert.equal(selection.isCollapsed, true)
-  assert.equal(canvas.classList.contains('flow-node-selecting'), true)
-  assert.equal(mouse(document.getElementById('node'), 'selectstart').defaultPrevented, true)
-  mouse(document.body, 'pointerup')
-  assert.equal(canvas.classList.contains('flow-node-selecting'), false)
-}
-for (const target of ['editor', 'rich', 'outside']) {
-  assert.equal(mouse(document.getElementById(target), 'mousedown', { ctrlKey: true }).defaultPrevented, false)
-  assert.equal(canvas.classList.contains('flow-node-selecting'), false)
-}
-assert.equal(mouse(document.getElementById('node'), 'mousedown').defaultPrevented, false)
-mouse(document.getElementById('node'), 'pointerdown', { ctrlKey: true })
-window.dispatchEvent(new window.Event('blur'))
-assert.equal(canvas.classList.contains('flow-node-selecting'), false)
-mouse(document.getElementById('pane'), 'pointerdown', { shiftKey: true })
-mouse(document.body, 'pointercancel')
-assert.equal(canvas.classList.contains('flow-node-selecting'), false)
-dispose()
-assert.equal(mouse(document.getElementById('pane'), 'mousedown', { ctrlKey: true }).defaultPrevented, false)
-for (const path of ['components/flow/nodes/RequestNode.tsx', 'lib/flow/executor.ts']) {
-  const source = readFileSync(new URL('../src/' + path, import.meta.url), 'utf8')
-  assert.match(source, /await runGenerationBatch\(/, `${path} uses the tested batch runner`)
-  assert.doesNotMatch(source, /for \(let generationIndex/, 'no serial generation loop remains')
-}
-console.log('PASS: actual Generate button with direct and polled mock responses; rendered count/time; concurrent batch, ordering, partial failure, resume; Ctrl/Shift/Meta selection, editing and cleanup')
+
+console.log('PASS: RequestContent generation entry points; image/video/body channel filtering; concurrent batch, ordering, partial failure, resume; waiting-for-user continue/abandon')

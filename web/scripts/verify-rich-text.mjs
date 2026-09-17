@@ -3,6 +3,7 @@ import { readFileSync, existsSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
 import vm from 'node:vm'
+import { dirname, join } from 'node:path'
 import ts from 'typescript'
 import { JSDOM } from 'jsdom'
 
@@ -23,9 +24,10 @@ function load(relative) {
   const code = ts.transpileModule(readFileSync(filename, 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.ReactJSX, esModuleInterop: true } }).outputText
   vm.runInThisContext('(function(require,module,exports){' + code + '\n})', { filename })((name) => {
     if (name.endsWith('.css')) return {}
-    if (name.startsWith('@/')) {
-      const path = name.slice(2)
-      return load(path + (existsSync(new URL('../src/' + path + '.ts', import.meta.url)) ? '.ts' : '.tsx'))
+    if (name.startsWith('@/') || name.startsWith('.')) {
+      const path = name.startsWith('@/') ? name.slice(2) : join(dirname(relative), name).replaceAll('\\', '/')
+      const suffix = ['.ts', '.tsx', '/index.ts'].find((extension) => existsSync(new URL('../src/' + path + extension, import.meta.url)))
+      return load(path + suffix)
     }
     return require(name)
   }, module, module.exports)
@@ -68,6 +70,14 @@ function Harness() {
 const root = createRoot(document.getElementById('app'))
 await act(async () => { root.render(React.createElement(Harness)); await new Promise(resolve => setTimeout(resolve, 30)) })
 const editing = document.querySelector('.cnote-rich-text').editor
+const toolbar = document.querySelector('[role="toolbar"][aria-label="文本格式"]')
+assert.ok(toolbar.classList.contains('flex-wrap'))
+assert.ok(!toolbar.classList.contains('overflow-x-auto'))
+assert.equal(toolbar.querySelectorAll('button').length, 16)
+for (const button of toolbar.querySelectorAll('button')) {
+  assert.ok(button.classList.contains('shrink-0'))
+  assert.equal(button.title, button.getAttribute('aria-label'))
+}
 await act(async () => { editing.commands.setTextSelection({ from: 1, to: 5 }) })
 await act(async () => { document.querySelector('button[aria-label="粗体"]').click() })
 assert.equal(document.querySelectorAll('.cnote-rich-text strong').length, 2, 'both views reflect format-only updates')
@@ -96,5 +106,44 @@ assert.equal(commits, 1, 'flush saves dirty content')
 await act(async () => { editing.commands.insertContent('保存') })
 await act(async () => root.unmount())
 assert.equal(commits, 2, 'unmount saves subsequent changes')
+const { StickyContent } = load('canvas/contents/StickyContent.tsx')
+const { useGraphStore } = load('stores/graph-store.ts')
+const stickyDoc = { id: 'sticky-flow', name: 'Sticky QA', title: 'Sticky QA', viewport: { x: 0, y: 0, zoom: 1 }, edges: [], createdAt: 1, updatedAt: 1, nodes: [{ id: 'sticky', kind: 'sticky', label: '贴纸', content: '保留格式', color: 'yellow', background: 'solid', position: { x: 0, y: 0 }, size: { width: 300, height: 240 } }] }
+useGraphStore.getState().openDocument(stickyDoc)
+function StickyHarness() {
+  const node = useGraphStore((state) => state.currentDocument.nodes[0])
+  return React.createElement(StickyContent, { node })
+}
+const stickyRoot = createRoot(document.getElementById('app'))
+await act(async () => { stickyRoot.render(React.createElement(StickyHarness)); await new Promise(resolve => setTimeout(resolve, 30)) })
+assert.deepEqual([...document.querySelectorAll('[role="toolbar"] button')].map(button => button.getAttribute('aria-label')), ['撤销', '重做', '粗体', '斜体', '无序列表', '任务列表'])
+assert.equal(document.querySelector('[aria-label="便签颜色"]'), null, 'colors belong to the hover capsule, not the Sticky body')
+const stickyEditor = document.querySelector('.cnote-rich-text').editor
+await act(async () => { stickyEditor.commands.selectAll(); document.querySelector('button[aria-label="粗体"]').click() })
+const savedSticky = JSON.parse(JSON.stringify(useGraphStore.getState().currentDocument))
+assert.equal(savedSticky.nodes[0].content, '保留格式')
+assert.equal(savedSticky.nodes[0].document.json.content[0].content[0].marks[0].type, 'bold')
+await act(async () => { document.dispatchEvent(new window.Event('cnote:flush-node-editors')) })
+await act(async () => useGraphStore.getState().undo())
+assert.equal(document.querySelector('.cnote-rich-text strong'), null, 'graph undo restores the unformatted Sticky')
+await act(async () => useGraphStore.getState().redo())
+assert.equal(document.querySelector('.cnote-rich-text strong').textContent, '保留格式', 'graph redo restores formatting without changing plain text')
+await act(async () => useGraphStore.getState().duplicateNode('sticky'))
+const duplicated = useGraphStore.getState().currentDocument.nodes[1]
+assert.deepEqual(duplicated.document, savedSticky.nodes[0].document)
+assert.notEqual(duplicated.document, useGraphStore.getState().currentDocument.nodes[0].document)
+assert.equal(duplicated.position.x - (stickyDoc.nodes[0].position.x + stickyDoc.nodes[0].size.width), 40)
+await act(async () => useGraphStore.getState().updateNode(duplicated.id, { content: '独立副本', document: plainTextDocument('独立副本') }))
+assert.equal(document.querySelector('.cnote-rich-text strong').textContent, '保留格式', 'editing the copy leaves original formatting intact')
+await act(async () => useGraphStore.getState().undo())
+assert.equal(useGraphStore.getState().currentDocument.nodes.length, 1)
+await act(async () => useGraphStore.getState().redo())
+assert.deepEqual(useGraphStore.getState().currentDocument.nodes[1].document, savedSticky.nodes[0].document)
+await act(async () => stickyRoot.unmount())
+useGraphStore.setState({ currentDocument: savedSticky })
+const reopenedRoot = createRoot(document.getElementById('app'))
+await act(async () => { reopenedRoot.render(React.createElement(StickyHarness)); await new Promise(resolve => setTimeout(resolve, 30)) })
+assert.equal(document.querySelector('.cnote-rich-text strong').textContent, '保留格式')
+await act(async () => reopenedRoot.unmount())
 dom.window.close()
 console.log('rich text: JSON persistence, import, formatting, two-view sync, selection, undo/redo, Chinese text, URL safety: PASS')

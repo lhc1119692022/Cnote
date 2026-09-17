@@ -1,4 +1,5 @@
 export interface BrowserWebviewElement extends HTMLElement {
+  getWebContentsId(): number
   loadURL(url: string): Promise<void>
   reload(): void
   goBack(): void

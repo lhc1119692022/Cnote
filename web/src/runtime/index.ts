@@ -24,5 +24,8 @@ export type { BrowserSessionManagerOptions, RuntimeStoreGetter } from './session
 export { AssetManager } from './asset-manager'
 export type { AssetManagerOptions, AssetStoreGetter } from './asset-manager'
 
+export { materializeBrowserCapture } from './capture-materializer'
+export type { CaptureMaterializeResult } from './capture-materializer'
+
 export { legacyFlowToDocument, migrateLegacyFlows } from './legacy-loader'
 

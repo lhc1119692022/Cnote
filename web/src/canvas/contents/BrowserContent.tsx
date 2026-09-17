@@ -34,18 +34,19 @@ import {
   desktopBrowserAdapter,
   desktopContentParser,
   iframeBrowserAdapter,
+  materializeBrowserCapture,
   passthroughContentParser,
 } from '@/runtime'
 import type { BrowserWebviewElement } from '@/lib/browser-webview'
-import { useCanvas } from '@/canvas/components'
+import { browserChromeStyle } from '../browser-presentation'
+import { browserErrorMessage } from '../browser-error'
 
-/** 与 NodeShell header `h-9` 对齐（世界像素） */
-const SHELL_HEADER_WORLD_PX = 36
 const DEFAULT_BROWSER_URL = 'https://www.google.com/'
 const WEBVIEW_PARTITION = 'persist:cnote-browser'
 const MOUNT_STABLE_MS = 120
 
 interface WebviewNavigationEvent extends Event {
+  isMainFrame?: boolean
   url?: string
   errorCode?: number
   errorDescription?: string
@@ -120,13 +121,12 @@ function ensureSessionAndTab(fields: BrowserSessionFields): { sessionId: string;
 }
 
 function errorMessage(error: unknown, fallback: string): string {
-  return error instanceof Error ? error.message : fallback
+  return browserErrorMessage(error, fallback)
 }
 
 export const BrowserContent = memo(function BrowserContent({ node }: { node: BrowserNodeSpec }) {
-  const { viewport } = useCanvas()
   const isDesktop = isDesktopRuntime()
-  const headerOffset = SHELL_HEADER_WORLD_PX * viewport.zoom
+  const canvasZoom = useGraphStore((state) => state.view.zoom)
 
   const sessionId = node.sessionId
   const tabId = node.activeTarget
@@ -150,17 +150,48 @@ export const BrowserContent = memo(function BrowserContent({ node }: { node: Bro
   const viewportRef = useRef<HTMLDivElement>(null)
   const webviewRef = useRef<BrowserWebviewElement | null>(null)
   const listenersRef = useRef<(() => void) | null>(null)
-  const initialSrcRef = useRef(normalizeUrl(node.url) || DEFAULT_BROWSER_URL)
+  const initialSrcRef = useRef(normalizeUrl(liveUrl) || DEFAULT_BROWSER_URL)
   const addressFocusedRef = useRef(false)
 
   const [address, setAddress] = useState(liveUrl)
-  const [frameSrc, setFrameSrc] = useState(() => normalizeUrl(node.url) || DEFAULT_BROWSER_URL)
+  const [frameSrc, setFrameSrc] = useState(() => normalizeUrl(liveUrl) || DEFAULT_BROWSER_URL)
   const [frameKey, setFrameKey] = useState(0)
   const [webviewMounted, setWebviewMounted] = useState(false)
   const [webviewReady, setWebviewReady] = useState(false)
   const [nativeNav, setNativeNav] = useState({ canGoBack: false, canGoForward: false })
   const [nativeError, setNativeError] = useState('')
   const [capturing, setCapturing] = useState(false)
+
+  useLayoutEffect(() => {
+    const viewport = viewportRef.current
+    const guest = webviewRef.current
+    const browser = window.cnoteDesktop?.browser
+    if (!isDesktop || !webviewReady || !viewport || !guest || !browser) return
+    if (typeof browser.setPresentation !== 'function') {
+      setNativeError('请重启桌面端以启用网页缩放')
+      return
+    }
+    let active = true
+    const update = () => {
+      if (!viewport.clientWidth || !viewport.clientHeight) return
+      void browser.setPresentation(guest.getWebContentsId(), {
+        width: viewport.clientWidth / canvasZoom,
+        height: viewport.clientHeight / canvasZoom,
+        scale: canvasZoom,
+      }).catch(error => {
+        if (active) setNativeError(errorMessage(error, '网页缩放失败'))
+      })
+    }
+    const observer = new ResizeObserver(update)
+    observer.observe(viewport)
+    guest.addEventListener('dom-ready', update)
+    update()
+    return () => {
+      active = false
+      observer.disconnect()
+      guest.removeEventListener('dom-ready', update)
+    }
+  }, [isDesktop, webviewReady, canvasZoom, sessionId, tabId])
 
   useEffect(() => {
     ensureSessionAndTab({
@@ -238,13 +269,16 @@ export const BrowserContent = memo(function BrowserContent({ node }: { node: Bro
       webview.style.height = '100%'
 
       const runtime = () => useRuntimeStore.getState()
+      let navigationFailed = false
       const onDomReady = () => {
         setWebviewReady(true)
+        if (navigationFailed) return
         setNativeError('')
         syncNativeNav(webview)
         runtime().updateTab(sessionId, tabId, { status: 'ready', title: webview.getTitle() })
       }
       const onNavigate = (event: Event) => {
+        if ((event as WebviewNavigationEvent).isMainFrame === false) return
         const nextUrl = eventUrl(event, webview)
         if (!nextUrl) return
         setAddress(nextUrl)
@@ -253,12 +287,15 @@ export const BrowserContent = memo(function BrowserContent({ node }: { node: Bro
         runtime().updateTab(sessionId, tabId, { url: nextUrl, status: 'ready', title: webview.getTitle() })
       }
       const onStartLoading = () => {
+        navigationFailed = false
+        setNativeError('')
         runtime().updateTab(sessionId, tabId, { status: 'loading' })
       }
       const onFailLoad = (event: Event) => {
         const detail = event as WebviewNavigationEvent
-        if (detail.errorCode === -3) return
-        setNativeError(typeof detail.errorDescription === 'string' ? detail.errorDescription : '桌面浏览器加载失败')
+        if (detail.errorCode === -3 || detail.isMainFrame === false) return
+        navigationFailed = true
+        setNativeError(errorMessage(detail.errorDescription, '桌面浏览器加载失败'))
         runtime().updateTab(sessionId, tabId, { status: 'error' })
       }
 
@@ -365,7 +402,7 @@ export const BrowserContent = memo(function BrowserContent({ node }: { node: Bro
     setNativeError('')
     try {
       const capture = await sessionManager.captureTab(sessionId, tabId)
-      patchBrowser(node.id, { latestCaptureId: capture.id })
+      materializeBrowserCapture(node.id, capture)
     } catch (error) {
       setNativeError(errorMessage(error, '页面捕获失败'))
     } finally {
@@ -378,16 +415,16 @@ export const BrowserContent = memo(function BrowserContent({ node }: { node: Bro
     useRuntimeStore.getState().updateTab(sessionId, tabId, { status: 'ready' })
   }
 
-  const loading = isDesktop ? !webviewMounted || !webviewReady || tab?.status === 'loading' : tab?.status === 'loading'
+  const loading = !nativeError && tab?.status !== 'error' && (isDesktop ? !webviewMounted || !webviewReady || tab?.status === 'loading' : tab?.status === 'loading')
   const webviewSrc = initialSrcRef.current
 
   return (
     <div
       className="flex h-full w-full min-h-0 min-w-0 flex-col overflow-hidden rounded-xl border border-border bg-card"
-      style={{ paddingTop: headerOffset }}
     >
       <form
         className="flex h-12 shrink-0 items-center gap-1.5 border-b border-border bg-muted/25 px-3"
+        style={browserChromeStyle(canvasZoom)}
         onSubmit={onSubmitAddress}
         onPointerDown={(event) => event.stopPropagation()}
       >
@@ -455,7 +492,7 @@ export const BrowserContent = memo(function BrowserContent({ node }: { node: Bro
           <button
             type="button"
             className="flex h-8 w-8 items-center justify-center rounded-full text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-30"
-            disabled={!webviewReady || capturing}
+            disabled={!webviewReady || capturing || loading || tab?.status === 'error'}
             onClick={() => void capturePage()}
             aria-label="提取当前页面内容"
             title="提取当前页面内容"

@@ -27,6 +27,7 @@ export function CanvasConnector() {
 
   return (
     <svg
+      data-canvas-chrome="true"
       className="pointer-events-none absolute inset-0 z-20 overflow-visible"
       width="100%"
       height="100%"

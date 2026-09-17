@@ -16,22 +16,36 @@ import {
   type ReactNode,
   type RefObject,
 } from 'react'
-import type { EdgeSpec, NodeSpec, Point, Size, Viewport } from '@/domain'
+import type { EdgeSpec, NodeKind, NodeSpec, Point, Size, Viewport } from '@/domain'
 import {
   CanvasInteraction,
   nodeRect,
   panBy,
-  pointInRect,
   rectFromPoints,
   rectsIntersect,
   screenToWorld as screenToWorldPure,
+  visibleScreenCenter,
+  wheelDeltaToPixels,
   worldToScreen as worldToScreenPure,
   zoomAt,
   type CanvasInteractionEvent,
   type PointerInput,
 } from '@/canvas'
+import { canvasOverlayInsets } from '@/canvas/overlay-insets'
+import { hitTestStackedNode } from '@/canvas/node-stacking'
+import { handleCanvasDrop, rememberClientPoint, readSystemClipboardAndImport } from '@/canvas/clipboard-import'
+import { movableDragIds } from '@/canvas/grouping'
+import { createAddableNode, defaultSizeFor, type AddableKind } from '@/canvas/node-factory'
+import {
+  AI_NODE_MIN_SIZE,
+  BROWSER_NODE_MIN_SIZE,
+  CONTENT_NODE_MIN_SIZE,
+  REQUEST_NODE_MIN_SIZE,
+  STICKY_NODE_MIN_SIZE,
+} from '@/lib/flow/node-dimensions'
 import { useGraphStore } from '@/stores/graph-store'
 import { useUiStore } from '@/stores/ui-store'
+import { CanvasAddMenu, type CanvasAddMenuState } from './CanvasAddMenu'
 
 export interface MarqueeState {
   start: Point
@@ -44,6 +58,20 @@ export interface ConnectingState {
   current: Point
 }
 
+/** 节点缩放：原始 size + 当前 size，位移按 viewport.zoom 换算。 */
+export interface ResizeState {
+  nodeId: string
+  origin: Size
+  current: Size
+}
+
+interface ResizeSession {
+  nodeId: string
+  origin: Size
+  startScreen: Point
+  min: Size
+}
+
 export interface CanvasContextValue {
   viewport: Viewport
   nodes: NodeSpec[]
@@ -51,6 +79,9 @@ export interface CanvasContextValue {
   selection: string[]
   marquee: MarqueeState | null
   connecting: ConnectingState | null
+  connectingTargetId: string | null
+  resizing: ResizeState | null
+  draggingNodeIds: string[]
   containerSize: Size
   containerRef: RefObject<HTMLDivElement | null>
   screenToWorld: (point: Point) => Point
@@ -58,6 +89,7 @@ export interface CanvasContextValue {
   zoomAtCursor: (factor: number, screenPoint: Point) => void
   panByScreen: (delta: Point) => void
   setViewport: (view: Viewport) => void
+  centerOnWorld: (world: Point) => void
   nodeById: (id: string) => NodeSpec | undefined
   getPointerInput: (e: ReactPointerEvent, hitNodeId?: string) => PointerInput
   hitTestNode: (world: Point) => string | undefined
@@ -67,6 +99,14 @@ export interface CanvasContextValue {
   beginConnect: (sourceId: string) => void
   updateConnect: (screenPoint: Point) => void
   endConnect: (targetId: string | null) => void
+  beginResize: (nodeId: string, screenPoint: Point) => void
+  updateResize: (screenPoint: Point) => void
+  endResize: () => void
+  hoveredNodeId: string | null
+  focusedNodeId: string | null
+  setFocusedNodeId: (id: string | null) => void
+  setHoveredNode: (id: string | null) => void
+  beginNodeDrag: (event: ReactPointerEvent<HTMLElement>, nodeId: string) => void
 }
 
 const CanvasContext = createContext<CanvasContextValue | null>(null)
@@ -86,22 +126,6 @@ function isEditableTarget(target: EventTarget | null): boolean {
   return target.isContentEditable
 }
 
-function hitTestTopNode(nodes: readonly NodeSpec[], world: Point): string | undefined {
-  let found: NodeSpec | undefined
-  for (const node of nodes) {
-    if (!pointInRect(world, nodeRect(node))) continue
-    if (!found) {
-      found = node
-      continue
-    }
-    const z = node.z ?? 0
-    const foundZ = found.z ?? 0
-    // z 高者优先；同 z 取后加入（数组更后者）
-    if (z >= foundZ) found = node
-  }
-  return found?.id
-}
-
 function sourceRightMid(sourceId: string, nodes: readonly NodeSpec[]): Point {
   const node = nodes.find((candidate) => candidate.id === sourceId)
   if (!node) return { x: 0, y: 0 }
@@ -109,6 +133,18 @@ function sourceRightMid(sourceId: string, nodes: readonly NodeSpec[]): Point {
     x: node.position.x + node.size.width,
     y: node.position.y + node.size.height / 2,
   }
+}
+
+function canConnect(
+  sourceId: string | undefined,
+  targetId: string | undefined,
+  nodes: readonly NodeSpec[],
+  edges: readonly EdgeSpec[],
+): boolean {
+  if (!sourceId || !targetId || sourceId === targetId) return false
+  const target = nodes.find((node) => node.id === targetId)
+  if (!target || target.disabled) return false
+  return !edges.some((edge) => edge.source === sourceId && edge.target === targetId)
 }
 
 export function CanvasProvider({
@@ -123,6 +159,13 @@ export function CanvasProvider({
   const selection = useGraphStore((state) => state.selection)
   const setViewport = useGraphStore((state) => state.setViewport)
   const isViewportMoving = useUiStore((state) => state.isViewportMoving)
+  const showNodePanel = useUiStore((state) => state.showNodePanel)
+  const showExtensionPanel = useUiStore((state) => state.showExtensionPanel)
+  const extensionWidth = useUiStore((state) => state.extensionWidth)
+  const overlayInsets = useMemo(
+    () => canvasOverlayInsets({ showNodePanel, showExtensionPanel, extensionWidth }),
+    [extensionWidth, showExtensionPanel, showNodePanel],
+  )
 
   const nodes = currentDocument?.nodes ?? EMPTY_NODES
   const edges = currentDocument?.edges ?? EMPTY_EDGES
@@ -135,13 +178,57 @@ export function CanvasProvider({
 
   // 拖拽起始世界坐标：全程用「原点 + 累计 delta」，不要在 move 里叠加上一次结果
   const dragOriginRef = useRef(new Map<string, Point>())
+  const panClickRef = useRef(false)
+  const duplicateDragRef = useRef<{ selection: string[]; copies: string[] } | null>(null)
 
   const [marquee, setMarquee] = useState<MarqueeState | null>(null)
   const [connecting, setConnecting] = useState<ConnectingState | null>(null)
+  const [connectingTargetId, setConnectingTargetId] = useState<string | null>(null)
+  const [connectionFeedback, setConnectionFeedback] = useState<string | null>(null)
+  const connectionFeedbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const connectingRef = useRef<ConnectingState | null>(null)
   connectingRef.current = connecting
+  const overlayInsetsRef = useRef(overlayInsets)
+  const [resizing, setResizing] = useState<ResizeState | null>(null)
+  const [draggingNodeIds, setDraggingNodeIds] = useState<string[]>([])
+  const resizeRef = useRef<ResizeSession | null>(null)
   const [containerSize, setContainerSize] = useState<Size>({ width: 0, height: 0 })
+  const containerSizeRef = useRef(containerSize)
+  containerSizeRef.current = containerSize
   const [spacePressed, setSpacePressed] = useState(false)
+  const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null)
+  const [focusedNodeId, setFocusedNodeId] = useState<string | null>(null)
+  const stackInteraction = { hoveredNodeId, focusedNodeId, draggingNodeIds, resizingNodeId: resizing?.nodeId }
+  const stackInteractionRef = useRef(stackInteraction)
+  stackInteractionRef.current = stackInteraction
+  const hoverClearTimer = useRef<number | null>(null)
+  const [addMenu, setAddMenu] = useState<CanvasAddMenuState | null>(null)
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null)
+  const [connectionMenu, setConnectionMenu] = useState<{
+    x: number
+    y: number
+    sourceId: string
+    world: Point
+  } | null>(null)
+
+  const setHoveredNode = useCallback((id: string | null) => {
+    if (hoverClearTimer.current !== null) {
+      window.clearTimeout(hoverClearTimer.current)
+      hoverClearTimer.current = null
+    }
+    if (id) {
+      setHoveredNodeId(id)
+      return
+    }
+    hoverClearTimer.current = window.setTimeout(() => {
+      setHoveredNodeId(null)
+      hoverClearTimer.current = null
+    }, 120)
+  }, [])
+
+  useEffect(() => () => {
+    if (hoverClearTimer.current !== null) window.clearTimeout(hoverClearTimer.current)
+  }, [])
 
   const emitRef = useRef<(event: CanvasInteractionEvent) => void>(() => {})
   emitRef.current = (event: CanvasInteractionEvent) => {
@@ -159,42 +246,78 @@ export function CanvasProvider({
       case 'pan-end':
         ui.setViewportMoving(false)
         return
-      case 'node-drag-start': {
-        const node = nodesRef.current.find((candidate) => candidate.id === event.nodeId)
-        if (node) {
-          dragOriginRef.current.set(event.nodeId, {
-            x: node.position.x,
-            y: node.position.y,
+      case 'gesture-cancel':
+        ui.setViewportMoving(false)
+        if (duplicateDragRef.current) {
+          const { selection, copies } = duplicateDragRef.current
+          const document = graph.currentDocument
+          if (document && copies.length) useGraphStore.setState({
+            currentDocument: {
+              ...document,
+              nodes: document.nodes.filter((node) => !copies.includes(node.id)),
+              edges: document.edges.filter((edge) => !copies.includes(edge.source) && !copies.includes(edge.target)),
+              updatedAt: Date.now(),
+            },
+            selection,
           })
+          duplicateDragRef.current = null
+        } else {
+          dragOriginRef.current.forEach((position, id) => graph.updateNode(id, { position }))
+        }
+        dragOriginRef.current.clear()
+        setDraggingNodeIds([])
+        setMarquee(null)
+        return
+      case 'node-drag-start': {
+        ui.setSelectedEdgeId(null)
+        const nodes = nodesRef.current
+        const selected = graph.selection.includes(event.nodeId) ? graph.selection : [event.nodeId]
+        const dragIds = movableDragIds(nodes, selected)
+        setDraggingNodeIds(dragIds)
+        dragOriginRef.current.clear()
+        for (const id of dragIds) {
+          const node = nodes.find((candidate) => candidate.id === id)
+          if (node) dragOriginRef.current.set(id, { x: node.position.x, y: node.position.y })
         }
         return
       }
       case 'node-drag-move':
       case 'node-drag-end': {
+        if (event.type === 'node-drag-end') setDraggingNodeIds([])
         if (graph.isLocked) {
-          if (event.type === 'node-drag-end') {
-            dragOriginRef.current.delete(event.nodeId)
-          }
+          emitRef.current({ type: 'gesture-cancel' })
           return
         }
-        const origin = dragOriginRef.current.get(event.nodeId)
-        if (origin) {
-          graph.updateNode(event.nodeId, {
+        const duplicate = duplicateDragRef.current
+        if (duplicate && !duplicate.copies.length) {
+          if (Math.hypot(event.deltaWorld.x, event.deltaWorld.y) * viewportRef.current.zoom < 2) {
+            if (event.type === 'node-drag-end') {
+              duplicateDragRef.current = null
+              dragOriginRef.current.clear()
+            }
+            return
+          }
+          duplicate.copies = graph.duplicateSelected({ offset: { x: 0, y: 0 }, deferHistory: true })
+          const copiedNodes = useGraphStore.getState().currentDocument?.nodes ?? []
+          dragOriginRef.current.clear()
+          for (const node of copiedNodes) {
+            if (duplicate.copies.includes(node.id)) dragOriginRef.current.set(node.id, { ...node.position })
+          }
+          if (event.type !== 'node-drag-end') setDraggingNodeIds(duplicate.copies)
+        }
+        dragOriginRef.current.forEach((origin, id) => {
+          graph.updateNode(id, {
             position: {
               x: origin.x + event.deltaWorld.x,
               y: origin.y + event.deltaWorld.y,
             },
           })
-        }
+        })
         if (event.type === 'node-drag-end') {
           const dist = Math.hypot(event.deltaWorld.x, event.deltaWorld.y)
-          // 位移很小视为点击选中，不写历史
-          if (dist < 2) {
-            graph.setSelection([event.nodeId])
-          } else {
-            graph.commitHistory()
-          }
-          dragOriginRef.current.delete(event.nodeId)
+          if (dist >= 2 || duplicate?.copies.length) graph.finishNodeDrag([...dragOriginRef.current.keys()])
+          duplicateDragRef.current = null
+          dragOriginRef.current.clear()
         }
         return
       }
@@ -207,6 +330,7 @@ export function CanvasProvider({
         const ids = nodesRef.current
           .filter((node) => rectsIntersect(nodeRect(node), box))
           .map((node) => node.id)
+        ui.setSelectedEdgeId(null)
         graph.setSelection(ids)
         setMarquee(null)
         return
@@ -214,7 +338,7 @@ export function CanvasProvider({
       case 'connect-start':
       case 'connect-move':
       case 'connect-end':
-        // connecting 的 React 状态由 begin/update/endConnect 维护，这里不重复处理
+        // connecting 的 Reaevent.shiftKey ? [...new Set([...graph.selection, ...ids])] : ct 状态由 begin/update/endConnect 维护，这里不重复处理
         return
     }
   }
@@ -254,11 +378,17 @@ export function CanvasProvider({
       interaction.setSpacePressed(false)
       setSpacePressed(false)
     }
+    const onBlur = () => {
+      interaction.setSpacePressed(false)
+      setSpacePressed(false)
+    }
     window.addEventListener('keydown', onKeyDown)
     window.addEventListener('keyup', onKeyUp)
+    window.addEventListener('blur', onBlur)
     return () => {
       window.removeEventListener('keydown', onKeyDown)
       window.removeEventListener('keyup', onKeyUp)
+      window.removeEventListener('blur', onBlur)
     }
   }, [interaction])
 
@@ -267,10 +397,16 @@ export function CanvasProvider({
     const el = containerRef.current
     if (!el) return
     const onWheel = (event: WheelEvent) => {
+      const target = event.target as Element | null
+      if (target?.closest('[data-canvas-content], [data-canvas-chrome], textarea, input, select, [contenteditable]')) {
+        return
+      }
       event.preventDefault()
       const rect = el.getBoundingClientRect()
       const screen = { x: event.clientX - rect.left, y: event.clientY - rect.top }
-      const factor = event.deltaY < 0 ? 1.1 : 1 / 1.1
+      const delta = wheelDeltaToPixels(event.deltaY, event.deltaMode, rect.height)
+      if (delta === 0) return
+      const factor = Math.pow(1.0018, -delta)
       useGraphStore.getState().setViewport(zoomAt(viewportRef.current, screen, factor))
     }
     el.addEventListener('wheel', onWheel, { passive: false })
@@ -305,13 +441,19 @@ export function CanvasProvider({
 
   const getPointerInput = useCallback(
     (e: ReactPointerEvent, _hitNodeId?: string): PointerInput => {
+      rememberClientPoint(e.clientX, e.clientY)
       return toInput(e.clientX, e.clientY, e.button, e.shiftKey, e.ctrlKey, e.metaKey)
     },
     [toInput],
   )
 
   const hitTestNode = useCallback(
-    (world: Point): string | undefined => hitTestTopNode(nodesRef.current, world),
+    (world: Point): string | undefined => hitTestStackedNode(nodesRef.current, world, stackInteractionRef.current),
+    [],
+  )
+
+  const hitTestConnectionTarget = useCallback(
+    (world: Point): string | undefined => hitTestStackedNode(nodesRef.current, world, stackInteractionRef.current, true),
     [],
   )
 
@@ -336,14 +478,41 @@ export function CanvasProvider({
     [interaction],
   )
 
+  const beginNodeDrag = useCallback(
+    (event: ReactPointerEvent<HTMLElement>, nodeId: string) => {
+      event.stopPropagation()
+      event.preventDefault()
+      if (event.button !== 0 || useGraphStore.getState().isLocked) return
+      if (interaction.getMode() !== 'idle') return
+      const graph = useGraphStore.getState()
+      if (event.shiftKey) {
+        if (!graph.selection.includes(nodeId)) graph.setSelection([...graph.selection, nodeId])
+      } else if (!graph.selection.includes(nodeId)) {
+        graph.setSelection([nodeId])
+      }
+      const node = graph.currentDocument?.nodes.find((candidate) => candidate.id === nodeId)
+      if (node?.kind === 'sticky' && node.pinned) return
+      duplicateDragRef.current = event.altKey && !spacePressed
+        ? { selection: [...useGraphStore.getState().selection], copies: [] }
+        : null
+      containerRef.current?.setPointerCapture(event.pointerId)
+      pointerDown(getPointerInput(event), nodeId)
+    },
+    [getPointerInput, pointerDown, interaction, spacePressed],
+  )
+
   const beginConnect = useCallback(
     (sourceId: string) => {
       if (useGraphStore.getState().isLocked) return
+      if (connectionFeedbackTimerRef.current) clearTimeout(connectionFeedbackTimerRef.current)
+      connectionFeedbackTimerRef.current = null
+      setConnectionFeedback(null)
       interaction.beginConnect(sourceId)
       if (interaction.getMode() !== 'connecting') return
       const current = sourceRightMid(sourceId, nodesRef.current)
       interaction.updateConnect(current)
       setConnecting({ sourceId, current })
+      setConnectingTargetId(null)
     },
     [interaction],
   )
@@ -352,26 +521,179 @@ export function CanvasProvider({
     (screenPoint: Point) => {
       if (interaction.getMode() !== 'connecting') return
       const world = screenToWorldPure(screenPoint, viewportRef.current)
+      const sourceId = connectingRef.current?.sourceId
+      const target = hitTestConnectionTarget(world)
+      const graph = useGraphStore.getState()
+      const valid = canConnect(sourceId, target, nodesRef.current, graph.currentDocument?.edges ?? EMPTY_EDGES)
+      setConnectingTargetId(valid ? target ?? null : target ? `invalid:${target}` : null)
       interaction.updateConnect(world)
       setConnecting((prev) => (prev ? { ...prev, current: world } : prev))
     },
-    [interaction],
+    [interaction, hitTestConnectionTarget],
   )
 
   const endConnect = useCallback(
     (targetId: string | null) => {
       if (interaction.getMode() !== 'connecting') return
-      const sourceId = connectingRef.current?.sourceId
-      interaction.endConnect(targetId)
       const graph = useGraphStore.getState()
-      // 目标命中由宿主 hitTestNode 传入；自环不建边
-      if (sourceId && targetId && sourceId !== targetId && !graph.isLocked) {
-        graph.addEdge(sourceId, targetId)
+      const sourceId = connectingRef.current?.sourceId
+      const validTarget = canConnect(
+        sourceId,
+        targetId ?? undefined,
+        nodesRef.current,
+        graph.currentDocument?.edges ?? EMPTY_EDGES,
+      ) ? targetId : null
+      const connectionPoint = connectingRef.current?.current
+      const rejectedTarget = Boolean(targetId && !validTarget)
+      interaction.endConnect(validTarget)
+      if (sourceId && validTarget && !graph.isLocked) {
+        graph.addEdge(sourceId, validTarget)
+      }
+      if (sourceId && targetId === null && connectionPoint && !graph.isLocked) {
+        const rect = containerRef.current?.getBoundingClientRect()
+        const screen = worldToScreenPure(connectionPoint, viewportRef.current)
+        setConnectionMenu({
+          x: Math.max(8, Math.min((rect?.width ?? 320) - 208, screen.x)),
+          y: Math.max(8, Math.min((rect?.height ?? 240) - 180, screen.y)),
+          sourceId,
+          world: connectionPoint,
+        })
+      }
+      if (rejectedTarget) {
+        if (connectionFeedbackTimerRef.current) clearTimeout(connectionFeedbackTimerRef.current)
+        setConnectionFeedback("\u65e0\u6cd5\u8fde\u63a5\uff1a\u76ee\u6807\u65e0\u6548\u6216\u8fde\u63a5\u5df2\u5b58\u5728")
+        connectionFeedbackTimerRef.current = setTimeout(() => {
+          setConnectionFeedback(null)
+          connectionFeedbackTimerRef.current = null
+        }, 1800)
       }
       setConnecting(null)
+      setConnectingTargetId(null)
     },
     [interaction],
   )
+
+  const createConnectedNode = useCallback((kind: AddableKind) => {
+    const pending = connectionMenu
+    if (!pending || useGraphStore.getState().isLocked) return
+    const size = defaultSizeFor(kind)
+    const node = createAddableNode(kind, {
+      x: pending.world.x - size.width / 2,
+      y: pending.world.y - size.height / 2,
+    })
+    const graph = useGraphStore.getState()
+    graph.addConnectedNode(pending.sourceId, node)
+    setConnectionMenu(null)
+  }, [connectionMenu])
+
+  const cancelConnect = useCallback(() => {
+    interaction.endConnect(null)
+    setConnecting(null)
+    setConnectingTargetId(null)
+    setConnectionMenu(null)
+  }, [interaction])
+
+  useEffect(() => {
+    return () => {
+      if (connectionFeedbackTimerRef.current) clearTimeout(connectionFeedbackTimerRef.current)
+    }
+  }, [])
+
+  const finishResize = useCallback((commit: boolean) => {
+    const session = resizeRef.current
+    if (!session) return
+    resizeRef.current = null
+    setResizing(null)
+    useUiStore.getState().setViewportMoving(false)
+    const node = useGraphStore.getState().currentDocument?.nodes.find(
+      (candidate) => candidate.id === session.nodeId,
+    )
+    if (!node) return
+    if (!commit || useGraphStore.getState().isLocked) {
+      useGraphStore.getState().updateNode(session.nodeId, { size: session.origin })
+      return
+    }
+    const changed = node.size.width !== session.origin.width || node.size.height !== session.origin.height
+    if (!changed) return
+    if (!node.manualSize) useGraphStore.getState().updateNode(session.nodeId, { manualSize: true })
+    useGraphStore.getState().commitHistory()
+  }, [])
+
+  useEffect(() => {
+    const cancelGesture = () => {
+      finishResize(false)
+      interaction.cancel()
+      cancelConnect()
+    }
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') cancelGesture()
+    }
+    window.addEventListener('keydown', onKeyDown)
+    window.addEventListener('blur', cancelGesture)
+    return () => {
+      window.removeEventListener('keydown', onKeyDown)
+      window.removeEventListener('blur', cancelGesture)
+    }
+  }, [cancelConnect, finishResize, interaction])
+
+  const beginResize = useCallback(
+    (nodeId: string, screenPoint: Point) => {
+      if (resizeRef.current) finishResize(true)
+      if (useGraphStore.getState().isLocked) return
+      const node = nodesRef.current.find((candidate) => candidate.id === nodeId)
+      if (!node) return
+      const origin = { width: node.size.width, height: node.size.height }
+      resizeRef.current = {
+        nodeId,
+        origin,
+        startScreen: { x: screenPoint.x, y: screenPoint.y },
+        min: minSizeForKind(node.kind),
+      }
+      setResizing({ nodeId, origin, current: origin })
+      const ui = useUiStore.getState()
+      ui.setViewportMoving(true)
+      ui.setSelectedEdgeId(null)
+    },
+    [finishResize],
+  )
+
+  const updateResize = useCallback((screenPoint: Point) => {
+    const session = resizeRef.current
+    if (!session) return
+    if (useGraphStore.getState().isLocked) {
+      finishResize(false)
+      return
+    }
+    const zoom = safeZoom(viewportRef.current.zoom)
+    const width = Math.max(
+      session.min.width,
+      session.origin.width + (screenPoint.x - session.startScreen.x) / zoom,
+    )
+    const height = Math.max(
+      session.min.height,
+      session.origin.height + (screenPoint.y - session.startScreen.y) / zoom,
+    )
+    const size = { width, height }
+    useGraphStore.getState().updateNode(session.nodeId, { size })
+    setResizing({ nodeId: session.nodeId, origin: session.origin, current: size })
+  }, [finishResize])
+
+  const endResize = useCallback(() => {
+    finishResize(true)
+  }, [finishResize])
+
+  useEffect(() => {
+    return () => {
+      const session = resizeRef.current
+      if (!session) return
+      resizeRef.current = null
+      useUiStore.getState().setViewportMoving(false)
+      const node = useGraphStore.getState().currentDocument?.nodes.find(
+        (candidate) => candidate.id === session.nodeId,
+      )
+      if (node) useGraphStore.getState().commitHistory()
+    }
+  }, [])
 
   const screenToWorldFn = useCallback(
     (point: Point) => screenToWorldPure(point, viewportRef.current),
@@ -402,10 +724,60 @@ export function CanvasProvider({
     [nodes],
   )
 
+  const centerOnWorld = useCallback(
+    (world: Point) => {
+      const size = containerSizeRef.current
+      if (size.width <= 0 || size.height <= 0) return
+      if (!Number.isFinite(world.x) || !Number.isFinite(world.y)) return
+      const view = viewportRef.current
+      const zoom = safeZoom(view.zoom)
+      const center = visibleScreenCenter(size, overlayInsetsRef.current)
+      setViewport({
+        x: center.x - world.x * zoom,
+        y: center.y - world.y * zoom,
+        zoom,
+      })
+    },
+    [setViewport],
+  )
+
+  useEffect(() => {
+    const previous = overlayInsetsRef.current
+    const size = containerSizeRef.current
+    overlayInsetsRef.current = overlayInsets
+    if (size.width <= 0 || size.height <= 0) return
+    const previousCenter = visibleScreenCenter(size, previous)
+    const nextCenter = visibleScreenCenter(size, overlayInsets)
+    const dx = nextCenter.x - previousCenter.x
+    const dy = nextCenter.y - previousCenter.y
+    if (dx === 0 && dy === 0) return
+    setViewport(panBy(viewportRef.current, { x: dx, y: dy }))
+  }, [overlayInsets, setViewport])
+
+  const onPointerDownCapture = (event: ReactPointerEvent<HTMLDivElement>) => {
+    panClickRef.current = false
+    const target = event.target as Element | null
+    if (target?.closest('[data-canvas-chrome]')) return
+    if (event.button !== 1 && !(event.button === 0 && spacePressed)) return
+    if (interaction.getMode() !== 'idle' || resizeRef.current) return
+    event.preventDefault()
+    event.stopPropagation()
+    panClickRef.current = true
+    event.currentTarget.setPointerCapture(event.pointerId)
+    pointerDown(getPointerInput(event))
+  }
+
   const onPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (connectionFeedback) {
+      if (connectionFeedbackTimerRef.current) clearTimeout(connectionFeedbackTimerRef.current)
+      connectionFeedbackTimerRef.current = null
+      setConnectionFeedback(null)
+    }
+    if (contextMenu) setContextMenu(null)
+    if (connectionMenu) setConnectionMenu(null)
     if (event.button !== 0 && event.button !== 1) return
-    // 连线由 NodeShell 的 source 点触发 beginConnect，根按下不介入
-    if (interaction.getMode() === 'connecting') return
+    // 连线 / 缩放由 NodeShell 入口触发，根按下不介入
+    if (interaction.getMode() === 'connecting' || resizeRef.current) return
     const input = getPointerInput(event)
     const hitNodeId = hitTestNode(input.world)
     // 责任边界：节点拖拽由 NodeShell 入口负责（stopPropagation + setPointerCapture(container) + pointerDown(nodeId)）。
@@ -414,13 +786,18 @@ export function CanvasProvider({
     if (hitNodeId) return
     event.preventDefault()
     event.currentTarget.setPointerCapture(event.pointerId)
+    useUiStore.getState().setSelectedEdgeId(null)
     pointerDown(input, undefined)
   }
 
   const onPointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const input = getPointerInput(event)
+    if (resizeRef.current) {
+      updateResize(input.screen)
+      return
+    }
     const mode = interaction.getMode()
     if (mode === 'idle') return
-    const input = getPointerInput(event)
     if (mode === 'connecting') {
       updateConnect(input.screen)
       return
@@ -433,9 +810,12 @@ export function CanvasProvider({
       event.currentTarget.releasePointerCapture(event.pointerId)
     }
     const input = getPointerInput(event)
+    if (resizeRef.current) {
+      endResize()
+      return
+    }
     if (interaction.getMode() === 'connecting') {
-      // 抬起时用 hitTestNode 解析目标节点；未命中则 targetId=null
-      endConnect(hitTestNode(input.world) ?? null)
+      endConnect(hitTestConnectionTarget(input.world) ?? null)
       return
     }
     pointerUp(input)
@@ -443,10 +823,14 @@ export function CanvasProvider({
 
   const onPointerLeave = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (event.buttons !== 0) return
+    if (resizeRef.current) {
+      endResize()
+      return
+    }
     const mode = interaction.getMode()
     if (mode === 'idle') return
     if (mode === 'connecting') {
-      endConnect(null)
+      cancelConnect()
       return
     }
     pointerUp(getPointerInput(event))
@@ -460,6 +844,9 @@ export function CanvasProvider({
       selection,
       marquee,
       connecting,
+      connectingTargetId,
+      resizing,
+      draggingNodeIds,
       containerSize,
       containerRef,
       screenToWorld: screenToWorldFn,
@@ -467,6 +854,7 @@ export function CanvasProvider({
       zoomAtCursor,
       panByScreen,
       setViewport,
+      centerOnWorld,
       nodeById,
       getPointerInput,
       hitTestNode,
@@ -476,6 +864,14 @@ export function CanvasProvider({
       beginConnect,
       updateConnect,
       endConnect,
+      beginResize,
+      updateResize,
+      endResize,
+      hoveredNodeId,
+      focusedNodeId,
+      setFocusedNodeId,
+      setHoveredNode,
+      beginNodeDrag,
     }),
     [
       viewport,
@@ -484,12 +880,16 @@ export function CanvasProvider({
       selection,
       marquee,
       connecting,
+      connectingTargetId,
+      resizing,
+      draggingNodeIds,
       containerSize,
       screenToWorldFn,
       worldToScreenFn,
       zoomAtCursor,
       panByScreen,
       setViewport,
+      centerOnWorld,
       nodeById,
       getPointerInput,
       hitTestNode,
@@ -499,6 +899,13 @@ export function CanvasProvider({
       beginConnect,
       updateConnect,
       endConnect,
+      beginResize,
+      updateResize,
+      endResize,
+      hoveredNodeId,
+      focusedNodeId,
+      setHoveredNode,
+      beginNodeDrag,
     ],
   )
 
@@ -515,14 +922,124 @@ export function CanvasProvider({
         ]
           .filter(Boolean)
           .join(' ')}
-        style={{ background: 'var(--background)', touchAction: 'none' }}
+        style={{ backgroundColor: 'var(--background)', backgroundImage: 'radial-gradient(circle, color-mix(in srgb, var(--muted-foreground) 32%, transparent) 1px, transparent 1px)', backgroundSize: '24px 24px', backgroundPosition: '0px 0px', touchAction: 'none' }}
+        onDoubleClick={(event) => {
+          const target = event.target as Element
+          if (event.button !== 0 || target.closest('[data-canvas-chrome], [data-content-node], [data-node-id], [data-canvas-handle]')) return
+          const input = toInput(event.clientX, event.clientY, event.button, event.shiftKey, event.ctrlKey, event.metaKey)
+          if (hitTestNode(input.world)) return
+          event.preventDefault()
+          const rect = event.currentTarget.getBoundingClientRect()
+          setContextMenu(null)
+          setAddMenu({ x: event.clientX - rect.left, y: event.clientY - rect.top, clientX: event.clientX, clientY: event.clientY })
+        }}
+        onPointerDownCapture={onPointerDownCapture}
         onPointerDown={onPointerDown}
+        onClickCapture={(event) => {
+          if (!panClickRef.current) return
+          event.preventDefault()
+          event.stopPropagation()
+          panClickRef.current = false
+        }}
+        onAuxClickCapture={(event) => {
+          if (!panClickRef.current) return
+          event.preventDefault()
+          event.stopPropagation()
+          panClickRef.current = false
+        }}
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
-        onPointerCancel={onPointerUp}
+        onPointerCancel={() => {
+          if (interaction.getMode() === 'connecting') {
+            cancelConnect()
+            return
+          }
+          if (resizeRef.current) {
+            finishResize(false)
+            return
+          }
+          // Pointer cancellation must not commit a drag or marquee.
+          interaction.cancel()
+        }}
         onPointerLeave={onPointerLeave}
+        onDragOver={(event) => {
+          event.preventDefault()
+          event.dataTransfer.dropEffect = 'copy'
+        }}
+        onDrop={(event) => {
+          event.preventDefault()
+          event.stopPropagation()
+          void handleCanvasDrop(event.nativeEvent)
+        }}
+        onContextMenu={(event) => {
+          if (isEditableTarget(event.target)) return
+          rememberClientPoint(event.clientX, event.clientY)
+          const input = toInput(event.clientX, event.clientY, event.button, event.shiftKey, event.ctrlKey, event.metaKey)
+          if (hitTestNode(input.world)) return
+          event.preventDefault()
+          const rect = event.currentTarget.getBoundingClientRect()
+          setContextMenu({ x: event.clientX - rect.left, y: event.clientY - rect.top })
+        }}
       >
         {children}
+        {connectionFeedback ? (
+          <div
+            data-canvas-chrome="true"
+            data-connection-feedback
+            className="pointer-events-none absolute top-[72px] z-50 -translate-x-1/2 rounded border border-destructive/30 bg-background/95 px-3 py-1.5 text-xs text-destructive shadow-sm"
+            style={{
+              left: visibleScreenCenter(containerSize, overlayInsets).x,
+              maxWidth: Math.max(0, containerSize.width - overlayInsets.left - overlayInsets.right - 16),
+            }}
+            role="status"
+            aria-live="polite"
+          >
+            {connectionFeedback}
+          </div>
+        ) : null}
+        {connectionMenu ? (
+          <div
+            data-canvas-chrome="true"
+            data-connection-menu
+            className="cnote-menu-surface pointer-events-auto absolute z-50 w-48"
+            style={clampOverlayPosition(connectionMenu, containerSize, { width: 192, height: 160 })}
+            onPointerDown={(event) => event.stopPropagation()}
+          >
+            <p className="px-3 pb-1 pt-1 text-[10px] font-medium text-muted-foreground">选择要连接的节点</p>
+            {(['ai', 'content', 'request'] as const).map((kind) => (
+              <button
+                key={kind}
+                type="button"
+                className="cnote-menu-item"
+                onClick={() => createConnectedNode(kind)}
+              >
+                {kind === 'ai' ? 'AI 节点' : kind === 'content' ? '内容节点' : '请求体节点'}
+              </button>
+            ))}
+          </div>
+        ) : null}
+        {addMenu && <CanvasAddMenu menu={addMenu} container={containerRef.current} onClose={() => setAddMenu(null)} />}
+        {contextMenu ? (
+          <div
+            data-canvas-chrome="true"
+            data-canvas-context-menu
+            className="cnote-menu-surface pointer-events-auto absolute z-50 w-40"
+            style={clampOverlayPosition(contextMenu, containerSize, { width: 160, height: 56 })}
+            onPointerDown={(event) => event.stopPropagation()}
+          >
+            <button
+              type="button"
+              className="cnote-menu-item"
+              onClick={() => {
+                setContextMenu(null)
+                setConnectionMenu(null)
+                void readSystemClipboardAndImport()
+              }}
+            >
+              粘贴
+            </button>
+          </div>
+        ) : null}
       </div>
     </CanvasContext.Provider>
   )
@@ -530,3 +1047,38 @@ export function CanvasProvider({
 
 const EMPTY_NODES: NodeSpec[] = []
 const EMPTY_EDGES: EdgeSpec[] = []
+const GROUP_NODE_MIN_SIZE: Size = { width: 160, height: 120 }
+
+function safeZoom(zoom: number): number {
+  return Number.isFinite(zoom) && zoom !== 0 ? zoom : 1
+}
+
+function clampOverlayPosition(
+  point: Point,
+  container: Size,
+  overlay: Size,
+): { left: number; top: number } {
+  const maxX = Math.max(8, container.width - overlay.width - 8)
+  const maxY = Math.max(8, container.height - overlay.height - 8)
+  return {
+    left: Math.max(8, Math.min(point.x, maxX)),
+    top: Math.max(8, Math.min(point.y, maxY)),
+  }
+}
+
+function minSizeForKind(kind: NodeKind): Size {
+  switch (kind) {
+    case 'sticky':
+      return { width: STICKY_NODE_MIN_SIZE.width, height: STICKY_NODE_MIN_SIZE.height }
+    case 'browser':
+      return { width: BROWSER_NODE_MIN_SIZE.width, height: BROWSER_NODE_MIN_SIZE.height }
+    case 'ai':
+      return { width: AI_NODE_MIN_SIZE.width, height: AI_NODE_MIN_SIZE.height }
+    case 'request':
+      return { width: REQUEST_NODE_MIN_SIZE.width, height: REQUEST_NODE_MIN_SIZE.height }
+    case 'content':
+      return { width: CONTENT_NODE_MIN_SIZE.width, height: CONTENT_NODE_MIN_SIZE.height }
+    case 'group':
+      return GROUP_NODE_MIN_SIZE
+  }
+}

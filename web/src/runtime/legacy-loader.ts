@@ -13,6 +13,7 @@ import type {
   ContentCategory,
   ContentNodeSpec,
   ContentSubtype,
+  ContentUrlProvider,
   EdgeSpec,
   FlowDocument,
   GenerationConfig,
@@ -27,7 +28,7 @@ import type {
 } from '@/domain'
 import localforage from '@/lib/localforage-storage'
 import { appendDocumentIndex, listDocuments, saveDocument } from '@/storage'
-import type { Flow } from '@/types/flow'
+import type { Flow, RichTextDocument } from '@/types/flow'
 
 /** 旧 zustand persist 的 name，与 use-flow-store 保持一致。 */
 const LEGACY_FLOWS_PERSIST_KEY = 'cnote-flows'
@@ -238,10 +239,15 @@ function mapGenerationConfig(raw: unknown): GenerationConfig {
 
 function mapSticky(base: SharedBase, data: Record<string, unknown>): StickyNodeSpec {
   const background = pickEnum(data.background, STICKY_BACKGROUNDS, 'solid')
+  const content = String(data.content ?? data.text ?? '')
+  const document = data.document as Partial<RichTextDocument> | undefined
+  const validDocument = document?.version === 1 && document.format === 'tiptap-json'
+    && document.plainText === content && document.json?.type === 'doc'
   return {
     ...base,
     kind: 'sticky',
-    content: String(data.content ?? data.text ?? ''),
+    content,
+    ...(validDocument ? { document: JSON.parse(JSON.stringify(document)) as RichTextDocument } : {}),
     color: pickEnum(data.color, STICKY_COLORS, 'yellow'),
     background,
     pinned: Boolean(data.pinned),
@@ -291,6 +297,31 @@ function mapRequest(base: SharedBase, data: Record<string, unknown>): RequestNod
   }
 }
 
+function mapContentSource(raw: unknown): ContentNodeSpec['source'] {
+  const source = asRecord(raw)
+  if (!source || typeof source.kind !== 'string') return null
+  if (source.kind === 'text') {
+    const mimeType = source.mimeType === 'text/markdown' ? 'text/markdown' : 'text/plain'
+    return { kind: 'text', mimeType }
+  }
+  if (source.kind === 'url') {
+    const url = asString(source.normalizedUrl) ?? asString(source.url) ?? asString(source.originalUrl)
+    if (!url) return null
+    const provider = typeof source.provider === 'string' ? source.provider as ContentUrlProvider : undefined
+    return { kind: 'url', url, ...(provider ? { provider } : {}) }
+  }
+  if (source.kind === 'file' || source.kind === 'clipboard-image') {
+    const assetId = asString(source.resourceId) ?? asString(source.assetId)
+    const mimeType = asString(source.mimeType) ?? 'application/octet-stream'
+    if (!assetId) return null
+    if (source.kind === 'file') {
+      return { kind: 'file', assetId, mimeType, ...(asString(source.fileName) ? { fileName: asString(source.fileName) } : {}) }
+    }
+    return { kind: 'clipboard-image', assetId, mimeType }
+  }
+  return null
+}
+
 function mapContent(base: SharedBase, data: Record<string, unknown>): ContentNodeSpec {
   const payload = asRecord(data.payload)
   let content: string | undefined
@@ -299,14 +330,25 @@ function mapContent(base: SharedBase, data: Record<string, unknown>): ContentNod
   } else if (typeof data.content === 'string') {
     content = data.content
   }
+  const source = mapContentSource(data.source)
+  const assetId = source && (source.kind === 'file' || source.kind === 'clipboard-image') ? source.assetId : undefined
+  const preview = asRecord(data.preview) as ContentNodeSpec['preview'] | undefined
+  const parse = asRecord(data.parse) as ContentNodeSpec['parse'] | undefined
+  const state = typeof data.state === 'string' ? data.state as ContentNodeSpec['state'] : undefined
+  const sourceId = asString(data.sourceId)
   return {
     ...base,
     kind: 'content',
     category: pickEnumOrNull(data.category, CONTENT_CATEGORIES),
     subtype: pickEnumOrNull(data.subtype, CONTENT_SUBTYPES),
-    // 旧 source 含 checksum/resourceId 等运行时字段，结构差异大；资产映射后续阶段补
-    source: null,
+    source,
+    ...(assetId ? { assetId } : {}),
     ...(content !== undefined ? { content } : {}),
+    ...(payload ? { payload: data.payload as ContentNodeSpec['payload'] } : {}),
+    ...(preview ? { preview } : {}),
+    ...(state ? { state } : {}),
+    ...(parse ? { parse } : {}),
+    ...(sourceId ? { sourceId } : {}),
   }
 }
 

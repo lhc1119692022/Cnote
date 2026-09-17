@@ -22,7 +22,7 @@ import { testGenerationMediaUpload } from '@/lib/generation/client'
 import { mediaTransportStatus, normalizeMediaTransport } from '@/lib/generation/media-policy'
 import { AIClient } from '@/lib/api/client'
 import { useMediaStorageStore } from '@/stores/use-media-storage-store'
-import { syncDesktopSecret } from '@/lib/desktop-secrets'
+import { ensureDesktopSecret, syncDesktopSecret } from '@/lib/desktop-secrets'
 
 const PROTOCOL_GROUP_LABELS = {
   image: '图像端点',
@@ -182,13 +182,14 @@ export function GenerationChannelsManager({ embedded = false, openNewRequest = 0
 
   const handleFetchModels = async () => {
     const endpoint = normalizeEndpoint(baseURL)
-    const apiKeyValue = apiKey.trim() || (editingChannelId ? getAPIKey(editingChannelId) : '')
+    const apiKeyValue = apiKey.trim() || (editingChannelId ? getAPIKey(editingChannelId) : '') || ''
     if (!endpoint) { setModelFetchMessage('请先填写接口地址。'); return }
-    if (!apiKeyValue) { setModelFetchMessage('请先填写 API Key，或先保存现有渠道。'); return }
     setIsFetchingModels(true)
     setModelFetchMessage('')
     try {
-      const client = new AIClient({ id: 'generation-models', name: '生成渠道', baseURL: endpoint, protocol: 'chatCompletions', models: [] }, apiKeyValue)
+      const secretName = editingChannelId ? channels.find(channel => channel.id === editingChannelId)?.secretName : undefined
+      if (!apiKeyValue && !(await ensureDesktopSecret(secretName))) throw new Error('请先填写 API Key，或先保存现有渠道。')
+      const client = new AIClient({ id: 'generation-models', name: '生成渠道', baseURL: endpoint, protocol: protocol === 'google-images' && !/^sk-/i.test(apiKeyValue) ? 'gemini' : 'chatCompletions', models: [] }, apiKeyValue, apiKeyValue ? undefined : secretName)
       const ids = await client.listModels()
       setAvailableModelIds(ids)
       setModelFetchMessage(ids.length ? '已拉取 ' + ids.length + ' 个模型，请选择需要启用的模型。' : '接口连接成功，但没有返回模型列表。')

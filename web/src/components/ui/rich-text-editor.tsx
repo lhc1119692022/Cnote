@@ -8,7 +8,7 @@ import type { RichTextDocument } from '@/types/flow'
 import { cn } from '@/lib/utils'
 import './rich-text-editor.css'
 
-function EditorToolbar({ editor }: { editor: Editor }) {
+function EditorToolbar({ editor, compact = false }: { editor: Editor; compact?: boolean }) {
   const [linkOpen, setLinkOpen] = useState(false)
   const [url, setUrl] = useState('')
   const [linkError, setLinkError] = useState(false)
@@ -30,8 +30,8 @@ function EditorToolbar({ editor }: { editor: Editor }) {
     { label: '插入表格', icon: Table, run: () => editor.chain().focus().insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run() },
   ]
   return <div className="shrink-0 border-b border-border">
-    <div role="toolbar" aria-label="文本格式" className="flex flex-wrap gap-0.5 px-3 py-2">
-      {actions.map(({ label, icon: Icon, run, ...state }) => <button key={label} type="button" title={label} aria-label={label} aria-pressed={'active' in state ? state.active : undefined} disabled={'disabled' in state && state.disabled} className={cn('flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground hover:bg-muted disabled:opacity-30', 'active' in state && state.active && 'bg-muted text-foreground')} onMouseDown={(event) => event.preventDefault()} onClick={run}><Icon className="h-4 w-4" /></button>)}
+    <div role="toolbar" aria-label="文本格式" className={cn('flex min-w-0 flex-wrap gap-0.5 py-2', compact ? 'px-1' : 'px-3')}>
+      {actions.filter(action => !compact || ['撤销', '重做', '粗体', '斜体', '无序列表', '任务列表'].includes(action.label)).map(({ label, icon: Icon, run, ...state }) => <button key={label} type="button" title={label} aria-label={label} aria-pressed={'active' in state ? state.active : undefined} disabled={'disabled' in state && state.disabled} className={cn('flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground hover:bg-muted disabled:opacity-30', 'active' in state && state.active && 'bg-muted text-foreground')} onMouseDown={(event) => event.preventDefault()} onClick={run}><Icon className="h-4 w-4" /></button>)}
     </div>
     {linkOpen && <form className="flex flex-wrap gap-2 px-3 pb-2" onSubmit={(event) => {
       event.preventDefault()
@@ -39,7 +39,7 @@ function EditorToolbar({ editor }: { editor: Editor }) {
       editor.chain().focus().extendMarkRange('link').setLink({ href: url.trim() }).run()
       setLinkOpen(false)
     }}><input autoFocus aria-label="链接地址" value={url} onChange={(event) => setUrl(event.target.value)} placeholder="https://" className="min-w-0 flex-1 rounded border border-border bg-background px-2 py-1 text-sm" /><button type="submit" className="text-sm">应用</button><button type="button" className="text-sm" onClick={() => { setLinkOpen(false); editor.commands.focus() }}>取消</button>{linkError && <span role="alert" className="w-full text-xs text-destructive">请输入 http、https 或 mailto 链接。</span>}</form>}
-    {editor.isActive('table') && <div className="flex flex-wrap gap-2 px-3 pb-2 text-xs">{[
+    {!compact && editor.isActive('table') && <div className="flex flex-wrap gap-2 px-3 pb-2 text-xs">{[
       ['添加行', () => editor.chain().focus().addRowAfter().run()],
       ['添加列', () => editor.chain().focus().addColumnAfter().run()],
       ['删除行', () => editor.chain().focus().deleteRow().run()],
@@ -57,6 +57,7 @@ interface RichTextEditorProps {
   onActivate?: () => void
   editable?: boolean
   toolbar?: boolean
+  compactToolbar?: boolean
   placeholder?: string
   className?: string
   contentClassName?: string
@@ -64,7 +65,7 @@ interface RichTextEditorProps {
   onLinkClick?: (url: string) => void
 }
 
-export function RichTextEditor({ value, document, onChange, onCommit, onActivate, editable = true, toolbar = true, placeholder = '此处粘贴或编辑', className, contentClassName, markdownSource = false, onLinkClick }: RichTextEditorProps) {
+export function RichTextEditor({ value, document, onChange, onCommit, onActivate, editable = true, toolbar = true, compactToolbar = false, placeholder = '此处粘贴或编辑', className, contentClassName, markdownSource = false, onLinkClick }: RichTextEditorProps) {
   const callbacks = useRef({ onChange, onCommit, onActivate })
   callbacks.current = { onChange, onCommit, onActivate }
   const lastValue = useRef(value)
@@ -123,7 +124,7 @@ export function RichTextEditor({ value, document, onChange, onCommit, onActivate
       callbacks.current.onCommit?.(lastValue.current)
     }
   }}>
-    {editor && toolbar && editable && <EditorToolbar editor={editor} />}
+    {editor && toolbar && editable && <EditorToolbar editor={editor} compact={compactToolbar} />}
     <EditorContent editor={editor} className={cn('custom-scrollbar min-h-0 min-w-0 flex-1 overflow-y-auto', contentClassName)} onClick={(event) => {
       const anchor = (event.target as HTMLElement).closest('a')
       const href = anchor?.getAttribute('href')?.trim()

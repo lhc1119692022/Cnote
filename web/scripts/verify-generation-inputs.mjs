@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -12,24 +12,36 @@ const require = createRequire(import.meta.url)
 const sourceRoot = fileURLToPath(new URL('../src/', import.meta.url))
 const mocks = new Map()
 const modules = new Map()
+
 function evaluate(source, requireModule = require) {
   const code = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.ReactJSX } }).outputText
   const module = { exports: {} }
   new Function('module', 'exports', 'require', code)(module, module.exports, requireModule)
   return module.exports
 }
+
+function sourcePath(relativeOrAbsolute) {
+  const base = resolve(sourceRoot, relativeOrAbsolute)
+  if (existsSync(base) && /\.(ts|tsx)$/.test(base)) return base
+  for (const ext of ['.ts', '.tsx', '/index.ts']) {
+    if (existsSync(base + ext)) return base + ext
+  }
+  return base
+}
+
 function load(relativePath) {
-  const path = resolve(sourceRoot, relativePath)
+  const path = sourcePath(relativePath)
   if (modules.has(path)) return modules.get(path)
   const result = evaluate(readFileSync(path, 'utf8'), (specifier) => {
     if (mocks.has(specifier)) return mocks.get(specifier)
-    if (specifier.startsWith('@/')) return load(specifier.slice(2) + '.ts')
-    if (specifier.startsWith('.')) return load(resolve(dirname(path), specifier + '.ts'))
+    if (specifier.startsWith('@/')) return load(specifier.slice(2))
+    if (specifier.startsWith('.')) return load(resolve(dirname(path), specifier))
     return require(specifier)
   })
   modules.set(path, result)
   return result
 }
+
 function declarations(relativePath, names) {
   const text = readFileSync(resolve(sourceRoot, relativePath), 'utf8')
   const source = ts.createSourceFile(relativePath, text, ts.ScriptTarget.Latest, true, relativePath.endsWith('tsx') ? ts.ScriptKind.TSX : ts.ScriptKind.TS)
@@ -39,8 +51,7 @@ function declarations(relativePath, names) {
 const { VIDEO_808_MODELS: models, VIDEO_KACANG_MODELS: kacangModels } = load('lib/generation/video-catalog.ts')
 const model = models.find((item) => item.id === 'seedance-2.5-pro')
 const channel = { id: 'test-channel', protocol: 'video-api', providerId: 'video', name: 'Mock', baseURL: 'https://provider.test', modelIds: [model.id], enabled: true }
-let visibleModels = [model]
-const getModels = () => visibleModels
+const getModels = () => [model]
 const useGenerationStore = create(() => ({ channels: [channel], initializeDefaultChannels: () => {}, getModels, getChannel: () => channel }))
 const generationStore = {
   useGenerationStore,
@@ -55,13 +66,27 @@ const generationStore = {
   generationMediaUploadSecretName: () => 'mock-upload-secret',
 }
 mocks.set('@/stores/use-generation-store', generationStore)
-mocks.set('@/lib/flow/ai-context', evaluate(declarations('lib/flow/ai-context.ts', ['uniqueText', 'parsedContentText', 'textForAIContextNode'])))
-const deletedResources = []
+const graphStoreState = {
+  currentDocument: null,
+  currentDocumentId: null,
+  commitHistory() {},
+}
+mocks.set('@/stores/graph-store', {
+  useGraphStore: {
+    getState() { return graphStoreState },
+    setState(partial) {
+      Object.assign(graphStoreState, typeof partial === 'function' ? partial(graphStoreState) : partial)
+    },
+  },
+})
 mocks.set('@/lib/resource-storage', {
   loadLocalResourceUrl: async () => undefined,
   loadLocalResourceBlob: async () => new Blob(['fixture'], { type: 'image/png' }),
   revokeManagedObjectUrl: () => {},
-  deleteLocalResource: async (resourceId) => deletedResources.push(resourceId),
+  deleteLocalResource: async () => {},
+  retainLocalResource: async () => {},
+  storeLocalResource: async () => ({ resourceId: 'sha256-fixture', checksum: 'sha256-fixture', mimeType: 'image/png', size: 7 }),
+  getLocalResourceMeta: async () => undefined,
 })
 mocks.set('@/lib/desktop-secrets', { ensureDesktopSecret: async () => true, syncDesktopSecret: async () => {} })
 const storageSettings = { baseURL: '', getUploadEndpoint: () => 'https://storage.test/upload', fieldName: 'file', responsePath: 'url', getAccessToken: () => '' }
@@ -77,49 +102,340 @@ mocks.set('@/lib/desktop-fetch', { desktopFetch: async (url, options = {}) => {
 } })
 
 const { createGenerationVariantConfig } = load('lib/generation/defaults.ts')
-const { withGenerationUpstreamInputs } = load('lib/generation/inputs.ts')
+const {
+  resolveRequestGenerationInputs,
+  resultAssetIdsFromResourceIds,
+  toLegacyVariantConfig,
+  collectOwnedResultNodeIds,
+  generationInputProvenanceIds,
+  upsertGenerationResultNodes,
+  collectUpstreamReferences,
+} = load('canvas/contents/request-generation.ts')
+{
+  const resources = [
+    { label: 'first', resource: { url: 'https://cdn.test/first.png', resourceId: 'sha256-first', mimeType: 'image/png', fileName: 'first.png' } },
+    { label: 'second', resource: { url: 'https://cdn.test/second.png', mimeType: 'image/png' } },
+  ]
+  const node = { id: 'parsed-media', kind: 'content', label: 'images', category: 'image', assetId: 'asset-stale', source: { kind: 'url', url: 'https://page.test/original', provider: 'youtube' }, payload: { kind: 'image', resources } }
+  const before = JSON.stringify(node)
+  const refs = collectUpstreamReferences('image', [node], [node], {}, {})
+  assert.equal(refs.length, 2, 'parsed media references supersede the source webpage and stale asset')
+  assert.deepEqual(refs.map(ref => ref.url), resources.map(item => item.resource.url))
+  assert.equal(refs[0].resourceId, 'sha256-first')
+  assert.equal(refs[0].fileName, 'first.png')
+  assert.equal(refs[0].source, 'local')
+  assert.equal(refs[1].source, 'url')
+  assert.ok(refs.every(ref => ref.upstreamNodeId === node.id))
+  const split = { ...node, id: 'split-media', payload: { kind: 'image', resources: [resources[1]], activeResourceIndex: 0 } }
+  const splitRefs = collectUpstreamReferences('video', [split], [split], {}, {})
+  assert.equal(splitRefs.length, 1)
+  assert.equal(splitRefs[0].url, resources[1].resource.url)
+  assert.equal(splitRefs[0].resourceId, undefined)
+  assert.equal(splitRefs[0].upstreamNodeId, split.id)
+  const video = { ...node, category: 'video', payload: { kind: 'video', resources: [{ resource: { url: 'https://cdn.test/movie.mp4', mimeType: 'video/mp4' } }] } }
+  assert.equal(collectUpstreamReferences('image', [video], [video], {}, {}).length, 0)
+  assert.equal(collectUpstreamReferences('video', [video], [video], {}, {})[0].type, 'video')
+  assert.equal(JSON.stringify(node), before)
+}
 const { normalizeVideoModeConfig, videoModesForModel, videoReferenceError, videoInputTypes } = load('lib/generation/video-mode.ts')
 const { submitGenerationTask, testGenerationMediaUpload } = load('lib/generation/client.ts')
 const { mediaTransportStatus, normalizeMediaTransport } = load('lib/generation/media-policy.ts')
+
+const SIZE = { width: 100, height: 100 }
+const POS = { x: 0, y: 0 }
 const base = { ...createGenerationVariantConfig('video'), channelId: channel.id, model: model.id, prompt: 'camera move' }
-const imageNode = (id, url) => ({ id, type: 'content', position: { x: 0, y: 0 }, data: { label: id, category: 'image', source: null, payload: { kind: 'image', resources: [{ resource: { url, resourceId: id } }] } } })
-const nodes = [imageNode('first', 'https://cdn.test/first.png'), imageNode('last', 'https://cdn.test/last.png'), { id: 'video', type: 'content', data: { category: 'video', source: null, payload: { kind: 'video', playback: 'video', url: 'https://cdn.test/video.mp4' } } }, { id: 'voice', type: 'content', data: { source: { kind: 'file', resourceId: 'voice-resource', mimeType: 'audio/wav' } } }]
-const edges = nodes.map((node) => ({ id: node.id, source: node.id, target: 'request' }))
-const merged = withGenerationUpstreamInputs('request', 'video', base, nodes, edges)
+const configBase = { channelId: channel.id, model: model.id, prompt: 'camera move', capability: base.capability }
+
+function contentNode(id, extra = {}) {
+  return {
+    id,
+    kind: 'content',
+    position: POS,
+    size: SIZE,
+    label: extra.label || id,
+    category: extra.category ?? null,
+    subtype: extra.subtype ?? null,
+    source: extra.source ?? null,
+    assetId: extra.assetId,
+    content: extra.content,
+    payload: extra.payload,
+    disabled: extra.disabled,
+    generatedBy: extra.generatedBy,
+  }
+}
+
+function requestNode(id, extra = {}) {
+  return {
+    id,
+    kind: 'request',
+    position: POS,
+    size: SIZE,
+    label: extra.label || id,
+    variant: extra.variant || 'video',
+    image: extra.image || { prompt: '' },
+    video: extra.video || { prompt: '' },
+    latestRunId: extra.latestRunId,
+    resultNodeIds: extra.resultNodeIds,
+    disabled: extra.disabled,
+  }
+}
+
+function stickyNode(id, content) {
+  return { id, kind: 'sticky', position: POS, size: SIZE, label: id, content, color: 'yellow', background: 'solid' }
+}
+
+function browserNode(id, url) {
+  return { id, kind: 'browser', position: POS, size: SIZE, label: id, url }
+}
+
+function edge(source, target = 'request') {
+  return { id: `${source}->${target}`, source, target }
+}
+
+function asset(id, mimeType) {
+  return { id, hash: id.replace(/^asset-/, ''), mimeType, size: 10 }
+}
+
+function resolveInputs({
+  requestNodeId = 'request',
+  variant = 'video',
+  config = configBase,
+  nodes,
+  edges,
+  assets = {},
+  runs = {},
+} = {}) {
+  return resolveRequestGenerationInputs({ requestNodeId, variant, config, nodes, edges, assets, runs })
+}
+
+{
+  const parsed = contentNode('parsed-document', { category: 'document', payload: { kind: 'document', plainText: 'Fresh upstream document body' } })
+  const result = resolveInputs({ nodes: [parsed], edges: [edge(parsed.id)] })
+  assert.equal(result.prompt, 'camera move\n\nFresh upstream document body')
+  assert.equal(result.references.length, 0)
+}
+
+const imageFirst = contentNode('first', {
+  category: 'image',
+  subtype: 'image',
+  source: { kind: 'url', url: 'https://cdn.test/first.png' },
+})
+const imageLast = contentNode('last', {
+  category: 'image',
+  subtype: 'image',
+  source: { kind: 'url', url: 'https://cdn.test/last.png' },
+})
+const videoClip = contentNode('video', {
+  category: 'video',
+  subtype: 'remote-video',
+  source: { kind: 'url', url: 'https://cdn.test/video.mp4' },
+  content: 'fresh transcript',
+})
+const voice = contentNode('voice', {
+  source: { kind: 'file', assetId: 'asset-voice', mimeType: 'audio/wav', fileName: 'voice.wav' },
+  assetId: 'asset-voice',
+})
+const nodes = [imageFirst, imageLast, videoClip, voice]
+const edges = nodes.map((node) => edge(node.id))
+const assets = { 'asset-voice': asset('asset-voice', 'audio/wav') }
+
+const merged = resolveInputs({ nodes, edges, assets })
 assert.deepEqual(merged.references.map((reference) => reference.type), ['image', 'image', 'video', 'audio'])
 assert.ok(merged.references.every((reference) => reference.upstreamNodeId))
-assert.equal(base.references.length, 0, 'upstream references do not become owned files')
-assert.equal(withGenerationUpstreamInputs('request', 'video', base, nodes, edges.slice(1)).references.length, 3)
-assert.equal(withGenerationUpstreamInputs('request', 'video', base, nodes.map((node) => node.id === 'first' ? { ...node, data: { ...node.data, disabled: true } } : node), edges).references.length, 3)
-assert.equal(withGenerationUpstreamInputs('request', 'video', base, nodes, [...edges, edges[0]]).references.length, 4, 'duplicate edges do not duplicate files')
-const localCopy = { ...merged.references[0], id: 'local', upstreamNodeId: undefined }
-assert.equal(withGenerationUpstreamInputs('request', 'video', { ...base, references: [localCopy] }, nodes, edges).references.length, 4, 'local/upstream assets deduplicate by storage identity')
-assert.equal(withGenerationUpstreamInputs('request', 'image', base, nodes, edges).capability, 'image-to-image')
-const overrideConfig = { ...base, referenceOverrides: { [merged.references[0].id]: { excluded: true }, [merged.references[1].id]: { role: 'first_frame', order: -1 } } }
-const overridden = withGenerationUpstreamInputs('request', 'video', overrideConfig, nodes, edges)
+assert.equal(configBase.referenceAssetIds?.length || 0, 0, 'upstream references do not become owned files')
+assert.match(merged.prompt, /camera move/)
+assert.match(merged.prompt, /fresh transcript/, 'upstream content text is merged into the prompt')
+
+const textNodes = [
+  contentNode('note', { category: 'text', subtype: 'plain-text', source: { kind: 'text', mimeType: 'text/plain' }, content: 'hello note' }),
+  stickyNode('sticky', 'sticky text'),
+  browserNode('browser', 'https://example.test'),
+]
+const textMerged = resolveInputs({
+  config: { ...configBase, prompt: 'base prompt' },
+  nodes: textNodes,
+  edges: textNodes.map((node) => edge(node.id)),
+})
+assert.equal(textMerged.prompt, 'base prompt\n\nhello note\n\nsticky text\n\nhttps://example.test')
+
+assert.equal(resolveInputs({ nodes, edges: edges.slice(1), assets }).references.length, 3)
+assert.equal(resolveInputs({
+  nodes: nodes.map((node) => node.id === 'first' ? { ...node, disabled: true } : node),
+  edges,
+  assets,
+}).references.length, 3)
+assert.equal(resolveInputs({ nodes, edges: [...edges, edges[0]], assets }).references.length, 4, 'duplicate edges do not duplicate files')
+
+const localAssetId = 'asset-first'
+const localAssetNodes = [
+  contentNode('first', {
+    category: 'image',
+    subtype: 'image',
+    assetId: localAssetId,
+    source: { kind: 'file', assetId: localAssetId, mimeType: 'image/png', fileName: 'first.png' },
+  }),
+  imageLast,
+  videoClip,
+  voice,
+]
+const localAssets = {
+  ...assets,
+  [localAssetId]: asset(localAssetId, 'image/png'),
+}
+assert.equal(resolveInputs({
+  config: { ...configBase, referenceAssetIds: [localAssetId] },
+  nodes: localAssetNodes,
+  edges,
+  assets: localAssets,
+}).references.length, 4, 'local/upstream assets deduplicate by storage identity')
+
+assert.equal(resolveInputs({ variant: 'image', nodes, edges, assets }).capability, 'image-to-image')
+assert.deepEqual(resolveInputs({ variant: 'image', nodes, edges, assets }).references.map((reference) => reference.type), ['image', 'image'])
+assert.equal(resolveInputs({ variant: 'image', nodes: textNodes, edges: textNodes.map((node) => edge(node.id)) }).capability, 'text-to-image')
+assert.equal(merged.capability, configBase.capability, 'video capability stays on the request config')
+
+const overrideConfig = {
+  ...configBase,
+  referenceOverrides: {
+    [merged.references[0].id]: { excluded: true },
+    [merged.references[1].id]: { role: 'first_frame', order: -1 },
+  },
+}
+const overridden = resolveInputs({ config: overrideConfig, nodes, edges, assets })
 assert.equal(overridden.references.length, 3)
 assert.equal(overridden.references[0].upstreamNodeId, 'last')
 assert.equal(overridden.references[0].role, 'first_frame')
-const requestNode = { id: 'upstream-request', type: 'request', data: { variant: 'image', label: 'Generated' } }
-const generated = withGenerationUpstreamInputs('request', 'video', base, [requestNode], [{ source: requestNode.id, target: 'request' }], { [requestNode.id]: { kind: 'generation-result', task: { resultUrls: ['https://cdn.test/result.png'], resultResourceIds: ['result-resource'] } } })
-assert.equal(generated.references[0].resourceId, 'result-resource', 'Flow results use the same live input resolver')
-const transcript = withGenerationUpstreamInputs('request', 'video', base, nodes, edges, { video: { kind: 'video', playback: 'video', url: 'https://cdn.test/fresh.mp4', transcript: 'fresh transcript' } })
-assert.match(transcript.prompt, /fresh transcript/)
-assert.equal(transcript.references.find((reference) => reference.type === 'video').url, 'https://cdn.test/fresh.mp4')
 
-const executorText = readFileSync(resolve(sourceRoot, 'lib/flow/executor.ts'), 'utf8')
-const executorAst = ts.createSourceFile('executor.ts', executorText, ts.ScriptTarget.Latest, true)
-const executorMethod = executorAst.statements.find((statement) => ts.isClassDeclaration(statement) && statement.name?.text === 'FlowExecutor').members.find((member) => member.name?.getText(executorAst) === 'executeRequestNode')
-const flowRequests = []
-const executeRequestNode = evaluate('import { withGenerationUpstreamInputs, useGenerationStore, runGenerationBatch, runGenerationTask } from "bindings";\nexport ' + executorMethod.getText(executorAst).replace(/^private async executeRequestNode/, 'async function executeRequestNode'), () => ({
-  withGenerationUpstreamInputs,
-  useGenerationStore,
-  ...load('lib/generation/batch.ts'),
-  runGenerationTask: async (context) => { flowRequests.push(context); return { status: 'completed', resultUrls: ['https://cdn.test/output.mp4'] } },
-})).executeRequestNode
-const executableNode = { id: 'request', type: 'request', data: { variant: 'video', video: overrideConfig } }
-await executeRequestNode.call({ nodes: [...nodes, executableNode], edges }, executableNode, {})
-assert.deepEqual(flowRequests[0].config.references, overridden.references, 'Flow execution applies exactly the same references and overrides as the preview')
+const resultAssetId = 'asset-result'
+const generatedContent = contentNode('result-1', {
+  category: 'image',
+  subtype: 'image',
+  assetId: resultAssetId,
+  source: { kind: 'file', assetId: resultAssetId, mimeType: 'image/png', fileName: 'result.png' },
+  generatedBy: { requestNodeId: 'upstream-request', variant: 'image' },
+})
+const upstreamRequest = requestNode('upstream-request', {
+  variant: 'image',
+  label: 'Generated',
+  resultNodeIds: { image: ['result-1'] },
+})
+const generated = resolveInputs({
+  nodes: [upstreamRequest, generatedContent],
+  edges: [edge('upstream-request')],
+  assets: { [resultAssetId]: asset(resultAssetId, 'image/png') },
+})
+assert.equal(generated.references[0].resourceId, 'sha256-result', 'request results use the same live input resolver')
+assert.equal(generated.references[0].upstreamNodeId, 'result-1')
+
+const runRequest = requestNode('upstream-run', { variant: 'image', latestRunId: 'run-1' })
+const fromRun = resolveInputs({
+  nodes: [runRequest],
+  edges: [edge('upstream-run')],
+  assets: { [resultAssetId]: asset(resultAssetId, 'image/png') },
+  runs: {
+    'run-1': {
+      id: 'run-1',
+      status: 'completed',
+      createdAt: 0,
+      tasks: [{ id: 'task-1', status: 'completed', resultAssetIds: [resultAssetId] }],
+    },
+  },
+})
+assert.equal(fromRun.references[0].resourceId, 'sha256-result')
+assert.equal(fromRun.references[0].upstreamNodeId, 'upstream-run')
+
+assert.deepEqual(resultAssetIdsFromResourceIds(['sha256-abc', '', 'sha256-def']), ['asset-abc', 'asset-def'])
+assert.deepEqual(resultAssetIdsFromResourceIds(undefined), [])
+assert.equal(resultAssetIdsFromResourceIds(['result-resource'])[0], 'asset-result-resource')
+
+const extracted = generationInputProvenanceIds([
+  {
+    id: 'ref-url',
+    url: 'https://cdn.test/secret-token?apiKey=abc',
+    previewUrl: 'https://cdn.test/preview',
+    resourceId: 'sha256-aaa',
+    upstreamNodeId: 'node-a',
+    rawResponse: { id: 'hidden' },
+  },
+  { id: 'asset-bbb', resourceId: 'sha256-bbb' },
+])
+assert.deepEqual(extracted.inputReferenceIds, ['ref-url', 'asset-bbb'])
+assert.deepEqual(extracted.inputAssetIds, ['asset-aaa', 'asset-bbb'])
+assert.deepEqual(extracted.inputNodeIds, ['node-a'])
+assert.equal('url' in extracted, false)
+assert.doesNotMatch(JSON.stringify(extracted), /apiKey|rawResponse|cdn\.test/)
+
+const legacyResult = contentNode('legacy-result', {
+  category: 'image',
+  subtype: 'image',
+  generatedBy: { requestNodeId: 'req-legacy', variant: 'image' },
+})
+const legacyRequest = requestNode('req-legacy', { variant: 'image' })
+assert.deepEqual(
+  collectOwnedResultNodeIds(legacyRequest, [legacyRequest, legacyResult], 'image'),
+  ['legacy-result'],
+  'legacy generatedBy with only requestNodeId/variant still owns result nodes',
+)
+
+graphStoreState.currentDocument = {
+  id: 'doc-1',
+  name: 'doc',
+  title: 'doc',
+  viewport: { x: 0, y: 0, zoom: 1 },
+  nodes: [
+    requestNode('req-1', { variant: 'image', latestRunId: 'run-1', label: '图片', resultNodeIds: { image: ['legacy-owned'] } }),
+    contentNode('legacy-owned', {
+      category: 'image',
+      subtype: 'image',
+      generatedBy: { requestNodeId: 'req-1', variant: 'image' },
+    }),
+  ],
+  edges: [],
+  createdAt: 0,
+  updatedAt: 0,
+}
+graphStoreState.currentDocumentId = 'doc-1'
+const createdIds = upsertGenerationResultNodes({
+  requestNodeId: 'req-1',
+  variant: 'image',
+  documentId: 'doc-1',
+  runId: 'run-1',
+  taskId: 'task-1',
+  channelId: 'test-channel',
+  providerId: 'video',
+  model: 'seedance-2.5-pro',
+  inputReferenceIds: ['ref-url', 'asset-bbb'],
+  inputAssetIds: ['asset-aaa', 'asset-bbb'],
+  inputNodeIds: ['node-a'],
+  createdAt: 123,
+  results: [{ assetId: 'asset-out', mimeType: 'image/png', fileName: 'out.png' }],
+})
+assert.deepEqual(createdIds, ['legacy-owned'], 'owned result nodes are reused by request+variant')
+const resultNode = graphStoreState.currentDocument.nodes.find((node) => node.id === 'legacy-owned')
+assert.equal(resultNode.generatedBy.requestNodeId, 'req-1')
+assert.equal(resultNode.generatedBy.variant, 'image')
+assert.equal(resultNode.generatedBy.runId, 'run-1')
+assert.equal(resultNode.generatedBy.taskId, 'task-1')
+assert.equal(resultNode.generatedBy.channelId, 'test-channel')
+assert.equal(resultNode.generatedBy.providerId, 'video')
+assert.equal(resultNode.generatedBy.model, 'seedance-2.5-pro')
+assert.deepEqual(resultNode.generatedBy.inputReferenceIds, ['ref-url', 'asset-bbb'])
+assert.deepEqual(resultNode.generatedBy.inputAssetIds, ['asset-aaa', 'asset-bbb'])
+assert.deepEqual(resultNode.generatedBy.inputNodeIds, ['node-a'])
+assert.equal(resultNode.generatedBy.createdAt, 123)
+assert.equal(resultNode.generatedBy.apiKey, undefined)
+assert.equal(resultNode.generatedBy.rawResponse, undefined)
+assert.equal(resultNode.generatedBy.requestSnapshot, undefined)
+assert.doesNotMatch(JSON.stringify(resultNode.generatedBy), /apiKey|rawResponse|secret/)
+assert.deepEqual(
+  collectOwnedResultNodeIds(graphStoreState.currentDocument.nodes[0], graphStoreState.currentDocument.nodes, 'image'),
+  ['legacy-owned'],
+)
+graphStoreState.currentDocument = null
+graphStoreState.currentDocumentId = null
+
+const executable = toLegacyVariantConfig('video', overrideConfig, overridden.references, overridden.prompt)
+assert.deepEqual(executable.references, overridden.references, 'legacy submit config keeps the same derived references')
 
 assert.deepEqual(videoModesForModel(model), ['reference-to-video', 'first-last-frame'])
 assert.deepEqual(videoInputTypes(model, 'first-last-frame'), ['image'])
@@ -212,7 +528,24 @@ await submitGenerationTask({ variant: 'video', model: { ...model, capabilities: 
 assert.equal(JSON.parse(requests[0].body).generate_audio, undefined, 'hidden unsupported audio parameters are not submitted')
 assert.equal(JSON.parse(requests[0].body).sound_effects, undefined, 'hidden unsupported audio parameters are not submitted')
 
-const localConfig = { ...base, references: [{ ...localCopy, url: undefined, previewUrl: undefined }] }
+const mentionReferences = [
+  { id: 'mention-image', type: 'image', label: '角色正面', fileName: 'actor.png', source: 'url', url: 'https://cdn.test/actor.png', previewUrl: 'https://cdn.test/actor.png', order: 0, status: 'ready' },
+  { id: 'mention-video', type: 'video', label: '镜头节奏', fileName: 'camera.mp4', source: 'url', url: 'https://cdn.test/camera.mp4', previewUrl: 'https://cdn.test/camera.mp4', order: 1, status: 'ready' },
+]
+requests.length = 0
+const mentionSubmission = await submitGenerationTask({
+  variant: 'video',
+  model,
+  channel,
+  config: { ...base, prompt: '参考 @Image1 @Video1', promptMentions: { 'mention-image': '@Image1', 'mention-video': '@Video1' }, references: mentionReferences },
+})
+const mentionBody = JSON.parse(requests.find((request) => request.url.endsWith('/v1/videos')).body)
+assert.match(mentionBody.prompt, /@Image1/, 'the generated request keeps the selected token in its prompt')
+assert.deepEqual(mentionBody.reference_images, ['https://cdn.test/actor.png'], 'the selected token remains connected to the matching reference array')
+assert.equal(mentionSubmission.taskId, 'mock-task')
+
+const localCopy = { ...merged.references[0], id: 'local', upstreamNodeId: undefined, url: undefined, previewUrl: undefined, resourceId: 'sha256-local', source: 'local' }
+const localConfig = { ...base, references: [localCopy] }
 assert.match((await submit(localConfig, 'inline')).body.reference_images[0], /^data:image\/png;base64,/)
 assert.equal(requests.length, 1, 'inline never calls an upload endpoint')
 await submit(localConfig, 'custom', { mediaUploadURL: 'https://storage.test/upload' })
@@ -283,113 +616,6 @@ globalThis.KeyboardEvent = dom.window.KeyboardEvent
 globalThis.requestAnimationFrame = (callback) => setTimeout(callback, 0)
 globalThis.IS_REACT_ACT_ENVIRONMENT = true
 const { createRoot } = await import('react-dom/client')
-const useFlowStore = create((set) => ({
-  nodes: [], edges: [],
-  updateNode: (id, updates) => set((state) => ({ nodes: state.nodes.map((node) => node.id === id ? { ...node, ...updates } : node) })),
-}))
-mocks.set('@/stores/use-flow-store', { useFlowStore })
-mocks.set('@/lib/generation/client', { runGenerationTask: async () => ({ status: 'completed' }), cancelGenerationTask: async () => {} })
-mocks.set('@/lib/generation/results', {})
-mocks.set('./NodeChrome', { NodeDragGutters: () => null, NodeHandle: () => null, NodeHoverToolbar: () => null, NodeResizeArc: () => null })
-const { RequestNode } = load('components/flow/nodes/RequestNode.tsx')
-function Harness() {
-  const node = useFlowStore((state) => state.nodes.find((item) => item.id === 'request'))
-  return React.createElement(RequestNode, { ...node, selected: true })
-}
-const root = createRoot(document.getElementById('root'))
-async function setConfig(config, inputNodes = [], inputEdges = []) {
-  await act(async () => {
-    useFlowStore.setState({ nodes: [...inputNodes, { id: 'request', type: 'request', data: { variant: 'video', video: config, tasks: { video: { status: 'idle' } } } }], edges: inputEdges })
-    root.render(React.createElement(Harness))
-  })
-}
-function button(label) { return document.querySelector(`button[aria-label="${label}"]`) }
-async function click(element) { assert.ok(element); await act(async () => element.click()) }
-async function setTextareaValue(text) {
-  const textarea = document.querySelector('textarea')
-  assert.ok(textarea)
-  const setter = Object.getOwnPropertyDescriptor(dom.window.HTMLTextAreaElement.prototype, 'value').set
-  setter.call(textarea, text)
-  textarea.setSelectionRange(text.length, text.length)
-  await act(async () => textarea.dispatchEvent(new dom.window.Event('input', { bubbles: true })))
-  return textarea
-}
-const mentionReferences = [
-  { id: 'mention-image', type: 'image', label: '角色正面', fileName: 'actor.png', source: 'url', url: 'https://cdn.test/actor.png', previewUrl: 'https://cdn.test/actor.png', order: 0, status: 'ready' },
-  { id: 'mention-video', type: 'video', label: '镜头节奏', fileName: 'camera.mp4', source: 'url', url: 'https://cdn.test/camera.mp4', previewUrl: 'https://cdn.test/camera.mp4', order: 1, status: 'ready' },
-]
-await setConfig({ ...base, prompt: '', references: mentionReferences })
-let textarea = await setTextareaValue('参考 @')
-assert.ok(document.querySelector('[role="listbox"][aria-label="插入参考素材"]'), 'typing @ opens the reference picker')
-const mentionOptions = () => document.querySelectorAll('[role="listbox"][aria-label="插入参考素材"] [role="option"]')
-assert.deepEqual([...mentionOptions()].map((option) => option.textContent.includes('角色正面')), [true, false])
-await act(async () => textarea.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true })))
-assert.equal(mentionOptions()[0].getAttribute('aria-selected'), 'false', 'arrow navigation moves the active option')
-await act(async () => textarea.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true })))
-await act(async () => new Promise((resolve) => setTimeout(resolve, 0)))
-assert.equal(useFlowStore.getState().nodes.find((node) => node.id === 'request').data.video.prompt, '参考 @Video1 ', 'keyboard selection inserts the selected token')
-assert.equal(useFlowStore.getState().nodes.find((node) => node.id === 'request').data.video.promptMentions['mention-video'], '@Video1')
-textarea = await setTextareaValue('使用 @Im')
-assert.equal(mentionOptions().length, 1, 'typing after @ filters by token or filename')
-await click(mentionOptions()[0])
-assert.match(useFlowStore.getState().nodes.find((node) => node.id === 'request').data.video.prompt, /@Image1/)
-requests.length = 0
-const mentionConfig = useFlowStore.getState().nodes.find((node) => node.id === 'request').data.video
-const mentionSubmission = await submitGenerationTask({ variant: 'video', model, channel, config: mentionConfig })
-const mentionBody = JSON.parse(requests.find((request) => request.url.endsWith('/v1/videos')).body)
-assert.match(mentionBody.prompt, /@Image1/, 'the generated request keeps the selected token in its prompt')
-assert.deepEqual(mentionBody.reference_images, ['https://cdn.test/actor.png'], 'the selected token remains connected to the matching reference array')
-assert.equal(mentionSubmission.taskId, 'mock-task')
-await setConfig({ ...base, prompt: '参考 @Video1', references: mentionReferences })
-await click(document.querySelector('button[aria-label="删除视频素材"]'))
-assert.equal(useFlowStore.getState().nodes.find((node) => node.id === 'request').data.video.prompt, '参考 [已移除视频]', 'deleting a referenced asset leaves an explicit broken reference')
-await setConfig({ ...base, capability: 'audio-reference' }, nodes.slice(0, 1), edges.slice(0, 1))
-assert.equal(document.querySelectorAll('img').length, 1, 'connected assets render before Generate is clicked')
-assert.deepEqual([...document.querySelectorAll('[role="option"]')].map((option) => option.textContent), ['多模态', '首尾帧'])
-assert.equal(document.querySelectorAll('input[aria-label="生成音频"]').length, 1)
-assert.equal(document.querySelectorAll('label label').length, 0)
-assert.equal(document.querySelectorAll('input[aria-label="不要音乐"]').length, 0)
-await click(button('移除上游图片引用'))
-assert.equal(document.querySelectorAll('img').length, 0)
-assert.deepEqual(deletedResources, [], 'removing upstream references never releases upstream storage')
-await click(button('恢复已移除的上游引用'))
-assert.equal(document.querySelectorAll('img').length, 1)
-await act(async () => useFlowStore.setState({ edges: [] }))
-assert.equal(document.querySelectorAll('img').length, 0, 'disconnect updates the node immediately')
-await click([...document.querySelectorAll('[role="option"]')].find((option) => option.textContent === '首尾帧'))
-assert.ok(document.querySelector('label[aria-label="上传首帧素材"]'))
-assert.ok(document.querySelector('label[aria-label="上传尾帧素材"]'))
-assert.equal(document.querySelectorAll('input[type="file"]').length, 2)
-assert.match(document.querySelector('textarea').placeholder, /两帧/)
-assert.equal(button('生成').disabled, true)
-await setConfig({ ...base, capability: 'first-last-frame' }, nodes.slice(0, 2), edges.slice(0, 2))
-assert.equal(document.querySelectorAll('img').length, 2)
-assert.equal(button('生成').disabled, false)
-await click(document.querySelector('button[aria-label="设为首帧"]'))
-assert.equal(withGenerationUpstreamInputs('request', 'video', useFlowStore.getState().nodes.at(-1).data.video, useFlowStore.getState().nodes, useFlowStore.getState().edges).references.find((reference) => reference.role === 'first_frame').upstreamNodeId, 'last')
-await click([...document.querySelectorAll('[role="option"]')].find((option) => option.textContent === '多模态'))
-assert.equal(document.querySelectorAll('input[type="file"]').length, 3)
-assert.equal(document.querySelectorAll('img').length, 2, 'switching to multimodal keeps both images as references')
-assert.equal(document.querySelector('label[aria-label="上传首帧素材"]'), null)
-assert.equal(button('生成').disabled, false)
-await setConfig(base)
-assert.equal(button('生成').disabled, false, 'zero references remain valid in multimodal')
-assert.equal(document.querySelectorAll('input[type="file"]').length, 3, 'text and reference generation use the same input area')
-await setConfig({ ...base, capability: 'text-to-video', noMusic: true })
-assert.equal(document.querySelector('input[aria-label="生成音频"]').checked, false)
-await click(document.querySelector('input[aria-label="生成音频"]'))
-assert.equal(useFlowStore.getState().nodes.at(-1).data.video.noMusic, undefined)
-assert.equal(useFlowStore.getState().nodes.at(-1).data.video.generateAudio, true)
-visibleModels = [{ ...model, capabilities: ['text-to-video', 'image-to-video'], inputTypes: ['image'], resolutions: ['720p'] }]
-await act(async () => useGenerationStore.setState({ channels: [{ ...channel }] }))
-assert.equal(document.querySelectorAll('[role="option"]').length, 1, 'editing channel metadata refreshes the cached model list')
-assert.equal(document.querySelectorAll('input[aria-label="生成音频"]').length, 0)
-generationStore.generationChannelUsesModelInference = () => true
-visibleModels = [model, { id: 'unknown-video', name: 'Unknown Video', capabilities: ['text-to-video'], capabilitySource: 'inferred' }, { id: 'unknown-image', name: 'Unknown Image', capabilities: ['text-to-image'], capabilitySource: 'inferred' }]
-await act(async () => useGenerationStore.setState({ channels: [{ ...channel }] }))
-assert.match(document.body.textContent, /Unknown Video/)
-assert.doesNotMatch(document.body.textContent, /Unknown Image/, 'dual-scope model lists do not promote inferred image models into the video entry')
-
 const messages = []
 const savedChannels = []
 const mediaStore = create(() => ({ baseURL: '' }))
@@ -399,6 +625,7 @@ mocks.set('@/components/layout/AppShell', { AppShell: ({ children }) => children
 mocks.set('@/components/ui/button', load('components/ui/button.tsx'))
 mocks.set('@/components/ui/dialog', load('components/ui/dialog.tsx'))
 mocks.set('@/lib/api/client', { AIClient: class {} })
+mocks.set('@/lib/generation/client', { runGenerationTask: async () => ({ status: 'completed' }), cancelGenerationTask: async () => {}, testGenerationMediaUpload: async () => ({}) })
 Object.assign(generationStore, {
   GENERATION_PROTOCOL_LABELS: { 'video-api': '视频 API' },
   GENERATION_PROTOCOL_OPTIONS: [{ value: 'video-api', label: '视频 API', group: 'video' }],
@@ -410,9 +637,11 @@ useGenerationStore.setState({
   updateChannel: (id, updates) => savedChannels.push(updates),
 })
 const { GenerationChannelsManager } = load('components/settings/GenerationChannelsManager.tsx')
-const textButton = (label) => [...document.querySelectorAll('button')].find((element) => element.textContent === label)
+const root = createRoot(document.getElementById('root'))
+function textButton(label) { return [...document.querySelectorAll('button')].find((element) => element.textContent === label) }
 const deliverySelect = () => document.querySelector('select[aria-label="本地素材传输方式"]')
 const protocolSelect = () => document.querySelector('select[aria-label="上传协议"]')
+async function click(element) { assert.ok(element); await act(async () => element.click()) }
 async function changeSelect(element, value) {
   assert.ok(element)
   await act(async () => { element.value = value; element.dispatchEvent(new dom.window.Event('change', { bubbles: true })) })
@@ -464,4 +693,4 @@ assert.doesNotMatch(document.querySelector('[role="dialog"]').textContent, /渠�
 await click(textButton('取消'))
 await act(async () => root.unmount())
 dom.window.close()
-console.log('generation inputs, live UI, video modes, audio parameter and production transport contracts: PASS')
+console.log('generation inputs, video modes, audio parameter and production transport contracts: PASS')

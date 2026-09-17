@@ -1,4 +1,4 @@
-const port = Number(process.env.CNOTE_DEVTOOLS_PORT || 9223)
+const port = Number(process.env.CNOTE_DEVTOOLS_PORT || 9222)
 
 if (!Number.isInteger(port) || port <= 0) {
   throw new Error('CNOTE_DEVTOOLS_PORT must be a positive integer')
@@ -54,8 +54,12 @@ await new Promise((resolve, reject) => {
 })
 
 const bodyText = String(await evaluate('document.body.innerText'))
-const mountedWorkspace = bodyText.includes('创建 Flow')
-  || (bodyText.includes('添加') && bodyText.includes('保存'))
+const mountedCanvas = await evaluate(`Boolean(
+  document.querySelector('[data-cnote-canvas="engine"]') &&
+  document.querySelector('button[aria-label="添加节点"]') &&
+  document.querySelector('button[aria-label="保存"]')
+)`)
+const mountedWorkspace = bodyText.includes('创建 Flow') || mountedCanvas
 if (!mountedWorkspace) {
   throw new Error(`Packaged renderer did not mount the Cnote workspace. Body text: ${bodyText.slice(0, 500)}`)
 }
@@ -69,8 +73,26 @@ if (!windowControls) {
 }
 
 const browserBridge = await evaluate('Boolean(window.cnoteDesktop?.browser?.popout)')
+const nativeBrowserEnabled = await evaluate(`typeof document.createElement('webview').loadURL === 'function'`)
+if (!nativeBrowserEnabled) throw new Error('Native webview support is disabled in the actual desktop window.')
+const browserPresentation = await evaluate('typeof window.cnoteDesktop?.browser?.setPresentation === "function"')
+if (!browserPresentation) throw new Error('Browser presentation bridge is unavailable; restart the desktop main process.')
 if (!browserBridge) {
   throw new Error('Desktop browser bridge is not available in the packaged renderer.')
 }
+
+const desktopBridge = await evaluate(`({
+  storage: Boolean(window.cnoteDesktop?.storage?.read && window.cnoteDesktop?.storage?.write && window.cnoteDesktop?.storage?.remove),
+  sessionFlush: Boolean(window.cnoteDesktop?.session?.onFlushRequest && window.cnoteDesktop?.session?.notifyFlushed),
+  popoutSession: Boolean(window.cnoteDesktop?.browser?.popoutSession),
+  networkAbort: Boolean(window.cnoteDesktop?.network?.abort),
+  storageLocation: Boolean(window.cnoteDesktop?.system?.getStorageLocation && window.cnoteDesktop?.system?.restart),
+})`)
+if (!desktopBridge?.storage) throw new Error('Desktop storage bridge is not available in the renderer.')
+if (!desktopBridge?.sessionFlush) throw new Error('Desktop session flush bridge is not available in the renderer.')
+if (!desktopBridge?.popoutSession) throw new Error('Desktop popoutSession bridge is not available in the renderer.')
+if (!desktopBridge?.networkAbort) throw new Error('Desktop network.abort bridge is not available in the renderer.')
+if (!desktopBridge?.storageLocation) throw new Error('Desktop storage-location bridge is not available in the renderer.')
+
 socket.close()
 console.log('Packaged renderer and webview browser bridge smoke test passed.')

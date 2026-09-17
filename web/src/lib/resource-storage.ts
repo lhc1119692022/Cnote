@@ -3,6 +3,8 @@ import localforage from '@/lib/localforage-storage'
 const RESOURCE_PREFIX = 'resource:'
 const RESOURCE_META_PREFIX = 'resource-meta:'
 const managedObjectUrls = new Set<string>()
+const textEncoder = new TextEncoder()
+const textDecoder = new TextDecoder()
 
 export const MAX_BROWSER_STORAGE_BYTES = 10 * 1024 ** 3
 
@@ -22,6 +24,45 @@ function enqueueResourceMutation<T>(operation: () => Promise<T>) {
   const next = resourceMutationQueue.then(operation, operation)
   resourceMutationQueue = next.catch(() => undefined)
   return next
+}
+
+function hasDesktopByteStorage() {
+  return typeof window !== 'undefined' && Boolean(window.cnoteDesktop?.storage)
+}
+
+function getDesktopByteStorage() {
+  const storage = typeof window !== 'undefined' ? window.cnoteDesktop?.storage : undefined
+  if (!storage) throw new Error('Desktop storage is unavailable')
+  return storage
+}
+
+function toBytes(value: unknown): Uint8Array {
+  if (value instanceof Uint8Array) return value
+  if (value instanceof ArrayBuffer) return new Uint8Array(value)
+  if (ArrayBuffer.isView(value)) return new Uint8Array(value.buffer, value.byteOffset, value.byteLength)
+  throw new Error('Desktop storage returned invalid data')
+}
+
+function resourceBytesKey(resourceId: string) {
+  return `${RESOURCE_PREFIX}${resourceId}`
+}
+
+function resourceMetaKey(resourceId: string) {
+  return `${RESOURCE_META_PREFIX}${resourceId}`
+}
+
+async function readDesktopBytes(key: string): Promise<Uint8Array | null> {
+  const value = await getDesktopByteStorage().read(key)
+  if (value == null) return null
+  return toBytes(value)
+}
+
+async function writeDesktopBytes(key: string, data: Uint8Array) {
+  await getDesktopByteStorage().write(key, data)
+}
+
+async function removeDesktopKey(key: string) {
+  await getDesktopByteStorage().remove(key)
 }
 
 export function createManagedObjectUrl(blob: Blob) {
@@ -50,8 +91,41 @@ export async function checksumText(text: string) {
   return checksumBlob(new Blob([text], { type: 'text/plain' }))
 }
 
-async function getMeta(resourceId: string) {
-  return localforage.getItem<ResourceMeta>(`${RESOURCE_META_PREFIX}${resourceId}`)
+async function getMeta(resourceId: string): Promise<ResourceMeta | null> {
+  if (hasDesktopByteStorage()) {
+    const bytes = await readDesktopBytes(resourceMetaKey(resourceId))
+    if (bytes == null) return null
+    const parsed: unknown = JSON.parse(textDecoder.decode(bytes))
+    if (!parsed || typeof parsed !== 'object') throw new Error('Resource metadata is invalid')
+    return parsed as ResourceMeta
+  }
+  return localforage.getItem<ResourceMeta>(resourceMetaKey(resourceId))
+}
+
+async function saveMeta(meta: ResourceMeta) {
+  if (hasDesktopByteStorage()) {
+    await writeDesktopBytes(resourceMetaKey(meta.id), textEncoder.encode(JSON.stringify(meta)))
+    return
+  }
+  await localforage.setItem(resourceMetaKey(meta.id), meta)
+}
+
+async function saveResourcePayload(resourceId: string, file: Blob) {
+  if (hasDesktopByteStorage()) {
+    await writeDesktopBytes(resourceBytesKey(resourceId), new Uint8Array(await file.arrayBuffer()))
+    return
+  }
+  await localforage.setItem(resourceBytesKey(resourceId), file)
+}
+
+async function removeResourceRecord(resourceId: string) {
+  if (hasDesktopByteStorage()) {
+    await removeDesktopKey(resourceMetaKey(resourceId))
+    await removeDesktopKey(resourceBytesKey(resourceId))
+    return
+  }
+  await localforage.removeItem(resourceBytesKey(resourceId))
+  await localforage.removeItem(resourceMetaKey(resourceId))
 }
 
 async function assertBrowserStorageCapacity(additionalBytes: number) {
@@ -71,13 +145,13 @@ export async function storeLocalResource(file: Blob, fileName?: string, persistT
     const previous = await getMeta(resourceId)
     if (!previous) {
       await assertBrowserStorageCapacity(file.size)
-      await localforage.setItem(`${RESOURCE_PREFIX}${resourceId}`, file)
+      await saveResourcePayload(resourceId, file)
     }
     const meta: ResourceMeta = previous
       ? { ...previous, refCount: previous.refCount + 1 }
       : { id: resourceId, checksum, mimeType: file.type || 'application/octet-stream', size: file.size, refCount: 1, createdAt: Date.now(), ...(fileName ? { fileName } : {}) }
     const nextMeta = fileName && !meta.fileName ? { ...meta, fileName } : meta
-    await localforage.setItem(`${RESOURCE_META_PREFIX}${resourceId}`, nextMeta)
+    await saveMeta(nextMeta)
     if (persistToDisk && typeof window !== 'undefined' && window.cnoteDesktop?.system.saveResource && nextMeta.fileName) {
       await window.cnoteDesktop.system.saveResource({ resourceId, fileName: nextMeta.fileName, data: new Uint8Array(await file.arrayBuffer()) })
     }
@@ -90,7 +164,7 @@ export async function retainLocalResource(resourceId?: string) {
     if (!resourceId) return undefined
     const meta = await getMeta(resourceId)
     if (!meta) return undefined
-    await localforage.setItem(`${RESOURCE_META_PREFIX}${resourceId}`, { ...meta, refCount: meta.refCount + 1 })
+    await saveMeta({ ...meta, refCount: meta.refCount + 1 })
     return resourceId
   })
 }
@@ -101,7 +175,15 @@ export async function cloneLocalResource(resourceId?: string) {
 }
 
 export async function loadLocalResourceBlob(resourceId: string) {
-  return localforage.getItem<Blob>(`${RESOURCE_PREFIX}${resourceId}`)
+  if (hasDesktopByteStorage()) {
+    const bytes = await readDesktopBytes(resourceBytesKey(resourceId))
+    if (bytes == null) return null
+    const meta = await getMeta(resourceId)
+    const payload = new Uint8Array(bytes.byteLength)
+    payload.set(bytes)
+    return new Blob([payload], { type: meta?.mimeType || 'application/octet-stream' })
+  }
+  return localforage.getItem<Blob>(resourceBytesKey(resourceId))
 }
 
 export async function loadLocalResourceUrl(resourceId: string) {
@@ -115,11 +197,10 @@ export async function deleteLocalResource(resourceId?: string) {
     const meta = await getMeta(resourceId)
     if (!meta) return
     if (meta.refCount > 1) {
-      await localforage.setItem(`${RESOURCE_META_PREFIX}${resourceId}`, { ...meta, refCount: meta.refCount - 1 })
+      await saveMeta({ ...meta, refCount: meta.refCount - 1 })
       return
     }
-    await localforage.removeItem(`${RESOURCE_PREFIX}${resourceId}`)
-    await localforage.removeItem(`${RESOURCE_META_PREFIX}${resourceId}`)
+    await removeResourceRecord(resourceId)
   })
 }
 

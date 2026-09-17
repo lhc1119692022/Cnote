@@ -2,9 +2,11 @@
  * Runtime entities independent of graph persistence.
  *
  * Flow nodes reference these by id (`sessionId`, `latestCaptureId`,
- * `activeSessionId`, `latestRunId`, `assetId`). Do not embed them in
- * `NodeSpec` / `FlowDocument`.
+ * `captureId`, `activeSessionId`, `latestRunId`, `assetId`). Do not embed
+ * them in `NodeSpec` / `FlowDocument`.
  */
+
+import type { GenerationTaskRequestSnapshot } from '@/types/flow'
 
 // ---------------------------------------------------------------------------
 // Browser
@@ -81,6 +83,7 @@ export interface AIMessage {
 
 export interface AISession {
   id: string
+  nodeId?: string
   title: string
   messages: AIMessage[]
   model?: string
@@ -101,6 +104,26 @@ export type GenerationTaskStatus =
   | 'failed'
   | 'cancelled'
 
+export type GenerationTaskRecoveryState =
+  | 'pending'
+  | 'submitted'
+  | 'resuming'
+  | 'waiting-for-user'
+  | 'completed'
+  | 'failed'
+  | 'cancelled'
+
+export interface GenerationTaskRecoveryMetadata {
+  requestNodeId: string
+  variant: 'image' | 'video'
+  channelId: string
+  model: string
+  inputVersion: string
+  state: GenerationTaskRecoveryState
+  updatedAt: number
+  reason?: string
+}
+
 export interface GenerationTask {
   id: string
   status: GenerationTaskStatus
@@ -112,6 +135,20 @@ export interface GenerationTask {
   error?: string
   submittedAt?: number
   completedAt?: number
+  /** Remote provider task id used to resume polling after restart. */
+  remoteTaskId?: string
+  /** Request node and variant are duplicated here for task-level recovery. */
+  requestNodeId?: string
+  variant?: 'image' | 'video'
+  /** Stable identifier for the submit-time input snapshot. */
+  inputVersion?: string
+  /**
+   * Frozen submit-time input (channel/model/protocol/config). This is the
+   * recoverable request version — no secrets or raw responses.
+   */
+  requestSnapshot?: GenerationTaskRequestSnapshot
+  /** Explicit recovery state retained when polling or persistence is interrupted. */
+  recovery?: GenerationTaskRecoveryMetadata
 }
 
 export type GenerationRunStatus =
@@ -129,4 +166,8 @@ export interface GenerationRun {
   status: GenerationRunStatus
   tasks: GenerationTask[]
   createdAt: number
+  /** Request node that created this run. */
+  requestNodeId?: string
+  /** Generation variant submitted for this run. */
+  variant?: 'image' | 'video'
 }

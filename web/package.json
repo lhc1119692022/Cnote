@@ -7,7 +7,9 @@
   "license": "MIT",
   "repository": "https://github.com/lhc1119692022/Cnote",
   "scripts": {
+    "test:ai-upstream": "node scripts/verify-ai-upstream-transport.mjs",
     "test:generation-inputs": "node scripts/verify-generation-inputs.mjs",
+    "test:schema": "node scripts/verify-schema.mjs",
     "test:prompt-mentions": "node scripts/verify-prompt-mentions.mjs",
     "test:generation-selection": "node scripts/verify-generation-selection.mjs",
     "test:dialog": "node scripts/verify-dialog.mjs",
@@ -15,12 +17,17 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "build:desktop": "tsc && vite build --mode desktop",
+    "typecheck": "tsc --noEmit",
     "preview": "vite preview",
     "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
     "format": "prettier --write \"src/**/*.{ts,tsx,css}\"",
     "test:video-api:mock": "node scripts/verify-video-api-mock.mjs",
     "test:media-policy": "node scripts/verify-media-policy.mjs",
-    "test:canvas-navigation": "node scripts/verify-canvas-navigation.mjs"
+    "test:canvas-navigation": "node scripts/verify-canvas-navigation.mjs",
+    "test:runtime-persistence": "node scripts/verify-runtime-persistence.mjs",
+    "test:capture-materializer": "node scripts/verify-capture-materializer.mjs",
+    "test:document-autosave": "node scripts/verify-document-autosave.mjs",
+    "test:session-exit": "node scripts/verify-session-exit.mjs"
   },
   "dependencies": {
     "@tiptap/extension-image": "^3.31.3",

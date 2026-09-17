@@ -51,6 +51,7 @@ export interface GenerationRunOptions {
   timeoutMs: number
   signal?: AbortSignal
   onTaskUpdate?: (task: GenerationTaskState) => void
+  onRemoteTaskId?: (taskId: string) => void | Promise<void>
   onConfigPrepared?: (config: GenerationVariantConfig) => void
   onCancel?: (taskId: string) => Promise<void> | void
 }
@@ -931,6 +932,7 @@ export async function runGenerationTask(
     const submitted = await submitGenerationTask(context, options.signal)
     options.onConfigPrepared?.(submitted.preparedConfig || context.config)
     taskId = submitted.taskId
+    await options.onRemoteTaskId?.(taskId)
     if (submitted.resultUrls?.length) {
       const completed: GenerationTaskState = {
         taskId,

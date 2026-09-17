@@ -19,6 +19,10 @@ export interface BaseNodeSpec {
   z?: number
   parentGroupId?: string
   disabled?: boolean
+  /** User-marked favorite; persisted with the flow document. */
+  favorite?: boolean
+  /** Set after a user resize so content auto-height stops fighting the shell. */
+  manualSize?: boolean
   label: string
 }
 
@@ -98,8 +102,9 @@ export type ContentUrlProvider =
   | 'generic'
 
 /**
- * Origin of a content node. Bytes, checksums, and parsed payloads belong on
- * `ContentAsset` / `Capture` — this only records how the node was sourced.
+ * Origin of a content node. Bytes and checksums belong on `ContentAsset`.
+ * Parsed, serializable author content (`payload`) is persisted on the spec
+ * because it is the node's document, not a runtime handle.
  */
 export type ContentSourceRef =
   | { kind: 'text'; mimeType: 'text/plain' | 'text/markdown' }
@@ -108,6 +113,32 @@ export type ContentSourceRef =
   | { kind: 'file'; assetId: string; mimeType: string; fileName?: string }
   | { kind: 'clipboard-image'; assetId: string; mimeType: string }
 
+/**
+ * Lightweight, serializable provenance for a generated content node.
+ * Optional fields may be omitted. Legacy documents may only store
+ * `requestNodeId` and `variant`.
+ *
+ * Must not embed GenerationTask, requestSnapshot, raw responses,
+ * URL tokens, secrets, or media bytes.
+ */
+export interface ContentGenerationProvenance {
+  requestNodeId: string
+  variant: 'image' | 'video'
+  runId?: string
+  taskId?: string
+  channelId?: string
+  providerId?: string
+  model?: string
+  /** Stable GenerationReference ids used as inputs. */
+  inputReferenceIds?: string[]
+  /** ContentAsset ids used as generation inputs. */
+  inputAssetIds?: string[]
+  /** Upstream node ids that contributed generation inputs. */
+  inputNodeIds?: string[]
+  /** Epoch milliseconds when this result was materialized. */
+  createdAt?: number
+}
+
 export interface ContentNodeSpec extends BaseNodeSpec {
   kind: 'content'
   category: ContentCategory | null
@@ -115,10 +146,19 @@ export interface ContentNodeSpec extends BaseNodeSpec {
   source: ContentSourceRef | null
   /** Library `Source` id, when this node was created from a saved source. */
   sourceId?: string
+  /** Runtime `Capture` id when this node was materialized from a browser capture. Not a `ContentSourceRef`. */
+  captureId?: string
   /** ContentAsset resolved/imported from `source`. Must not be set together with `content`. */
   assetId?: string
   /** Author-entered text only when `source.kind === 'text'`. Must not be set together with `assetId`. */
   content?: string
+  /** Parsed, serializable author content. Not a runtime handle. */
+  payload?: import('@/types/flow').ContentPayload
+  preview?: import('@/types/flow').ContentPreview
+  state?: import('@/types/flow').ContentState
+  parse?: import('@/types/flow').ContentParseState
+  /** Present when this node was materialized as a request generation result. */
+  generatedBy?: ContentGenerationProvenance
 }
 
 // ---------------------------------------------------------------------------
@@ -160,19 +200,45 @@ export type GenerationCapability =
   | 'video-edit'
   | 'generate-audio'
 
+export type GenerationReferenceRole =
+  | 'reference_image'
+  | 'reference_video'
+  | 'first_frame'
+  | 'last_frame'
+  | 'reference_voice'
+  | 'reference_audio'
+
+/** Persisted role/order/exclude for a derived or local reference id. */
+export interface GenerationReferenceOverride {
+  role?: GenerationReferenceRole
+  order?: number
+  excluded?: boolean
+}
+
 /** Declared generation parameters. Task/run state is `GenerationRun`. */
 export interface GenerationConfig {
   channelId?: string
   model?: string
+  /** Adapter that owns the selected model when a channel exposes several contracts. */
+  adapterId?: string
   capability?: GenerationCapability
   prompt: string
   negativePrompt?: string
-  /** Ordered `ContentAsset` ids used as generation references. */
+  /** Ordered local `ContentAsset` ids. Upstream media is derived from inbound edges. */
   referenceAssetIds?: string[]
+  /** Stable referenceId-to-token bindings used by the video prompt @ picker. */
+  promptMentions?: Record<string, string>
+  /** Role, order, and exclude flags keyed by derived/local reference id. */
+  referenceOverrides?: Record<string, GenerationReferenceOverride>
   generateAudio?: boolean
   seconds?: number
   resolution?: string
   aspectRatio?: string
+  quality?: 'auto' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'standard' | string
+  background?: 'auto' | 'opaque' | 'transparent'
+  outputFormat?: 'png' | 'jpeg' | 'webp'
+  outputCompression?: number
+  thinkingLevel?: 'minimal' | 'high'
   outputCount?: number
 }
 
@@ -183,8 +249,8 @@ export interface RequestNodeSpec extends BaseNodeSpec {
   video: GenerationConfig
   /** Latest `GenerationRun` for this node. */
   latestRunId?: string
-  /** Content node that should receive a completed variant's output. */
-  resultNodeIds?: Partial<Record<'image' | 'video', string>>
+  /** Content nodes that should receive a completed variant's output. Legacy docs may store a single id. */
+  resultNodeIds?: Partial<Record<'image' | 'video', string | string[]>>
 }
 
 // ---------------------------------------------------------------------------
@@ -227,6 +293,7 @@ export type StickyColor = 'yellow' | 'pink' | 'green' | 'blue' | 'purple'
 export interface StickyNodeSpec extends BaseNodeSpec {
   kind: 'sticky'
   content: string
+  document?: import('@/types/flow').RichTextDocument
   color: StickyColor
   background: 'solid' | 'none'
   pinned?: boolean

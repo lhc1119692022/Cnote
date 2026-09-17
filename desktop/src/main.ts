@@ -1,119 +1,26 @@
-import { app, BrowserWindow, dialog, ipcMain, Notification, session, shell } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, shell, webContents } from 'electron'
+import { applyBrowserPresentation } from './runtime/browser-presentation'
+import { configureBrowserGuests } from './runtime/browser-guest'
 import path from 'node:path'
-import { existsSync, mkdirSync } from 'node:fs'
+import { existsSync } from 'node:fs'
 import { DesktopRuntime } from './runtime/desktop-runtime'
-import { configureStorageLocation } from './runtime/storage-location'
-import type { NativeJobRequest, NativeNetworkJobRequest, RuntimeInfo } from './runtime/types'
+import type { BrowserInputEvent, BrowserViewportRequest, NativeJobRequest, NativeNetworkJobRequest, RuntimeInfo } from './runtime/types'
 
 const currentDir = __dirname
-configureStorageLocation()
+const devToolsPort = Number(process.env.CNOTE_DEVTOOLS_PORT || 9222)
 let runtime: DesktopRuntime | null = null
 let mainWindow: BrowserWindow | null = null
 let rendererHealthTimer: NodeJS.Timeout | null = null
 let emergencyRendererShown = false
+let allowWindowClose = false
+let sessionFlushInFlight = false
 const activeNetworkRequests = new Map<string, AbortController>()
-const hasSingleInstanceLock = app.requestSingleInstanceLock()
-
 const ALLOWED_WEBVIEW_PROTOCOLS = new Set(['http:', 'https:', 'about:'])
-const PERSISTENT_BROWSER_PARTITION = 'persist:cnote-browser'
-let persistentBrowserPartitionConfigured = false
+const SESSION_FLUSH_TIMEOUT_MS = 2_000
 
-function isAllowedWebviewPartition(value: unknown): value is string {
-  return value === PERSISTENT_BROWSER_PARTITION || (typeof value === 'string' && /^cnote-memory-[A-Za-z0-9_-]+$/.test(value))
+if (Number.isInteger(devToolsPort) && devToolsPort > 0) {
+  app.commandLine.appendSwitch('remote-debugging-port', String(devToolsPort))
 }
-
-function assertAllowedWebviewNavigation(value: string) {
-  const parsed = new URL(value)
-  if (!ALLOWED_WEBVIEW_PROTOCOLS.has(parsed.protocol)) throw new Error(`Browser navigation protocol is not allowed: ${parsed.protocol}`)
-  return parsed.toString()
-}
-
-function installGuestSameViewOpenBridge(guest: Electron.WebContents) {
-  void guest.executeJavaScript(`(() => {
-    if (window.__cnoteSameViewOpenBridgeInstalled) return
-    window.__cnoteSameViewOpenBridgeInstalled = true
-    const navigate = (value) => {
-      try {
-        const url = new URL(String(value || ''), location.href)
-        if (!['http:', 'https:', 'about:'].includes(url.protocol)) return false
-        location.assign(url.toString())
-        return true
-      } catch {
-        return false
-      }
-    }
-    document.addEventListener('click', (event) => {
-      const target = event.target
-      const link = target instanceof Element ? target.closest('a[target="_blank"], area[target="_blank"]') : null
-      const href = link instanceof HTMLAnchorElement || link instanceof HTMLAreaElement ? link.href : ''
-      if (!href || !navigate(href)) return
-      event.preventDefault()
-      event.stopImmediatePropagation()
-    }, true)
-    const nativeOpen = window.open.bind(window)
-    window.open = (url, target, features) => {
-      if ((target === '_blank' || target === '_new') && navigate(url)) return null
-      return nativeOpen(url, target, features)
-    }
-  })()`, true).catch(() => undefined)
-}
-
-function configureGuestWebContents(guest: Electron.WebContents) {
-  guest.setWindowOpenHandler(({ url }) => {
-    try {
-      void guest.loadURL(assertAllowedWebviewNavigation(url))
-    } catch {
-      // Invalid or unsupported target URLs are denied.
-    }
-    return { action: 'deny' }
-  })
-  guest.on('will-navigate', (event, url) => {
-    try {
-      assertAllowedWebviewNavigation(url)
-    } catch {
-      event.preventDefault()
-    }
-  })
-  guest.on('dom-ready', () => installGuestSameViewOpenBridge(guest))
-}
-
-function configurePersistentBrowserPartition() {
-  if (persistentBrowserPartitionConfigured) return
-  persistentBrowserPartitionConfigured = true
-  const browserSession = session.fromPartition(PERSISTENT_BROWSER_PARTITION)
-  browserSession.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false))
-  browserSession.on('will-download', (_event, item) => {
-    const fileName = path.basename(item.getFilename()) || `download-${Date.now()}`
-    const downloadsDirectory = path.join(app.getPath('downloads'), 'Cnote')
-    mkdirSync(downloadsDirectory, { recursive: true })
-    const savePath = path.join(downloadsDirectory, fileName)
-    item.setSavePath(savePath)
-    if (Notification.isSupported()) new Notification({ title: 'Cnote 下载', body: `开始下载：${fileName}` }).show()
-    item.once('done', (_doneEvent, state) => {
-      if (!Notification.isSupported()) return
-      new Notification({
-        title: 'Cnote 下载',
-        body: state === 'completed' ? `${fileName} 已保存到 ${savePath}` : `${fileName} 下载${state === 'cancelled' ? '已取消' : '失败'}`,
-      }).show()
-    })
-  })
-}
-
-app.on('web-contents-created', (_event, contents) => {
-  contents.on('will-attach-webview', (event, webPreferences, params) => {
-    delete webPreferences.preload
-    webPreferences.nodeIntegration = false
-    webPreferences.contextIsolation = true
-    webPreferences.sandbox = true
-    if (!isAllowedWebviewPartition(params.partition)) {
-      event.preventDefault()
-    }
-  })
-
-  contents.on('did-attach-webview', (_event, guest) => {
-    configureGuestWebContents(guest)
-  })
-})
 
 function getRuntime() {
   if (!runtime) throw new Error('Desktop runtime is not ready')
@@ -168,6 +75,35 @@ function sendToMainWindow(channel: string, ...args: unknown[]) {
   } catch {
     // The renderer can disappear between an event and its IPC delivery.
   }
+}
+
+function finishWindowClose() {
+  allowWindowClose = true
+  sessionFlushInFlight = false
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.close()
+}
+
+function requestSessionFlushThenClose() {
+  if (allowWindowClose) {
+    finishWindowClose()
+    return
+  }
+  if (sessionFlushInFlight) return
+  sessionFlushInFlight = true
+  if (!mainWindow || mainWindow.isDestroyed() || mainWindow.webContents.isDestroyed()) {
+    finishWindowClose()
+    return
+  }
+  const onFlushed = () => {
+    clearTimeout(timer)
+    finishWindowClose()
+  }
+  const timer = setTimeout(() => {
+    ipcMain.removeListener('session:flushed', onFlushed)
+    finishWindowClose()
+  }, SESSION_FLUSH_TIMEOUT_MS)
+  ipcMain.once('session:flushed', onFlushed)
+  sendToMainWindow('session:flush')
 }
 
 function clearRendererHealthTimer() {
@@ -265,6 +201,15 @@ function scheduleRendererHealthCheck(window: BrowserWindow) {
 }
 
 function registerIpcHandlers() {
+  getRuntime().ports.browser.onSessionUpdated((session) => {
+    sendToMainWindow('browser:session-updated', session)
+  })
+  getRuntime().ports.browser.onFrame((frame) => {
+    sendToMainWindow('browser:frame', frame)
+  })
+  getRuntime().ports.browser.onCursorChanged((change) => {
+    sendToMainWindow('browser:cursor', change)
+  })
   getRuntime().ports.jobs.onUpdated((job) => {
     sendToMainWindow('jobs:updated', job)
   })
@@ -290,11 +235,32 @@ function registerIpcHandlers() {
   })
   ipcMain.handle('window:is-maximized', () => Boolean(mainWindow?.isMaximized()))
 
+  ipcMain.handle('browser:create-session', (_event, options) => getRuntime().ports.browser.createSession(options))
+  ipcMain.handle('browser:list-sessions', () => getRuntime().ports.browser.listSessions())
+  ipcMain.handle('browser:set-presentation', (event, guestId: unknown, viewport: unknown) => {
+    if (event.sender !== mainWindow?.webContents || typeof guestId !== 'number' || !Number.isInteger(guestId)) {
+      throw new Error('Invalid browser presentation sender')
+    }
+    applyBrowserPresentation(event.sender, webContents.fromId(guestId), viewport)
+  })
+  ipcMain.handle('browser:set-viewport', (_event, id: unknown, viewport: unknown) =>
+    getRuntime().ports.browser.setSessionViewport(assertString(id, 'session id'), assertViewport(viewport)))
+  ipcMain.handle('browser:input', (_event, id: unknown, input: unknown) =>
+    getRuntime().ports.browser.sendInput(assertString(id, 'session id'), assertBrowserInput(input)))
+  ipcMain.handle('browser:show-session', (_event, id: unknown) => getRuntime().ports.browser.showSession(assertString(id, 'session id')))
   ipcMain.handle('browser:popout', (_event, url: unknown, title: unknown) => {
     const safeUrl = assertAllowedWebviewNavigation(assertString(url, 'url'))
     const safeTitle = typeof title === 'string' && title.trim() ? title.trim().slice(0, 120) : undefined
     getRuntime().ports.browser.popout(safeUrl, safeTitle)
   })
+  ipcMain.handle('browser:popout-session', (_event, id: unknown) => getRuntime().ports.browser.popoutSession(assertString(id, 'session id')))
+  ipcMain.handle('browser:navigate', (_event, id: unknown, url: unknown) =>
+    getRuntime().ports.browser.navigate(assertString(id, 'session id'), assertString(url, 'url')))
+  ipcMain.handle('browser:reload', (_event, id: unknown) => getRuntime().ports.browser.reload(assertString(id, 'session id')))
+  ipcMain.handle('browser:go-back', (_event, id: unknown) => getRuntime().ports.browser.goBack(assertString(id, 'session id')))
+  ipcMain.handle('browser:go-forward', (_event, id: unknown) => getRuntime().ports.browser.goForward(assertString(id, 'session id')))
+  ipcMain.handle('browser:capture', (_event, id: unknown) => getRuntime().ports.browser.capture(assertString(id, 'session id')))
+  ipcMain.handle('browser:close-session', (_event, id: unknown) => getRuntime().ports.browser.closeSession(assertString(id, 'session id')))
   ipcMain.handle('content:parse-html', (_event, input: unknown) => getRuntime().ports.content.parseHtml(assertContentParseInput(input)))
   ipcMain.handle('network:request', async (_event, input: unknown) => {
     const request = assertNativeNetworkRequest(input)
@@ -302,7 +268,18 @@ function registerIpcHandlers() {
     const requestId = request.requestId
     if (requestId) activeNetworkRequests.set(requestId, controller)
     try {
-      const headers = await resolveSecretHeaders(request, false)
+      const secretValues: Record<string, string> = {}
+      for (const secretName of Object.values(request.secretRefs || {})) {
+        const value = await getRuntime().ports.secrets.get(secretName)
+        if (value) secretValues[secretName] = value
+      }
+      const headers = { ...(request.headers || {}) }
+      Object.entries(request.secretRefs || {}).forEach(([header, secretName]) => {
+        const value = secretValues[secretName]
+        if (!value) throw new Error(`SecretStore 中未找到请求头密钥：${secretName}`)
+        Object.keys(headers).filter((name) => name.toLowerCase() === header.toLowerCase()).forEach((name) => delete headers[name])
+        headers[header] = value
+      })
       return await getRuntime().ports.network.request({ ...request, headers, signal: controller.signal })
     } catch (error) {
       if (error instanceof Error && (error.name === 'AbortError' || /operation was aborted/i.test(error.message))) {
@@ -327,6 +304,12 @@ function registerIpcHandlers() {
   ipcMain.handle('system:set-storage-location', (_event, value: unknown) => getRuntime().ports.system.setStorageLocation(assertString(value, 'storage path')))
   ipcMain.handle('system:reset-storage-location', () => getRuntime().ports.system.resetStorageLocation())
   ipcMain.handle('system:restart', () => getRuntime().ports.system.restart())
+  ipcMain.handle('storage:read', (_event, key: unknown) => getRuntime().ports.storage.read(assertStorageKey(key)))
+  ipcMain.handle('storage:write', (_event, key: unknown, data: unknown) => {
+    if (!(data instanceof Uint8Array)) throw new Error('storage data is invalid')
+    return getRuntime().ports.storage.write(assertStorageKey(key), data)
+  })
+  ipcMain.handle('storage:remove', (_event, key: unknown) => getRuntime().ports.storage.remove(assertStorageKey(key)))
 
   ipcMain.handle('jobs:list', () => getRuntime().ports.jobs.list())
   ipcMain.handle('jobs:create', (_event, kind: unknown, checkpoint: unknown) =>
@@ -361,6 +344,81 @@ function assertString(value: unknown, field: string) {
   return value.trim()
 }
 
+function assertStorageKey(value: unknown) {
+  if (typeof value !== 'string' || value.length === 0) throw new Error('storage key is required')
+  return value
+}
+
+function assertAllowedWebviewNavigation(value: string) {
+  const parsed = new URL(value)
+  if (!ALLOWED_WEBVIEW_PROTOCOLS.has(parsed.protocol)) throw new Error(`Browser navigation protocol is not allowed: ${parsed.protocol}`)
+  return parsed.toString()
+}
+
+function assertBoolean(value: unknown, field: string) {
+  if (typeof value !== 'boolean') throw new Error(`${field} must be a boolean`)
+  return value
+}
+
+function assertFiniteNumber(value: unknown, field: string) {
+  if (typeof value !== 'number' || !Number.isFinite(value)) throw new Error(`${field} must be a finite number`)
+  return value
+}
+
+function assertViewport(value: unknown): BrowserViewportRequest {
+  if (!value || typeof value !== 'object') throw new Error('Browser viewport is required')
+  const viewport = value as Record<string, unknown>
+  return {
+    width: assertFiniteNumber(viewport.width, 'viewport width'),
+    height: assertFiniteNumber(viewport.height, 'viewport height'),
+    scale: assertFiniteNumber(viewport.scale ?? 1, 'viewport scale'),
+  }
+}
+
+const MOUSE_INPUT_TYPES = new Set(['mouseDown', 'mouseUp', 'mouseMove', 'mouseEnter', 'mouseLeave'])
+const KEY_INPUT_TYPES = new Set(['keyDown', 'keyUp', 'char'])
+
+function assertModifiers(value: unknown) {
+  if (value === undefined) return undefined
+  if (!Array.isArray(value) || value.some((item) => typeof item !== 'string')) throw new Error('Input modifiers are invalid')
+  return value as string[]
+}
+
+function assertBrowserInput(value: unknown): BrowserInputEvent {
+  if (!value || typeof value !== 'object') throw new Error('Browser input event is required')
+  const input = value as Record<string, unknown>
+  const type = input.type
+  if (typeof type !== 'string') throw new Error('Browser input type is required')
+  const modifiers = assertModifiers(input.modifiers)
+  if (MOUSE_INPUT_TYPES.has(type)) {
+    const button = input.button
+    if (button !== undefined && button !== 'left' && button !== 'middle' && button !== 'right') throw new Error('Input button is invalid')
+    return {
+      type: type as 'mouseDown',
+      x: assertFiniteNumber(input.x, 'input x'),
+      y: assertFiniteNumber(input.y, 'input y'),
+      button,
+      clickCount: input.clickCount === undefined ? undefined : assertFiniteNumber(input.clickCount, 'input clickCount'),
+      modifiers,
+    }
+  }
+  if (type === 'mouseWheel') {
+    return {
+      type,
+      x: assertFiniteNumber(input.x, 'input x'),
+      y: assertFiniteNumber(input.y, 'input y'),
+      deltaX: assertFiniteNumber(input.deltaX, 'input deltaX'),
+      deltaY: assertFiniteNumber(input.deltaY, 'input deltaY'),
+      modifiers,
+    }
+  }
+  if (KEY_INPUT_TYPES.has(type)) {
+    if (typeof input.keyCode !== 'string' || !input.keyCode) throw new Error('Input keyCode is required')
+    return { type: type as 'keyDown', keyCode: input.keyCode, modifiers }
+  }
+  throw new Error(`Unsupported browser input type: ${type}`)
+}
+
 function assertContentParseInput(value: unknown) {
   if (!value || typeof value !== 'object') throw new Error('Content parse input is required')
   const input = value as Record<string, unknown>
@@ -388,7 +446,32 @@ function assertNativeJobRequest(value: unknown): NativeJobRequest {
   if (request.method !== undefined && (typeof request.method !== 'string' || !/^[A-Za-z]+$/.test(request.method))) {
     throw new Error('Native network method is invalid')
   }
-  return { kind: 'native:network-request', input: normalizeNativeNetworkRequest(request, parsed, false) }
+  const headers = normalizeHeadersInput(request.headers)
+  const secretRefs = normalizeSecretRefs(request.secretRefs)
+  const secretRefHeaders = new Set(Object.keys(secretRefs).map((header) => header.toLowerCase()))
+  const sensitiveHeader = Object.keys(headers || {}).find((header) => /^(authorization|proxy-authorization|cookie|set-cookie|x-api-key|api-key)$/i.test(header) && !secretRefHeaders.has(header.toLowerCase()))
+  if (sensitiveHeader) throw new Error(`敏感请求头“${sensitiveHeader}”必须通过 SecretStore 引用。`)
+  if (request.body !== undefined && typeof request.body !== 'string' && !(request.body instanceof Uint8Array)) {
+    throw new Error('Native network body is invalid')
+  }
+  if (request.body !== undefined && (typeof request.body === 'string' ? Buffer.byteLength(request.body, 'utf8') : request.body.byteLength) > 256 * 1024 * 1024) {
+    throw new Error('Native network body 超过 256 MiB。')
+  }
+  if (request.timeoutMs !== undefined && (typeof request.timeoutMs !== 'number' || !Number.isFinite(request.timeoutMs))) {
+    throw new Error('Native network timeout is invalid')
+  }
+  return {
+    kind: 'native:network-request',
+    input: {
+      url: parsed.toString(),
+      requestId: typeof request.requestId === 'string' && request.requestId.trim() ? request.requestId.trim() : undefined,
+      method: typeof request.method === 'string' ? request.method.toUpperCase() : undefined,
+      headers,
+      secretRefs,
+      body: request.body as string | Uint8Array | undefined,
+      timeoutMs: typeof request.timeoutMs === 'number' ? Math.max(1_000, Math.min(300_000, request.timeoutMs)) : undefined,
+    },
+  }
 }
 
 function normalizeHeadersInput(value: unknown) {
@@ -397,7 +480,6 @@ function normalizeHeadersInput(value: unknown) {
   const result: Record<string, string> = {}
   Object.entries(value as Record<string, unknown>).forEach(([name, headerValue]) => {
     if (!name.trim() || typeof headerValue !== 'string') throw new Error('Native network headers are invalid')
-    Object.keys(result).filter((existing) => existing.toLowerCase() === name.toLowerCase()).forEach((existing) => delete result[existing])
     result[name] = headerValue
   })
   return result
@@ -435,66 +517,12 @@ function assertOpenFileRequest(value: unknown) {
   }
 }
 
-function normalizeNativeNetworkRequest(request: Record<string, unknown>, parsed: URL, allowInlineSensitiveHeaders: boolean): NativeNetworkJobRequest {
-  const headers = normalizeHeadersInput(request.headers)
-  const secretRefs = normalizeSecretRefs(request.secretRefs)
-  const secretRefHeaders = new Set(Object.keys(secretRefs).map((header) => header.toLowerCase()))
-  const sensitiveHeader = Object.keys(headers || {}).find((header) => /^(authorization|proxy-authorization|cookie|set-cookie|x-api-key|api-key)$/i.test(header) && !secretRefHeaders.has(header.toLowerCase()))
-  if (sensitiveHeader && !allowInlineSensitiveHeaders) throw new Error(`敏感请求头“${sensitiveHeader}”必须通过 SecretStore 引用。`)
-  if (request.body !== undefined && typeof request.body !== 'string' && !(request.body instanceof Uint8Array)) {
-    throw new Error('Native network body is invalid')
-  }
-  if (request.body !== undefined && (typeof request.body === 'string' ? Buffer.byteLength(request.body, 'utf8') : request.body.byteLength) > 256 * 1024 * 1024) {
-    throw new Error('Native network body 超过 256 MiB。')
-  }
-  if (request.timeoutMs !== undefined && (typeof request.timeoutMs !== 'number' || !Number.isFinite(request.timeoutMs))) {
-    throw new Error('Native network timeout is invalid')
-  }
-  const persistedHeaders = { ...(headers || {}) }
-  if (!allowInlineSensitiveHeaders) {
-    for (const header of Object.keys(persistedHeaders)) {
-      if (secretRefHeaders.has(header.toLowerCase())) delete persistedHeaders[header]
-    }
-  }
-  return {
-    url: parsed.toString(),
-    requestId: typeof request.requestId === 'string' && request.requestId.trim() ? request.requestId.trim() : undefined,
-    method: typeof request.method === 'string' ? request.method.toUpperCase() : undefined,
-    headers: persistedHeaders,
-    secretRefs,
-    body: request.body as string | Uint8Array | undefined,
-    timeoutMs: typeof request.timeoutMs === 'number' ? Math.max(1_000, Math.min(300_000, request.timeoutMs)) : undefined,
-  }
-}
-
-function normalizeSecretHeaderValue(header: string, value: string, secretName: string) {
-  if (header.toLowerCase() !== 'authorization' || !/^cnote:(?:ai|generation)(?::|-)/i.test(secretName)) return value
-  return /^[A-Za-z][A-Za-z0-9_-]*\s+/.test(value.trim()) ? value : `Bearer ${value}`
-}
-
-async function resolveSecretHeaders(request: NativeNetworkJobRequest, requireSecrets: boolean) {
-  const headers = { ...(request.headers || {}) }
-  const secrets = getRuntime().ports.secrets
-  for (const [header, secretName] of Object.entries(request.secretRefs || {})) {
-    const value = await secrets.get(secretName)
-    const existingHeader = Object.keys(headers).find((name) => name.toLowerCase() === header.toLowerCase() && Boolean(headers[name]?.trim()))
-    // Direct renderer requests may carry a freshly edited in-memory key. Keep
-    // it when the stored value is stale; Native Jobs never allow this path.
-    if (existingHeader && !requireSecrets) continue
-    if (!value) {
-      if (requireSecrets || !existingHeader) throw new Error(`SecretStore 中未找到请求头密钥：${secretName}`)
-      continue
-    }
-    Object.keys(headers).filter((name) => name.toLowerCase() === header.toLowerCase()).forEach((name) => delete headers[name])
-    headers[header] = normalizeSecretHeaderValue(header, value, secretName)
-  }
-  return headers
-}
-
 function assertSaveResourceRequest(value: unknown) {
   if (!value || typeof value !== 'object') throw new Error('资源请求无效。')
   const input = value as Record<string, unknown>
-  if (typeof input.resourceId !== 'string' || typeof input.fileName !== 'string' || !(input.data instanceof Uint8Array)) throw new Error('资源请求字段无效。')
+  if (typeof input.resourceId !== 'string' || typeof input.fileName !== 'string' || !(input.data instanceof Uint8Array)) {
+    throw new Error('资源请求字段无效。')
+  }
   return { resourceId: input.resourceId, fileName: input.fileName, data: input.data }
 }
 
@@ -569,15 +597,7 @@ async function loadRenderer(window: BrowserWindow) {
 }
 
 function assertNativeNetworkRequest(value: unknown): NativeNetworkJobRequest {
-  if (!value || typeof value !== 'object') throw new Error('Native network request is required')
-  const request = value as Record<string, unknown>
-  if (typeof request.url !== 'string' || !request.url.trim()) throw new Error('Native network URL is required')
-  const parsed = new URL(request.url)
-  if (!['http:', 'https:'].includes(parsed.protocol)) throw new Error('Native network only supports HTTP(S)')
-  if (request.method !== undefined && (typeof request.method !== 'string' || !/^[A-Za-z]+$/.test(request.method))) {
-    throw new Error('Native network method is invalid')
-  }
-  return normalizeNativeNetworkRequest(request, parsed, true)
+  return (assertNativeJobRequest({ kind: 'native:network-request', input: value }) as Extract<NativeJobRequest, { kind: 'native:network-request' }>).input
 }
 
 async function createMainWindow() {
@@ -592,32 +612,31 @@ async function createMainWindow() {
     autoHideMenuBar: true,
     webPreferences: {
       preload: path.join(currentDir, 'preload.js'),
+      webviewTag: true,
       nodeIntegration: false,
       contextIsolation: true,
       sandbox: true,
-      webviewTag: true,
       devTools: true,
     },
   })
   const window = mainWindow
   if (!window) return
-  getRuntime().attachHostWindow(window)
+  configureBrowserGuests(window.webContents)
   mainWindow.setMenuBarVisibility(false)
   mainWindow.on('maximize', sendWindowState)
   mainWindow.on('unmaximize', sendWindowState)
   mainWindow.on('restore', sendWindowState)
   mainWindow.webContents.on('did-finish-load', () => scheduleRendererHealthCheck(mainWindow!))
   mainWindow.webContents.on('did-fail-load', (_event, errorCode, errorDescription, _validatedURL, isMainFrame) => {
-    // Electron reports ERR_ABORTED (-3) for navigations that are superseded
-    // by a newer load. It is not a renderer failure and must not replace a
-    // working desktop page with the emergency renderer.
-    if (!isMainFrame || window.isDestroyed() || errorCode === -3) return
+    if (!isMainFrame || window.isDestroyed()) return
     void showEmergencyRenderer(window, `${errorDescription} (${errorCode})`)
   })
   mainWindow.webContents.on('render-process-gone', (_event, details) => {
     if (window.isDestroyed()) return
     void showEmergencyRenderer(window, `渲染进程已退出：${details.reason}`)
   })
+  getRuntime().attachHostWindow(mainWindow)
+
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     try {
       const parsed = new URL(url)
@@ -629,44 +648,45 @@ async function createMainWindow() {
     return { action: 'deny' }
   })
   await loadRenderer(mainWindow)
+  mainWindow.on('close', (event) => {
+    if (allowWindowClose) {
+      // Detach native browser views before Chromium destroys the host content
+      // view. Waiting for `closed` can make removeChildView/setVisible throw.
+      getRuntime().detachHostWindow()
+      return
+    }
+    event.preventDefault()
+    requestSessionFlushThenClose()
+  })
   mainWindow.on('closed', () => {
     clearRendererHealthTimer()
-    getRuntime().detachHostWindow()
     mainWindow = null
   })
 }
 
-if (hasSingleInstanceLock) {
-  app.on('second-instance', () => {
-    if (!mainWindow || mainWindow.isDestroyed()) return
-    if (mainWindow.isMinimized()) mainWindow.restore()
-    mainWindow.show()
-    mainWindow.focus()
+app.whenReady().then(async () => {
+  runtime = new DesktopRuntime()
+  registerIpcHandlers()
+  await getRuntime().ports.jobs.list()
+  await getRuntime().ports.nativeJobs.start()
+  await createMainWindow()
+
+  app.on('activate', () => {
+    if (BrowserWindow.getAllWindows().length === 0) void createMainWindow()
   })
-
-  app.whenReady().then(async () => {
-    configurePersistentBrowserPartition()
-    runtime = new DesktopRuntime()
-    registerIpcHandlers()
-    await getRuntime().ports.jobs.list()
-    await getRuntime().ports.nativeJobs.start()
-    await createMainWindow()
-
-    app.on('activate', () => {
-      if (BrowserWindow.getAllWindows().length === 0) void createMainWindow()
-    })
-  })
-} else {
-  app.quit()
-}
-
+})
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()
 })
 
-app.on('before-quit', () => {
-  runtime?.detachHostWindow()
-  mainWindow = null
+app.on('before-quit', (event) => {
+  if (allowWindowClose || !mainWindow || mainWindow.isDestroyed()) {
+    runtime?.detachHostWindow()
+    mainWindow = null
+    return
+  }
+  event.preventDefault()
+  requestSessionFlushThenClose()
 })
 
 process.on('uncaughtException', (error) => {

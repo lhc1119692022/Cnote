@@ -1,5 +1,6 @@
 import { Routes, Route, Navigate } from 'react-router-dom'
 import { lazy, Suspense, useEffect } from 'react'
+import { hydrateRuntimeStore, persistSessionForExit, startRuntimePersistence } from '@/storage'
 
 const Dashboard = lazy(() => import('@/pages/Dashboard').then((module) => ({ default: module.Dashboard })))
 const CanvasEditor = lazy(() => import('@/pages/CanvasEditorPage').then((module) => ({ default: module.CanvasEditorPage })))
@@ -7,11 +8,41 @@ const TemplatesManager = lazy(() => import('@/pages/TemplatesManager').then((mod
 const SourcesManager = lazy(() => import('@/pages/SourcesManager').then((module) => ({ default: module.SourcesManager })))
 const APIKeysManager = lazy(() => import('@/components/settings/APIKeysManager').then((module) => ({ default: module.APIKeysManager })))
 
+hydrateRuntimeStore()
+
 function App() {
   useEffect(() => {
     const theme = localStorage.getItem('cnote-theme') || 'light'
     document.documentElement.classList.add(theme)
     document.documentElement.style.colorScheme = theme
+  }, [])
+
+  useEffect(() => startRuntimePersistence(), [])
+
+  useEffect(() => {
+    const flush = () => {
+      void persistSessionForExit()
+    }
+    const onVisibility = () => {
+      if (document.visibilityState === 'hidden') flush()
+    }
+    window.addEventListener('pagehide', flush)
+    window.addEventListener('beforeunload', flush)
+    document.addEventListener('visibilitychange', onVisibility)
+    const desktop = typeof window !== 'undefined' ? window.cnoteDesktop : undefined
+    const stopFlushRequest = desktop?.session?.onFlushRequest(async () => {
+      try {
+        await persistSessionForExit()
+      } finally {
+        desktop?.session?.notifyFlushed()
+      }
+    })
+    return () => {
+      window.removeEventListener('pagehide', flush)
+      window.removeEventListener('beforeunload', flush)
+      document.removeEventListener('visibilitychange', onVisibility)
+      stopFlushRequest?.()
+    }
   }, [])
 
   return (

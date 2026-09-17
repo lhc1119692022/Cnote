@@ -14,7 +14,8 @@
 
 import { create } from 'zustand'
 import { nanoid } from 'nanoid'
-import type { EdgeSpec, FlowDocument, NodeSpec, Viewport } from '@/domain'
+import { assignNodesToOverlappingGroups, createGroupFromNodes, expandDragIds, membersOf, outlineGapOffset, syncGroupCounts, ungroupNode } from '@/canvas/grouping'
+import type { EdgeSpec, FlowDocument, NodeSpec, Point, Viewport } from '@/domain'
 
 const MAX_HISTORY = 50
 
@@ -39,7 +40,10 @@ export interface GraphStoreActions {
   closeDocument: () => void
   setViewport: (view: Viewport) => void
   addNode: (spec: Omit<NodeSpec, 'id'> & { id?: string }) => void
+  addConnectedNode: (sourceId: string, node: NodeSpec) => void
+  splitMediaNode: (id: string) => boolean
   updateNode: (id: string, patch: Partial<NodeSpec>) => void
+  finishNodeDrag: (ids: string[]) => void
   deleteNode: (id: string) => void
   duplicateNode: (id: string) => void
   addEdge: (
@@ -50,6 +54,12 @@ export interface GraphStoreActions {
   deleteEdge: (id: string) => void
   setSelection: (ids: string[]) => void
   toggleLock: () => void
+  groupSelected: () => void
+  ungroup: (groupId: string) => void
+  ungroupSelected: () => void
+  deleteSelected: () => void
+  duplicateSelected: (options?: { offset?: Point; deferHistory?: boolean }) => string[]
+  pasteNodes: (nodes: NodeSpec[], offset: Point, edges?: EdgeSpec[]) => void
   undo: () => void
   redo: () => void
   canUndo: () => boolean
@@ -112,6 +122,57 @@ export const useGraphStore = create<GraphStore>((set, get) => ({
         nodes: [...doc.nodes, node],
         updatedAt: Date.now(),
       },
+      selection: [node.id],
+    })
+    get().commitHistory()
+  },
+
+  splitMediaNode: (id) => {
+    const { currentDocument: doc, isLocked } = get()
+    if (!doc || isLocked) return false
+    const node = doc.nodes.find((candidate) => candidate.id === id)
+    if (!node || node.kind !== 'content') return false
+    const payload = node.payload
+    if (!payload || (payload.kind !== 'image' && payload.kind !== 'video')) return false
+    const items = payload.resources
+    if (!items || items.length < 2) return false
+    const copies = items.slice(1).map((item, index): NodeSpec => ({
+      ...structuredClone(node),
+      id: nanoid(),
+      label: item.label || `${node.label} ${index + 2}`,
+      position: { x: node.position.x + node.size.width + 40, y: node.position.y + index * (node.size.height + 24) },
+      payload: { ...structuredClone(payload), resources: [structuredClone(item)], activeResourceIndex: 0 },
+      parentGroupId: undefined,
+      sourceId: undefined,
+      favorite: false,
+    }))
+    set({
+      currentDocument: {
+        ...doc,
+        nodes: [...doc.nodes.map((candidate) => candidate.id === id
+          ? { ...node, payload: { ...payload, resources: [items[0]], activeResourceIndex: 0 } }
+          : candidate), ...copies],
+        updatedAt: Date.now(),
+      },
+      selection: [copies[copies.length - 1].id],
+    })
+    get().commitHistory()
+    return true
+  },
+
+  addConnectedNode: (sourceId, node) => {
+    const { currentDocument: doc, isLocked } = get()
+    if (!doc || isLocked || node.disabled || doc.nodes.some((candidate) => candidate.id === node.id)) return
+    const source = doc.nodes.find((candidate) => candidate.id === sourceId)
+    if (!source || source.disabled) return
+    set({
+      currentDocument: {
+        ...doc,
+        nodes: [...doc.nodes, node],
+        edges: [...doc.edges, { id: nanoid(), source: sourceId, target: node.id }],
+        updatedAt: Date.now(),
+      },
+      selection: [node.id],
     })
     get().commitHistory()
   },
@@ -138,16 +199,29 @@ export const useGraphStore = create<GraphStore>((set, get) => ({
     })
   },
 
+  finishNodeDrag: (ids) => {
+    const { currentDocument, isLocked } = get()
+    if (!currentDocument || isLocked || ids.length === 0) return
+    set({ currentDocument: { ...currentDocument, nodes: assignNodesToOverlappingGroups(currentDocument.nodes, ids), updatedAt: Date.now() } })
+    get().commitHistory()
+  },
+
   deleteNode: (id) => {
     const doc = get().currentDocument
-    if (!doc || !doc.nodes.some((node) => node.id === id)) return
+    if (!doc || get().isLocked || !doc.nodes.some((node) => node.id === id)) return
+    const target = doc.nodes.find((node) => node.id === id)
+    if (target?.kind === 'group') {
+      get().ungroup(id)
+      return
+    }
     set((state) => {
       const current = state.currentDocument
       if (!current) return state
+      const nodes = syncGroupCounts(current.nodes.filter((node) => node.id !== id))
       return {
         currentDocument: {
           ...current,
-          nodes: current.nodes.filter((node) => node.id !== id),
+          nodes,
           edges: current.edges.filter((edge) => edge.source !== id && edge.target !== id),
           updatedAt: Date.now(),
         },
@@ -159,15 +233,16 @@ export const useGraphStore = create<GraphStore>((set, get) => ({
 
   duplicateNode: (id) => {
     const doc = get().currentDocument
-    if (!doc) return
+    if (!doc || get().isLocked) return
     const node = doc.nodes.find((candidate) => candidate.id === id)
     if (!node) return
     const cloned = structuredClone(node)
     const newId = nanoid()
+    const offset = outlineGapOffset([node])
     const duplicate: NodeSpec = {
       ...cloned,
       id: newId,
-      position: { x: node.position.x + 40, y: node.position.y + 40 },
+      position: { x: node.position.x + offset.x, y: node.position.y + offset.y },
       label: copyLabel(node.label),
     }
     set({
@@ -183,7 +258,17 @@ export const useGraphStore = create<GraphStore>((set, get) => ({
 
   addEdge: (source, target, opts) => {
     const doc = get().currentDocument
-    if (!doc) return
+    if (!doc || get().isLocked || source === target) return
+    const sourceNode = doc.nodes.find((node) => node.id === source)
+    const targetNode = doc.nodes.find((node) => node.id === target)
+    if (!sourceNode || !targetNode || sourceNode.disabled || targetNode.disabled) return
+    const duplicate = doc.edges.some((edge) => (
+      edge.source === source
+      && edge.target === target
+      && edge.sourceHandle === opts?.sourceHandle
+      && edge.targetHandle === opts?.targetHandle
+    ))
+    if (duplicate) return
     const edge: EdgeSpec = {
       id: nanoid(),
       source,
@@ -203,7 +288,7 @@ export const useGraphStore = create<GraphStore>((set, get) => ({
 
   deleteEdge: (id) => {
     const doc = get().currentDocument
-    if (!doc || !doc.edges.some((edge) => edge.id === id)) return
+    if (!doc || get().isLocked || !doc.edges.some((edge) => edge.id === id)) return
     set({
       currentDocument: {
         ...doc,
@@ -222,6 +307,154 @@ export const useGraphStore = create<GraphStore>((set, get) => ({
     set((state) => ({ isLocked: !state.isLocked }))
   },
 
+  groupSelected: () => {
+    const { currentDocument, selection } = get()
+    if (!currentDocument || get().isLocked) return
+    const grouped = createGroupFromNodes(currentDocument.nodes, selection)
+    if (!grouped) return
+    set({
+      currentDocument: {
+        ...currentDocument,
+        nodes: grouped.nodes,
+        updatedAt: Date.now(),
+      },
+      selection: [grouped.groupId],
+    })
+    get().commitHistory()
+  },
+
+  ungroup: (groupId) => {
+    const doc = get().currentDocument
+    if (!doc || get().isLocked || !doc.nodes.some((node) => node.id === groupId && node.kind === 'group')) return
+    const memberIds = membersOf(doc.nodes, groupId).map((node) => node.id)
+    set({
+      currentDocument: {
+        ...doc,
+        nodes: ungroupNode(doc.nodes, groupId),
+        updatedAt: Date.now(),
+      },
+      selection: memberIds,
+    })
+    get().commitHistory()
+  },
+
+  ungroupSelected: () => {
+    const { currentDocument, selection } = get()
+    if (!currentDocument || get().isLocked) return
+    const groupIds = currentDocument.nodes
+      .filter((node) => node.kind === 'group' && selection.includes(node.id))
+      .map((node) => node.id)
+    if (groupIds.length === 0) return
+    let nodes = currentDocument.nodes
+    let nextSelection: string[] = []
+    for (const groupId of groupIds) {
+      nextSelection = [...nextSelection, ...membersOf(nodes, groupId).map((node) => node.id)]
+      nodes = ungroupNode(nodes, groupId)
+    }
+    set({
+      currentDocument: {
+        ...currentDocument,
+        nodes,
+        updatedAt: Date.now(),
+      },
+      selection: nextSelection,
+    })
+    get().commitHistory()
+  },
+
+  deleteSelected: () => {
+    const { currentDocument, selection } = get()
+    if (!currentDocument || get().isLocked || selection.length === 0) return
+    const selected = new Set(selection)
+    const groupIds = currentDocument.nodes
+      .filter((node) => node.kind === 'group' && selected.has(node.id))
+      .map((node) => node.id)
+    let nodes = currentDocument.nodes
+    for (const groupId of groupIds) nodes = ungroupNode(nodes, groupId)
+    const remainingSelected = new Set(selection.filter((id) => !groupIds.includes(id)))
+    const removed = new Set(nodes.filter((node) => remainingSelected.has(node.id)).map((node) => node.id))
+    nodes = syncGroupCounts(nodes.filter((node) => !removed.has(node.id)))
+    set({
+      currentDocument: {
+        ...currentDocument,
+        nodes,
+        edges: currentDocument.edges.filter((edge) => !removed.has(edge.source) && !removed.has(edge.target)),
+        updatedAt: Date.now(),
+      },
+      selection: [],
+    })
+    get().commitHistory()
+  },
+
+  duplicateSelected: (options) => {
+    const doc = get().currentDocument
+    if (!doc || get().isLocked || get().selection.length === 0) return []
+    const idsToCopy = new Set(expandDragIds(doc.nodes, get().selection))
+    const idMap = new Map<string, string>()
+    idsToCopy.forEach((id) => idMap.set(id, nanoid()))
+    const sourceNodes = doc.nodes.filter((node) => idsToCopy.has(node.id))
+    const offset = options?.offset ?? outlineGapOffset(sourceNodes)
+    const copies = sourceNodes.map((node) => {
+      const copy = structuredClone(node)
+      copy.id = idMap.get(node.id) as string
+      copy.position = { x: node.position.x + offset.x, y: node.position.y + offset.y }
+      copy.label = copyLabel(node.label)
+      if (copy.parentGroupId) copy.parentGroupId = idMap.get(copy.parentGroupId)
+      return copy
+    })
+    const copiedEdges = doc.edges
+      .filter((edge) => idsToCopy.has(edge.source) && idsToCopy.has(edge.target))
+      .map((edge) => ({
+        ...structuredClone(edge),
+        id: nanoid(),
+        source: idMap.get(edge.source) as string,
+        target: idMap.get(edge.target) as string,
+      }))
+    set({
+      currentDocument: {
+        ...doc,
+        nodes: [...doc.nodes, ...copies],
+        edges: [...doc.edges, ...copiedEdges],
+        updatedAt: Date.now(),
+      },
+      selection: copies.map((node) => node.id),
+    })
+    if (!options?.deferHistory) get().commitHistory()
+    return copies.map((node) => node.id)
+  },
+
+  pasteNodes: (nodes, offset, edges = []) => {
+    const doc = get().currentDocument
+    if (!doc || get().isLocked || nodes.length === 0) return
+    const idMap = new Map<string, string>()
+    nodes.forEach((node) => idMap.set(node.id, nanoid()))
+    const copies = nodes.map((node) => {
+      const copy = structuredClone(node)
+      copy.id = idMap.get(node.id) as string
+      copy.position = { x: node.position.x + offset.x, y: node.position.y + offset.y }
+      if (copy.parentGroupId) copy.parentGroupId = idMap.get(copy.parentGroupId)
+      return copy
+    })
+    const copiedEdges = edges
+      .filter((edge) => idMap.has(edge.source) && idMap.has(edge.target))
+      .map((edge) => ({
+        ...structuredClone(edge),
+        id: nanoid(),
+        source: idMap.get(edge.source) as string,
+        target: idMap.get(edge.target) as string,
+      }))
+    set({
+      currentDocument: {
+        ...doc,
+        nodes: [...doc.nodes, ...copies],
+        edges: [...doc.edges, ...copiedEdges],
+        updatedAt: Date.now(),
+      },
+      selection: copies.map((node) => node.id),
+    })
+    get().commitHistory()
+  },
+
   undo: () => {
     const { history, historyIndex } = get()
     if (historyIndex <= 0) return
@@ -233,7 +466,6 @@ export const useGraphStore = create<GraphStore>((set, get) => ({
     set((state) => ({
       currentDocument: doc,
       currentDocumentId: doc.id,
-      view: doc.viewport,
       historyIndex: nextIndex,
       selection: restoreSelection(state.selection, doc),
     }))
@@ -249,7 +481,6 @@ export const useGraphStore = create<GraphStore>((set, get) => ({
     set((state) => ({
       currentDocument: doc,
       currentDocumentId: doc.id,
-      view: doc.viewport,
       historyIndex: nextIndex,
       selection: restoreSelection(state.selection, doc),
     }))
