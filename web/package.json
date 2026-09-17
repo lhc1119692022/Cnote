@@ -7,6 +7,9 @@
   "license": "MIT",
   "repository": "https://github.com/lhc1119692022/Cnote",
   "scripts": {
+    "test:resource-library": "node scripts/verify-resource-library.mjs",
+    "test:generation-batch": "node scripts/verify-generation-batch.mjs",
+    "test:ai-streaming": "node scripts/verify-ai-streaming.mjs",
     "test:ai-upstream": "node scripts/verify-ai-upstream-transport.mjs",
     "test:generation-inputs": "node scripts/verify-generation-inputs.mjs",
     "test:schema": "node scripts/verify-schema.mjs",

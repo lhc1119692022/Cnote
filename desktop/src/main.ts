@@ -1,10 +1,21 @@
-import { app, BrowserWindow, dialog, ipcMain, shell, webContents } from 'electron'
+import { youtubeEmbedHeaders } from './runtime/youtube-embed'
+import { NetworkStreamRegistry } from './runtime/network-stream-registry'
+import { app, BrowserWindow, dialog, ipcMain, shell, webContents, session } from 'electron'
 import { applyBrowserPresentation } from './runtime/browser-presentation'
 import { configureBrowserGuests } from './runtime/browser-guest'
 import path from 'node:path'
-import { existsSync } from 'node:fs'
+import { existsSync, promises as fileSystem } from 'node:fs'
 import { DesktopRuntime } from './runtime/desktop-runtime'
 import type { BrowserInputEvent, BrowserViewportRequest, NativeJobRequest, NativeNetworkJobRequest, RuntimeInfo } from './runtime/types'
+
+import { configureStorageLocation, needsStorageSetup, setStorageLocation } from './runtime/storage-location'
+import { directoryUsage } from './runtime/data-directory'
+
+if (!app.requestSingleInstanceLock()) app.exit(0)
+try { configureStorageLocation() } catch (error) {
+  dialog.showErrorBox('Cnote 数据目录不可用', String(error) + '\n请恢复数据磁盘或检查存储配置；未回退到其他目录。')
+  app.exit(1)
+}
 
 const currentDir = __dirname
 const devToolsPort = Number(process.env.CNOTE_DEVTOOLS_PORT || 9222)
@@ -15,6 +26,18 @@ let emergencyRendererShown = false
 let allowWindowClose = false
 let sessionFlushInFlight = false
 const activeNetworkRequests = new Map<string, AbortController>()
+const networkStreams = new NetworkStreamRegistry(input => getRuntime().ports.network.openStream(input))
+
+async function resolveNetworkHeaders(request: NativeNetworkJobRequest) {
+  const headers = { ...(request.headers || {}) }
+  for (const [header, secretName] of Object.entries(request.secretRefs || {})) {
+    const value = await getRuntime().ports.secrets.get(secretName)
+    if (!value) throw new Error('SecretStore 中未找到请求头密钥：' + secretName)
+    Object.keys(headers).filter(name => name.toLowerCase() === header.toLowerCase()).forEach(name => delete headers[name])
+    headers[header] = value
+  }
+  return headers
+}
 const ALLOWED_WEBVIEW_PROTOCOLS = new Set(['http:', 'https:', 'about:'])
 const SESSION_FLUSH_TIMEOUT_MS = 2_000
 
@@ -201,6 +224,10 @@ function scheduleRendererHealthCheck(window: BrowserWindow) {
 }
 
 function registerIpcHandlers() {
+  ipcMain.handle('window:focus', event => {
+    if (!mainWindow || mainWindow.isDestroyed() || event.sender.id !== mainWindow.webContents.id) return
+    event.sender.focus()
+  })
   getRuntime().ports.browser.onSessionUpdated((session) => {
     sendToMainWindow('browser:session-updated', session)
   })
@@ -262,24 +289,13 @@ function registerIpcHandlers() {
   ipcMain.handle('browser:capture', (_event, id: unknown) => getRuntime().ports.browser.capture(assertString(id, 'session id')))
   ipcMain.handle('browser:close-session', (_event, id: unknown) => getRuntime().ports.browser.closeSession(assertString(id, 'session id')))
   ipcMain.handle('content:parse-html', (_event, input: unknown) => getRuntime().ports.content.parseHtml(assertContentParseInput(input)))
-  ipcMain.handle('network:request', async (_event, input: unknown) => {
+  ipcMain.handle('network:request', async (event, input: unknown) => {
     const request = assertNativeNetworkRequest(input)
     const controller = new AbortController()
-    const requestId = request.requestId
+    const requestId = request.requestId ? event.sender.id + ':' + request.requestId : undefined
     if (requestId) activeNetworkRequests.set(requestId, controller)
     try {
-      const secretValues: Record<string, string> = {}
-      for (const secretName of Object.values(request.secretRefs || {})) {
-        const value = await getRuntime().ports.secrets.get(secretName)
-        if (value) secretValues[secretName] = value
-      }
-      const headers = { ...(request.headers || {}) }
-      Object.entries(request.secretRefs || {}).forEach(([header, secretName]) => {
-        const value = secretValues[secretName]
-        if (!value) throw new Error(`SecretStore 中未找到请求头密钥：${secretName}`)
-        Object.keys(headers).filter((name) => name.toLowerCase() === header.toLowerCase()).forEach((name) => delete headers[name])
-        headers[header] = value
-      })
+      const headers = await resolveNetworkHeaders(request)
       return await getRuntime().ports.network.request({ ...request, headers, signal: controller.signal })
     } catch (error) {
       if (error instanceof Error && (error.name === 'AbortError' || /operation was aborted/i.test(error.message))) {
@@ -290,8 +306,15 @@ function registerIpcHandlers() {
       if (requestId && activeNetworkRequests.get(requestId) === controller) activeNetworkRequests.delete(requestId)
     }
   })
-  ipcMain.handle('network:abort', (_event, requestId: unknown) => {
-    const controller = activeNetworkRequests.get(assertString(requestId, 'network request id'))
+  ipcMain.handle('network:stream-open', (event, input: unknown) => {
+    const request = assertNativeNetworkRequest(input)
+    return networkStreams.open(event.sender.id, request, () => resolveNetworkHeaders(request))
+  })
+  ipcMain.handle('network:stream-read', (event, requestId: unknown) => networkStreams.read(event.sender.id, assertString(requestId, 'network request id')))
+  ipcMain.handle('network:abort', async (event, requestId: unknown) => {
+    const id = assertString(requestId, 'network request id')
+    if (await networkStreams.abort(event.sender.id, id)) return true
+    const controller = activeNetworkRequests.get(event.sender.id + ':' + id)
     if (!controller) return false
     controller.abort()
     return true
@@ -303,7 +326,35 @@ function registerIpcHandlers() {
   ipcMain.handle('system:get-storage-location', () => getRuntime().ports.system.getStorageLocation())
   ipcMain.handle('system:set-storage-location', (_event, value: unknown) => getRuntime().ports.system.setStorageLocation(assertString(value, 'storage path')))
   ipcMain.handle('system:reset-storage-location', () => getRuntime().ports.system.resetStorageLocation())
-  ipcMain.handle('system:restart', () => getRuntime().ports.system.restart())
+  ipcMain.handle('system:restart', (event) => {
+    if (event.sender !== mainWindow?.webContents) throw new Error('Invalid sender')
+    app.relaunch()
+    requestSessionFlushThenClose()
+  })
+  ipcMain.handle('storage:keys', () => getRuntime().ports.storage.keys())
+  ipcMain.handle('system:remove-managed-resource', async (event, identity: unknown) => {
+    if (event.sender !== mainWindow?.webContents) throw new Error('Invalid sender')
+    if (typeof identity !== 'string' || !/^sha256-[a-f0-9]{64}$/.test(identity)) throw new Error('资源 ID 无效')
+    const directory = path.join(app.getPath('userData'), 'resources')
+    if ((await fileSystem.lstat(directory).catch(() => null))?.isSymbolicLink()) throw new Error('资源目录不能是链接')
+    for (const entry of await fileSystem.readdir(directory, { withFileTypes: true }).catch(() => [])) {
+      if (entry.isFile() && entry.name.startsWith(identity + '.')) await fileSystem.unlink(path.join(directory, entry.name))
+    }
+  })
+  ipcMain.handle('system:storage-usage', () => directoryUsage(app.getPath('userData')))
+  ipcMain.handle('system:clear-cache', async () => {
+    const sessions = new Set(webContents.getAllWebContents().map(contents => contents.session))
+    const partitions = path.join(app.getPath('sessionData'), 'Partitions')
+    for (const entry of await fileSystem.readdir(partitions, { withFileTypes: true }).catch(() => [])) {
+      if (entry.isDirectory() && !entry.isSymbolicLink()) sessions.add(session.fromPath(path.join(partitions, entry.name)))
+    }
+    for (const current of sessions) {
+      await current.clearCache()
+      await current.clearCodeCaches({})
+      await current.clearStorageData({ storages: ['shadercache', 'cachestorage'] })
+    }
+    return directoryUsage(app.getPath('userData'))
+  })
   ipcMain.handle('storage:read', (_event, key: unknown) => getRuntime().ports.storage.read(assertStorageKey(key)))
   ipcMain.handle('storage:write', (_event, key: unknown, data: unknown) => {
     if (!(data instanceof Uint8Array)) throw new Error('storage data is invalid')
@@ -621,7 +672,22 @@ async function createMainWindow() {
   })
   const window = mainWindow
   if (!window) return
+  window.webContents.session.webRequest.onBeforeSendHeaders({ urls: ['https://www.youtube.com/embed/*', 'https://www.youtube-nocookie.com/embed/*'] }, (details, callback) => {
+    callback({ requestHeaders: youtubeEmbedHeaders(window.webContents.id, details) })
+  })
   configureBrowserGuests(window.webContents)
+  const ownerId = window.webContents.id
+  const closeNetworkRequests = () => {
+    void networkStreams.closeOwner(ownerId).catch(() => undefined)
+    for (const [key, controller] of activeNetworkRequests) {
+      if (key.startsWith(ownerId + ':')) { controller.abort(); activeNetworkRequests.delete(key) }
+    }
+  }
+  window.webContents.on('destroyed', closeNetworkRequests)
+  window.webContents.on('render-process-gone', closeNetworkRequests)
+  window.webContents.on('did-start-navigation', (_event, _url, inPlace, mainFrame) => {
+    if (mainFrame && !inPlace) closeNetworkRequests()
+  })
   mainWindow.setMenuBarVisibility(false)
   mainWindow.on('maximize', sendWindowState)
   mainWindow.on('unmaximize', sendWindowState)
@@ -665,6 +731,16 @@ async function createMainWindow() {
 }
 
 app.whenReady().then(async () => {
+  if (needsStorageSetup()) {
+    const choice = await dialog.showMessageBox({ type: 'question', title: 'Cnote 数据位置', message: '选择用于保存画布、生成结果和缓存的数据目录', detail: '建议选择空间充足的磁盘。当前位置：' + app.getPath('userData'), buttons: ['选择数据目录', '使用当前位置'], defaultId: 0, cancelId: 1 })
+    if (choice.response === 0) {
+      const selected = await dialog.showOpenDialog({ title: '选择空的数据文件夹', properties: ['openDirectory', 'createDirectory'] })
+      if (selected.canceled || !selected.filePaths[0]) { app.quit(); return }
+      try { setStorageLocation(selected.filePaths[0]) } catch (error) { dialog.showErrorBox('无法设置数据位置', String(error)); app.quit(); return }
+      app.relaunch(); app.exit(0); return
+    }
+    setStorageLocation(app.getPath('userData'))
+  }
   runtime = new DesktopRuntime()
   registerIpcHandlers()
   await getRuntime().ports.jobs.list()

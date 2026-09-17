@@ -1,4 +1,5 @@
 import { askConfirmation, showMessage } from '@/lib/app-dialog'
+import { deleteFlowWithResources } from '@/storage/resource-library'
 import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { ChevronRight, Download, FileText, Folder, FolderOpen, MoreVertical, Plus, Search, Trash2, Upload } from 'lucide-react'
@@ -10,7 +11,7 @@ import { Button } from '@/components/ui/button'
 import { FlowBackupError, restoreFlowBackup } from '@/lib/flow-backup'
 import { openBlobFromFile } from '@/lib/file-save'
 import { legacyFlowToDocument } from '@/runtime/legacy-loader'
-import { createDocument, deleteDocument, listDocuments, removeDocumentIndex } from '@/storage'
+import { createDocument, listDocuments } from '@/storage'
 import { useTemplateStore } from '@/stores/use-template-store'
 
 /** 用旧模板节点构造临时 Flow，复用 legacyFlowToDocument。 */
@@ -171,11 +172,10 @@ export function Dashboard() {
     e.stopPropagation()
     if (await askConfirmation('确定要删除这个 Flow 吗？')) {
       try {
-        await deleteDocument(id)
-        await removeDocumentIndex(id)
+        await deleteFlowWithResources(id)
         setDocuments(await listDocuments())
-      } catch {
-        showMessage('删除 Flow 失败，请稍后重试。')
+      } catch (error) {
+        showMessage(error instanceof Error ? error.message : '删除 Flow 失败，请稍后重试。')
       }
     }
   }

@@ -22,6 +22,7 @@ import {
   Search,
   Settings2,
   SquarePen,
+  Square,
 } from 'lucide-react'
 import { createPortal } from 'react-dom'
 import { nanoid } from 'nanoid'
@@ -80,6 +81,7 @@ const VARIABLE_MIME = 'application/x-cnote-ai-variable'
 const DOWNSTREAM_OFFSET_X = 88
 const EMPTY_MESSAGES: AIMessage[] = []
 const sendingAINodeIds = new Set<string>()
+const activeAIControllers = new Map<string, AbortController>()
 const sendingListeners = new Set<() => void>()
 function subscribeSending(listener: () => void) {
   sendingListeners.add(listener)
@@ -361,10 +363,10 @@ export const AIContent = memo(function AIContent({ node, presentation = 'node' }
   const [copiedMessageKey, setCopiedMessageKey] = useState<string | null>(null)
 
   const sendingRef = useRef(false)
-  const requestControllerRef = useRef<AbortController | null>(null)
   const messagesEndRef = useRef<HTMLDivElement | null>(null)
   const rootRef = useRef<HTMLDivElement | null>(null)
   const historyRef = useRef<HTMLDivElement | null>(null)
+  const followResponseRef = useRef(true)
   const composerAreaRef = useRef<HTMLDivElement | null>(null)
   const composerRef = useRef<HTMLDivElement | null>(null)
   const messageElementRefs = useRef(new Map<number, HTMLDivElement>())
@@ -465,8 +467,9 @@ export const AIContent = memo(function AIContent({ node, presentation = 'node' }
   }, [node.systemPrompt])
 
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ block: 'end' })
-  }, [messages.length, isSending])
+    const history = historyRef.current
+    if (history && followResponseRef.current) history.scrollTop = history.scrollHeight
+  }, [messages, isSending])
 
   useLayoutEffect(() => {
     const composer = composerRef.current
@@ -732,11 +735,16 @@ export const AIContent = memo(function AIContent({ node, presentation = 'node' }
     setRequestError(null)
     setHoveredMessage(null)
     setMessageActionsPosition(null)
+    followResponseRef.current = true
     setNodeSending(node.id, true)
     sendingRef.current = true
 
     const controller = new AbortController()
-    requestControllerRef.current = controller
+    activeAIControllers.set(node.id, controller)
+    const documentId = useGraphStore.getState().currentDocumentId
+    const unsubscribe = useGraphStore.subscribe(state => {
+      if (state.currentDocumentId !== documentId || !state.currentDocument?.nodes.some(candidate => candidate.id === node.id)) controller.abort()
+    })
 
     try {
       const entries = collectUpstreamEntries(
@@ -764,15 +772,18 @@ export const AIContent = memo(function AIContent({ node, presentation = 'node' }
         web_search: modelCapabilities.webSearch === 'unsupported' ? 'off' : webSearch,
         reasoning_effort: effectiveReasoningLevel,
       }
-      const response = (await client.complete(request, controller.signal)).trim()
-      if (!response) throw new Error('模型返回了空响应')
-      useRuntimeStore.getState().appendMessage(sessionId, {
-        role: 'assistant',
-        content: response,
-        channelId: requestOption.channelId,
-        model: requestOption.model,
-        createdAt: Date.now(),
-      })
+      let response = ''
+      const replyIndex = history.length
+      const createdAt = Date.now()
+      for await (const delta of client.completeStream(request, controller.signal)) {
+        if (controller.signal.aborted) break
+        response += delta
+        const session = useRuntimeStore.getState().aiSessions[sessionId]
+        if (!session) { controller.abort(); break }
+        const reply: AIMessage = { role: 'assistant', content: response, channelId: requestOption.channelId, model: requestOption.model, createdAt }
+        useRuntimeStore.getState().putAISession({ ...session, messages: [...session.messages.slice(0, replyIndex), reply], updatedAt: Date.now() })
+      }
+      if (!response.trim() && !controller.signal.aborted) throw new Error('模型返回了空响应')
       const currentSession = useRuntimeStore.getState().aiSessions[sessionId]
       if (currentSession && currentSession.messages.length <= 2) {
         useRuntimeStore.getState().putAISession({
@@ -788,7 +799,8 @@ export const AIContent = memo(function AIContent({ node, presentation = 'node' }
         setRequestError(errorText(error, 'AI 请求失败，请稍后重试'))
       }
     } finally {
-      if (requestControllerRef.current === controller) requestControllerRef.current = null
+      unsubscribe()
+      if (activeAIControllers.get(node.id) === controller) activeAIControllers.delete(node.id)
       sendingRef.current = false
       setNodeSending(node.id, false)
     }
@@ -958,7 +970,9 @@ export const AIContent = memo(function AIContent({ node, presentation = 'node' }
         className="min-h-0 flex-1 overflow-auto px-3 py-2"
         onPointerDown={stopNodeGesture}
         onWheel={stopNodeGesture}
-        onScroll={() => {
+        onScroll={(event) => {
+          const history = event.currentTarget
+          followResponseRef.current = history.scrollHeight - history.scrollTop - history.clientHeight <= 40
           if (hoveredMessage) updateMessageActionsPosition(hoveredMessage.role, hoveredMessage.index)
         }}
       >
@@ -1043,15 +1057,16 @@ export const AIContent = memo(function AIContent({ node, presentation = 'node' }
           <button
             type="button"
             className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-foreground text-background transition-colors hover:opacity-90 disabled:bg-muted disabled:text-muted-foreground"
-            disabled={!canSend}
-            aria-label="发送消息"
-            title="发送消息"
+            disabled={!isSending && !canSend}
+            aria-label={isSending ? '停止生成' : '发送消息'}
+            title={isSending ? '停止生成' : '发送消息'}
             onPointerDown={stopNodeGesture}
             onClick={() => {
-              void sendMessage()
+              if (isSending) activeAIControllers.get(node.id)?.abort()
+              else void sendMessage()
             }}
           >
-            {isSending ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <ArrowUp className="h-4 w-4" />}
+            {isSending ? <Square className="h-4 w-4" /> : <ArrowUp className="h-4 w-4" />}
           </button>
         </div>
       </div>

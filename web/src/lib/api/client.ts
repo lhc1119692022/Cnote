@@ -76,7 +76,7 @@ export class AIClient {
     return { [header]: this.secretName }
   }
 
-  private async request(input: RequestInfo | URL, init: RequestInit = {}) {
+  private async request(input: RequestInfo | URL, init: RequestInit = {}, stream = false) {
     const desktop = typeof window !== 'undefined' ? window.cnoteDesktop : undefined
     if (desktop?.secrets && this.secretName && this.apiKey) {
       const header = this.provider.protocol === 'gemini'
@@ -91,7 +91,7 @@ export class AIClient {
     // values and some providers reject as an invalid credential.
     const mergedHeaders = new Headers(this.getHeaders())
     new Headers(init.headers).forEach((value, key) => mergedHeaders.set(key, value))
-    return desktopFetch(input, { ...init, headers: mergedHeaders }, { secretRefs: this.getSecretRefs() })
+    return desktopFetch(input, { ...init, headers: mergedHeaders }, { secretRefs: this.getSecretRefs(), stream })
   }
 
   private messageText(content: ChatMessage['content']) {
@@ -364,7 +364,7 @@ export class AIClient {
       headers: this.getHeaders(),
       body: JSON.stringify(body),
       signal,
-    })
+    }, true)
     if (!response.ok) {
       let message = `HTTP ${response.status}`
       try {
@@ -392,6 +392,10 @@ export class AIClient {
 
     const citations = new Map<string, { url: string; title?: string }>()
     for await (const payload of this.handleEventStream(response)) {
+      if (signal?.aborted) throw new DOMException('执行已停止', 'AbortError')
+      if (payload.error || payload.type === 'error' || payload.type === 'response.failed') {
+        throw new Error(payload.error?.message || payload.response?.error?.message || payload.message || '模型流式请求失败')
+      }
       const choiceText = payload.choices?.map((choice: { delta?: { content?: string } }) => choice.delta?.content || '').join('') || ''
       const responseText = payload.type === 'response.output_text.delta' && typeof payload.delta === 'string'
         ? payload.delta
@@ -530,22 +534,28 @@ export class AIClient {
       try { return JSON.parse(data) } catch { return undefined }
     }
 
-    while (true) {
-      const { done, value } = await reader.read()
-      if (done) break
-      buffer += decoder.decode(value, { stream: true })
-      const blocks = buffer.split(/\r?\n\r?\n/)
-      buffer = blocks.pop() || ''
-      for (const block of blocks) {
-        const payload = parseEvent(block)
+    try {
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        buffer += decoder.decode(value, { stream: true })
+        const blocks = buffer.split(/\r?\n\r?\n/)
+        buffer = blocks.pop() || ''
+        for (const block of blocks) {
+          if (/^data:\s*\[DONE\]\s*$/m.test(block)) return
+          const payload = parseEvent(block)
+          if (payload) yield payload
+        }
+      }
+
+      buffer += decoder.decode()
+      if (buffer.trim()) {
+        const payload = parseEvent(buffer)
         if (payload) yield payload
       }
-    }
-
-    buffer += decoder.decode()
-    if (buffer.trim()) {
-      const payload = parseEvent(buffer)
-      if (payload) yield payload
+    } finally {
+      await reader.cancel().catch(() => undefined)
+      reader.releaseLock()
     }
   }
 

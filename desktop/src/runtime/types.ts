@@ -41,7 +41,13 @@ export interface NetworkResponse {
   url: string
 }
 
+export interface NetworkStreamResponse extends Omit<NetworkResponse, 'body'> {
+  read(): Promise<Uint8Array | null>
+  cancel(): Promise<void>
+}
+
 export interface NetworkPort {
+  openStream(input: NetworkRequest): Promise<NetworkStreamResponse>
   request(input: NetworkRequest): Promise<NetworkResponse>
 }
 
@@ -153,6 +159,7 @@ export interface SystemPort {
 }
 
 export interface StoragePort {
+  keys(): Promise<string[]>
   read(key: string): Promise<Uint8Array | null>
   write(key: string, data: Uint8Array): Promise<void>
   remove(key: string): Promise<void>

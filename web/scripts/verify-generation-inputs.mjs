@@ -410,8 +410,9 @@ const createdIds = upsertGenerationResultNodes({
   createdAt: 123,
   results: [{ assetId: 'asset-out', mimeType: 'image/png', fileName: 'out.png' }],
 })
-assert.deepEqual(createdIds, ['legacy-owned'], 'owned result nodes are reused by request+variant')
-const resultNode = graphStoreState.currentDocument.nodes.find((node) => node.id === 'legacy-owned')
+assert.equal(createdIds.length, 1)
+assert.notEqual(createdIds[0], 'legacy-owned', 'a new run never overwrites the previous result')
+const resultNode = graphStoreState.currentDocument.nodes.find((node) => node.id === createdIds[0])
 assert.equal(resultNode.generatedBy.requestNodeId, 'req-1')
 assert.equal(resultNode.generatedBy.variant, 'image')
 assert.equal(resultNode.generatedBy.runId, 'run-1')
@@ -429,7 +430,7 @@ assert.equal(resultNode.generatedBy.requestSnapshot, undefined)
 assert.doesNotMatch(JSON.stringify(resultNode.generatedBy), /apiKey|rawResponse|secret/)
 assert.deepEqual(
   collectOwnedResultNodeIds(graphStoreState.currentDocument.nodes[0], graphStoreState.currentDocument.nodes, 'image'),
-  ['legacy-owned'],
+  ['legacy-owned', createdIds[0]],
 )
 graphStoreState.currentDocument = null
 graphStoreState.currentDocumentId = null

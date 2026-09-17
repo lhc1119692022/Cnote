@@ -878,6 +878,15 @@ export const RequestContent = memo(function RequestContent({ node }: { node: Req
       if (existing?.submittedAt) mapped.submittedAt = existing.submittedAt
       useRuntimeStore.getState().updateTask(runId, taskId, mapped)
       syncGenerationRunStatus(runId)
+      const graph = useGraphStore.getState()
+      const run = useRuntimeStore.getState().runs[runId]
+      if (graph.currentDocumentId && effectiveFallback.requestNodeId && effectiveFallback.variant && run && legacy.status === 'completed') {
+        upsertGenerationResultNodes({
+          documentId: graph.currentDocumentId, requestNodeId: effectiveFallback.requestNodeId, variant: effectiveFallback.variant, runId,
+          taskIndex: run.tasks.findIndex(task => task.id === taskId), createIfMissing: false,
+          results: Array.from({ length: Math.max(resultAssetIds.length, legacy.resultUrls?.length || 0) }, (_, index) => ({ assetId: resultAssetIds[index], url: legacy.resultUrls?.[index], mimeType: legacy.resultMimeTypes?.[index] || (effectiveFallback.variant === 'image' ? 'image/png' : 'video/mp4'), fileName: legacy.resultFileNames?.[index] })),
+        })
+      }
     },
     [],
   )
@@ -935,66 +944,6 @@ export const RequestContent = memo(function RequestContent({ node }: { node: Req
     })
     runtime.updateRun(runId, { status: 'failed' })
   }, [])
-
-  const materializeGenerationResults = useCallback(
-    async (options: {
-      documentId: string
-      runId: string
-      taskId: string
-      variant: GenerationVariant
-      channel: GenerationChannel
-      model: GenerationModel
-      requestSnapshot: GenerationTaskRequestSnapshot
-      finalTask: GenerationTaskState
-      signal: AbortSignal
-    }) => {
-      const writeAllowed = () => Boolean(isWritableGenerationTarget({
-        documentId: options.documentId,
-        requestNodeId: node.id,
-        variant: options.variant,
-        runId: options.runId,
-      }))
-      if (options.signal.aborted || !writeAllowed()) return
-      const resultAssetIds = resultAssetIdsFromResourceIds(options.finalTask.resultResourceIds)
-      const results = await Promise.all(
-        Array.from({ length: Math.max(resultAssetIds.length, options.finalTask.resultUrls?.length || 0) }, async (_, index) => {
-          const assetId = resultAssetIds[index]
-          if (assetId) {
-            try {
-              await assetManager.getAsset(assetId)
-            } catch {
-              // Preview/meta load is best-effort; persist still uses the resource id.
-            }
-          }
-          return {
-            assetId,
-            url: options.finalTask.resultUrls?.[index],
-            mimeType: options.finalTask.resultMimeTypes?.[index] || (options.variant === 'image' ? 'image/png' : 'video/mp4'),
-            fileName: options.finalTask.resultFileNames?.[index],
-          }
-        }),
-      )
-      if (options.signal.aborted || !writeAllowed()) return
-      const created = upsertGenerationResultNodes({
-        requestNodeId: node.id,
-        variant: options.variant,
-        results,
-        documentId: options.documentId,
-        runId: options.runId,
-        taskId: remoteTaskIdFromLegacy(options.finalTask) ?? options.taskId,
-        channelId: options.channel.id,
-        providerId: options.channel.providerId,
-        model: options.model.id,
-        createdAt: options.finalTask.completedAt ?? Date.now(),
-        ...generationInputProvenanceIds(options.requestSnapshot.config.references),
-      })
-      setCompletedCount(created.length || results.length)
-      if (!created.length && results.length) {
-        setRequestError('生成完成，但结果无法落成内容节点（缺少可持久化资源）')
-      }
-    },
-    [node.id],
-  )
 
   const applyFinalGenerationTask = useCallback((runId: string, finalTask: GenerationTaskState) => {
     syncGenerationRunStatus(runId)
@@ -1103,6 +1052,9 @@ export const RequestContent = memo(function RequestContent({ node }: { node: Req
       return
     }
 
+    const resultIds = upsertGenerationResultNodes({ documentId, requestNodeId: node.id, variant, runId, expectedCount: count, results: [], channelId: channel.id, providerId: channel.providerId, model: model.id, createdAt: submittedAt, ...generationInputProvenanceIds(requestSnapshot.config.references) })
+    useRuntimeStore.getState().updateRun(runId, { resultNodeId: resultIds[0] })
+
     const writeAllowed = () => Boolean(isWritableGenerationTarget({
       documentId,
       requestNodeId: node.id,
@@ -1179,17 +1131,7 @@ export const RequestContent = memo(function RequestContent({ node }: { node: Req
       applyFinalGenerationTask(runId, finalTask)
       if (finalTask.status !== 'completed') return
       if (!writeAllowed()) return
-      await materializeGenerationResults({
-        documentId,
-        runId,
-        taskId: initialTasks[0]?.id || runId,
-        variant,
-        channel,
-        model,
-        requestSnapshot,
-        finalTask,
-        signal: controller.signal,
-      })
+      setCompletedCount(finalTask.resultUrls?.length || 0)
     } catch (error) {
       if (controller.signal.aborted || isAbortError(error)) {
         if (!unmountParkRef.current) markRunCancelled(runId)
@@ -1197,7 +1139,7 @@ export const RequestContent = memo(function RequestContent({ node }: { node: Req
     } finally {
       endLocalRun(controller)
     }
-  }, [applyFinalGenerationTask, applyLegacyTask, beginLocalRun, channels, endLocalRun, getModels, markRunCancelled, markRunFailed, materializeGenerationResults, node.disabled, node.id])
+  }, [applyFinalGenerationTask, applyLegacyTask, beginLocalRun, channels, endLocalRun, getModels, markRunCancelled, markRunFailed, node.disabled, node.id])
 
   const resumeWaitingGeneration = useCallback(async () => {
     if (runningRef.current) return
@@ -1230,6 +1172,14 @@ export const RequestContent = memo(function RequestContent({ node }: { node: Req
     const timeoutMs = variant === 'video' ? VIDEO_TIMEOUT_MS : IMAGE_TIMEOUT_MS
     const submittedAt = Date.now()
     const controller = beginLocalRun(currentRun.id)
+    if (!currentRun.resultNodeId) {
+      const ids = upsertGenerationResultNodes({ documentId, requestNodeId: node.id, variant, runId: currentRun.id, expectedCount: domainTasks.length, results: [], channelId: snapshot.channelId, model: snapshot.model, createdAt: currentRun.createdAt })
+      useRuntimeStore.getState().updateRun(currentRun.id, { resultNodeId: ids[0] })
+    }
+    domainTasks.forEach((task, taskIndex) => {
+      if (task.status !== 'completed' || !task.resultAssetIds?.length) return
+      upsertGenerationResultNodes({ documentId, requestNodeId: node.id, variant, runId: currentRun.id, taskIndex, createIfMissing: false, results: task.resultAssetIds.map(assetId => ({ assetId, mimeType: useRuntimeStore.getState().assets[assetId]?.mimeType || (variant === 'image' ? 'image/png' : 'video/mp4') })) })
+    })
     useRuntimeStore.getState().updateRun(currentRun.id, {
       status: 'running',
       tasks: domainTasks.map((task) => {
@@ -1330,18 +1280,7 @@ export const RequestContent = memo(function RequestContent({ node }: { node: Req
       })
       applyFinalGenerationTask(currentRun.id, finalTask)
       if (finalTask.status !== 'completed') return
-      const resumeContext = generationRequestContextFromSnapshot(snapshot, { channel: currentChannel, model: currentModel })
-      await materializeGenerationResults({
-        documentId,
-        runId: currentRun.id,
-        taskId: resumable[0].id,
-        variant,
-        channel: resumeContext.channel,
-        model: resumeContext.model,
-        requestSnapshot: snapshot,
-        finalTask,
-        signal: controller.signal,
-      })
+      setCompletedCount(finalTask.resultUrls?.length || 0)
     } catch (error) {
       if (controller.signal.aborted || isAbortError(error)) {
         if (!unmountParkRef.current) markRunCancelled(currentRun.id)
@@ -1349,7 +1288,7 @@ export const RequestContent = memo(function RequestContent({ node }: { node: Req
     } finally {
       endLocalRun(controller)
     }
-  }, [activeRunId, applyFinalGenerationTask, applyLegacyTask, beginLocalRun, channels, endLocalRun, getModels, markRunCancelled, markRunFailed, materializeGenerationResults, node.id])
+  }, [activeRunId, applyFinalGenerationTask, applyLegacyTask, beginLocalRun, channels, endLocalRun, getModels, markRunCancelled, markRunFailed, node.id])
 
   useEffect(() => {
     const onResume = (event: Event) => {

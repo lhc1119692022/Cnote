@@ -47,6 +47,7 @@ const MOUNT_STABLE_MS = 120
 
 interface WebviewNavigationEvent extends Event {
   isMainFrame?: boolean
+  isInPlace?: boolean
   url?: string
   errorCode?: number
   errorDescription?: string
@@ -286,7 +287,9 @@ export const BrowserContent = memo(function BrowserContent({ node }: { node: Bro
         syncNativeNav(webview)
         runtime().updateTab(sessionId, tabId, { url: nextUrl, status: 'ready', title: webview.getTitle() })
       }
-      const onStartLoading = () => {
+      const onStartLoading = (event: Event) => {
+        const detail = event as WebviewNavigationEvent
+        if (detail.isMainFrame === false || detail.isInPlace) return
         navigationFailed = false
         setNativeError('')
         runtime().updateTab(sessionId, tabId, { status: 'loading' })
@@ -302,14 +305,16 @@ export const BrowserContent = memo(function BrowserContent({ node }: { node: Bro
       webview.addEventListener('dom-ready', onDomReady)
       webview.addEventListener('did-navigate', onNavigate)
       webview.addEventListener('did-navigate-in-page', onNavigate)
-      webview.addEventListener('did-start-loading', onStartLoading)
+      webview.addEventListener('did-start-navigation', onStartLoading)
       webview.addEventListener('did-fail-load', onFailLoad)
+      webview.addEventListener('did-stop-loading', onDomReady)
       listenersRef.current = () => {
         webview.removeEventListener('dom-ready', onDomReady)
         webview.removeEventListener('did-navigate', onNavigate)
         webview.removeEventListener('did-navigate-in-page', onNavigate)
-        webview.removeEventListener('did-start-loading', onStartLoading)
+        webview.removeEventListener('did-start-navigation', onStartLoading)
         webview.removeEventListener('did-fail-load', onFailLoad)
+        webview.removeEventListener('did-stop-loading', onDomReady)
       }
     },
     [sessionId, tabId, syncNativeNav],

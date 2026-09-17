@@ -122,6 +122,7 @@ export type ContentSourceRef =
  * URL tokens, secrets, or media bytes.
  */
 export interface ContentGenerationProvenance {
+  detached?: boolean
   requestNodeId: string
   variant: 'image' | 'video'
   runId?: string
@@ -159,6 +160,7 @@ export interface ContentNodeSpec extends BaseNodeSpec {
   parse?: import('@/types/flow').ContentParseState
   /** Present when this node was materialized as a request generation result. */
   generatedBy?: ContentGenerationProvenance
+  generationBatch?: { runId: string; expectedCount: number; resourceKeys: string[]; expanded?: boolean; collapsedSize?: Size }
 }
 
 // ---------------------------------------------------------------------------

@@ -14,8 +14,7 @@ interface GenerationActionButtonProps {
 
 export function GenerationActionButton({ running, waiting, elapsed, disabled, reason, onStart, onCancel, onResume }: GenerationActionButtonProps) {
   const [hovered, setHovered] = useState(false)
-  const [focused, setFocused] = useState(false)
-  const cancelling = running && (hovered || focused)
+  const cancelling = running && hovered
   const label = running ? '取消生成' : waiting ? '继续生成' : '开始生成'
   return (
     <button
@@ -32,8 +31,6 @@ export function GenerationActionButton({ running, waiting, elapsed, disabled, re
       onPointerDown={event => event.stopPropagation()}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
-      onFocus={() => setFocused(true)}
-      onBlur={() => setFocused(false)}
       onClick={() => {
         if (running) onCancel()
         else if (waiting) onResume()

@@ -1,3 +1,4 @@
+import { ResourceStorageSettings } from './ResourceStorageSettings'
 import { askConfirmation, showMessage } from '@/lib/app-dialog'
 import { useCallback, useEffect, useRef, useState, type ChangeEvent } from 'react'
 import { useSearchParams } from 'react-router-dom'
@@ -335,7 +336,7 @@ export function APIKeysManager() {
       if (!selected) return
       const next = await window.cnoteDesktop.system.setStorageLocation(selected)
       setDesktopStorageLocation(next)
-      setDesktopStorageMessage('新位置将在重启 Cnote 后生效；当前数据仍保留在原位置。')
+      setDesktopStorageMessage('已安排迁移。重启后复制并校验数据，再切换位置；旧目录保留为备份，确认正常后可手动删除。')
     } catch (error) {
       setDesktopStorageMessage(error instanceof Error ? error.message : '无法设置桌面存储位置')
     } finally {
@@ -345,13 +346,13 @@ export function APIKeysManager() {
 
   const resetDesktopStorageLocation = async () => {
     if (!isDesktopRuntime || !window.cnoteDesktop || desktopStorageBusy) return
-    if (!await askConfirmation('恢复默认位置后，重启 Cnote 才会生效。是否继续？')) return
+    if (!await askConfirmation('取消尚未执行的数据迁移，继续使用当前位置？')) return
     setDesktopStorageBusy(true)
     setDesktopStorageMessage('')
     try {
       const next = await window.cnoteDesktop.system.resetStorageLocation()
       setDesktopStorageLocation(next)
-      setDesktopStorageMessage('已恢复默认位置，重启 Cnote 后生效。')
+      setDesktopStorageMessage('已取消待执行的迁移，继续使用当前目录。')
     } catch (error) {
       setDesktopStorageMessage(error instanceof Error ? error.message : '无法恢复默认存储位置')
     } finally {
@@ -701,13 +702,14 @@ export function APIKeysManager() {
                 </div>
               </div>
 
+              <ResourceStorageSettings />
               {isDesktopRuntime && <div className="mt-5 border-t border-border pt-4">
                 <div className="flex items-center gap-2"><HardDrive className="h-4 w-4 text-muted-foreground" /><h2 className="text-sm font-medium">桌面端缓存与本地数据</h2></div>
                 <div className="mt-3 flex flex-wrap items-baseline gap-x-3 gap-y-1 text-[12px]"><span className="text-muted-foreground">当前位置</span><span className="min-w-0 break-all text-foreground">{desktopStorageLocation?.currentPath || '读取中…'}</span></div>
                 {desktopStorageLocation?.configuredPath && desktopStorageLocation.configuredPath !== desktopStorageLocation.currentPath && <p className="mt-1 break-all text-[11px] text-muted-foreground">下次启动：{desktopStorageLocation.configuredPath}</p>}
                 <div className="mt-3 flex flex-wrap gap-2">
-                  <Button size="sm" className="gap-1.5" disabled={desktopStorageBusy} onClick={() => void chooseDesktopStorageLocation()}><FolderOpen className="h-3.5 w-3.5" />选择位置</Button>
-                  <Button variant="secondary" size="sm" disabled={desktopStorageBusy || !desktopStorageLocation?.configuredPath} onClick={() => void resetDesktopStorageLocation()}>恢复默认</Button>
+                  <Button size="sm" className="gap-1.5" disabled={desktopStorageBusy} onClick={() => void chooseDesktopStorageLocation()}><FolderOpen className="h-3.5 w-3.5" />迁移到…</Button>
+                  <Button variant="secondary" size="sm" disabled={desktopStorageBusy || !desktopStorageLocation?.restartRequired} onClick={() => void resetDesktopStorageLocation()}>取消迁移</Button>
                   {desktopStorageLocation?.restartRequired && <Button variant="outline" size="sm" className="gap-1.5" onClick={restartDesktop}><RefreshCw className="h-3.5 w-3.5" />立即重启</Button>}
                 </div>
                 {desktopStorageMessage && <p className="mt-3 text-[12px] leading-relaxed text-muted-foreground">{desktopStorageMessage}</p>}

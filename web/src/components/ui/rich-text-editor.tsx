@@ -71,6 +71,7 @@ export function RichTextEditor({ value, document, onChange, onCommit, onActivate
   const lastValue = useRef(value)
   const lastDocument = useRef(document)
   const dirty = useRef(false)
+  const rootRef = useRef<HTMLDivElement>(null)
   const editor = useEditor({
     extensions: [...richTextExtensions(), Placeholder.configure({ placeholder })],
     content: markdownSource ? value : richTextContent(value, document),
@@ -99,6 +100,17 @@ export function RichTextEditor({ value, document, onChange, onCommit, onActivate
     },
     onFocus: () => callbacks.current.onActivate?.(),
   })
+  useEffect(() => {
+    const clearOutsideSelection = (event: PointerEvent) => {
+      const root = rootRef.current
+      if (!root || !(event.target instanceof window.Node) || root.contains(event.target)) return
+      const selection = window.getSelection()
+      if (selection?.anchorNode && root.contains(selection.anchorNode)) selection.removeAllRanges()
+      if (root.contains(window.document.activeElement)) editor?.view.dom.blur()
+    }
+    window.document.addEventListener('pointerdown', clearOutsideSelection, true)
+    return () => window.document.removeEventListener('pointerdown', clearOutsideSelection, true)
+  }, [editor])
   useEffect(() => { editor?.setEditable(editable, false) }, [editor, editable])
   useEffect(() => {
     const commit = () => {
@@ -118,7 +130,7 @@ export function RichTextEditor({ value, document, onChange, onCommit, onActivate
     if (!markdownSource && JSON.stringify(editor.getJSON()) === JSON.stringify(content)) return
     editor.commands.setContent(content, { contentType: markdownSource ? 'markdown' : 'json', emitUpdate: false })
   }, [editor, value, document, markdownSource])
-  return <div className={cn('nodrag nopan nowheel flex min-h-0 min-w-0 flex-col', className)} onPointerDown={(event) => event.stopPropagation()} onKeyDown={(event) => event.stopPropagation()} onClick={(event) => event.stopPropagation()} onBlur={(event) => {
+  return <div ref={rootRef} className={cn('nodrag nopan nowheel flex min-h-0 min-w-0 flex-col', className)} onPointerDown={(event) => event.stopPropagation()} onKeyDown={(event) => event.stopPropagation()} onClick={(event) => event.stopPropagation()} onBlur={(event) => {
     if (!event.currentTarget.contains(event.relatedTarget as Node | null) && dirty.current) {
       dirty.current = false
       callbacks.current.onCommit?.(lastValue.current)

@@ -561,6 +561,7 @@ function parseRun(value: unknown, expectedId: string): GenerationRun | null {
   if (typeof value.variant === 'string' && GENERATION_VARIANTS.has(value.variant)) {
     run.variant = value.variant as GenerationRun['variant']
   }
+  if (typeof value.resultNodeId === 'string') run.resultNodeId = value.resultNodeId
   return run
 }
 

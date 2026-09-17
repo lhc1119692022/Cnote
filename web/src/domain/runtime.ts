@@ -162,6 +162,7 @@ export type GenerationRunStatus =
   | 'waiting-for-user'
 
 export interface GenerationRun {
+  resultNodeId?: string
   id: string
   status: GenerationRunStatus
   tasks: GenerationTask[]

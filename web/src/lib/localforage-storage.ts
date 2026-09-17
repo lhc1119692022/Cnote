@@ -1,6 +1,44 @@
 import localforage from 'localforage'
+import { RESOURCE_POLICY_KEY, currentResourcePolicy, installResourcePolicy, guardStoredValue } from '@/storage/resource-policy'
+import { GALLERY_PREFIX, indexGalleryDocument } from '@/storage/gallery-index'
 import type { StateStorage } from 'zustand/middleware'
 
+let policyReady: Promise<void> | undefined
+export function ensureResourcePolicy(): Promise<void> {
+  if (!policyReady) policyReady = (async () => {
+    const value = hasDesktopByteStorage() ? await readDesktopBytes(RESOURCE_POLICY_KEY).then(bytes => bytes ? new TextDecoder().decode(bytes) : null) : await localforage.getItem<string>(RESOURCE_POLICY_KEY)
+    if (value) installResourcePolicy(typeof value === 'string' ? JSON.parse(value) : value)
+  })()
+  return policyReady
+}
+async function guarded(key: string, value: string) {
+  await ensureResourcePolicy()
+  if (key.startsWith('doc:flow:') && currentResourcePolicy().deletedFlows.includes(key.slice('doc:flow:'.length))) throw new Error('画布已删除，拒绝过期保存')
+  return guardStoredValue(key, value)
+}
+async function markIndexDirty(key: string) {
+  if (!key.startsWith('doc:flow:')) return
+  const dirty = 'gallery-dirty:' + key.slice(9)
+  if (hasDesktopByteStorage()) await writeDesktopBytes(dirty, new TextEncoder().encode('true'))
+  else await localforage.setItem(dirty, true)
+}
+async function updateIndex(key: string, value: unknown) {
+  if (!key.startsWith('doc:flow:')) return
+  const record = typeof value === 'string' ? JSON.parse(value) : value
+  const indexKey = GALLERY_PREFIX + key.slice('doc:flow:'.length)
+  const index = JSON.stringify(indexGalleryDocument(record.payload))
+  const previous = hasDesktopByteStorage() ? await readDesktopBytes(indexKey).then(value => value ? textDecoder.decode(value) : null) : await localforage.getItem<string>(indexKey)
+  if (previous === index) {
+    if (hasDesktopByteStorage()) await removeDesktopKey('gallery-dirty:' + key.slice(9))
+    else await localforage.removeItem('gallery-dirty:' + key.slice(9))
+    return
+  }
+  if (hasDesktopByteStorage()) await writeDesktopBytes(indexKey, textEncoder.encode(index))
+  else await localforage.setItem(indexKey, index)
+  if (hasDesktopByteStorage()) await removeDesktopKey('gallery-dirty:' + key.slice(9))
+  else await localforage.removeItem('gallery-dirty:' + key.slice(9))
+  window.dispatchEvent(new Event('cnote-gallery-updated'))
+}
 const textEncoder = new TextEncoder()
 const textDecoder = new TextDecoder()
 
@@ -42,12 +80,18 @@ async function removeDesktopKey(key: string): Promise<void> {
 }
 
 async function readDesktopString(key: string): Promise<string | null> {
+  await ensureResourcePolicy()
+  if (key.startsWith('doc:flow:') && currentResourcePolicy().deletedFlows.includes(key.slice(9))) return null
   const bytes = await readDesktopBytes(key)
-  return bytes == null ? null : textDecoder.decode(bytes)
+  return bytes == null ? null : guarded(key, textDecoder.decode(bytes))
 }
 
 async function writeDesktopString(key: string, value: string): Promise<void> {
-  await writeDesktopBytes(key, textEncoder.encode(value))
+  const safe = await guarded(key, value)
+  await markIndexDirty(key)
+  await writeDesktopBytes(key, textEncoder.encode(safe))
+  if (key === RESOURCE_POLICY_KEY) installResourcePolicy(JSON.parse(safe))
+  await updateIndex(key, safe)
 }
 
 async function encodeDesktopValue(value: unknown): Promise<Uint8Array> {
@@ -68,7 +112,7 @@ export const localForageStorage: StateStorage = {
 
     try {
       const storedValue = await localforage.getItem<string>(name)
-      if (storedValue) return storedValue
+      if (storedValue) return guarded(name, storedValue)
 
       // Flow 数据早期版本写在同步 localStorage 中。首次读取时迁移到
       // IndexedDB，避免升级后丢失用户已有画板。
@@ -76,10 +120,11 @@ export const localForageStorage: StateStorage = {
       if (!legacyValue) return null
       await localforage.setItem(name, legacyValue)
       window.localStorage.removeItem(name)
-      return legacyValue
+      return guarded(name, legacyValue)
     } catch (error) {
       console.warn(`Failed to get item from LocalForage: ${name}`, error)
-      return window.localStorage.getItem(name)
+      const fallback = window.localStorage.getItem(name)
+      return fallback ? guarded(name, fallback) : null
     }
   },
 
@@ -90,8 +135,12 @@ export const localForageStorage: StateStorage = {
       return
     }
 
+    value = await guarded(name, value)
     try {
+      await markIndexDirty(name)
       await localforage.setItem(name, value)
+      if (name === RESOURCE_POLICY_KEY) installResourcePolicy(JSON.parse(value))
+      await updateIndex(name, value)
     } catch (error) {
       console.warn(`Failed to set item in LocalForage: ${name}`, error)
       window.localStorage.setItem(name, value)
@@ -116,18 +165,23 @@ export const localForageStorage: StateStorage = {
 
 const desktopAwareStorage = {
   async getItem<T>(key: string): Promise<T | null> {
+    await ensureResourcePolicy()
+    if (key.startsWith('doc:flow:') && currentResourcePolicy().deletedFlows.includes(key.slice(9))) return null
     if (hasDesktopByteStorage()) {
       return (await readDesktopString(key)) as T | null
     }
-    return localforage.getItem<T>(key)
+    const value = await localforage.getItem<T>(key)
+    return typeof value === 'string' ? await guarded(key, value) as T : value
   },
 
   async setItem<T>(key: string, value: T): Promise<T> {
-    if (hasDesktopByteStorage()) {
-      await writeDesktopBytes(key, await encodeDesktopValue(value))
-      return value
-    }
-    return localforage.setItem(key, value)
+    if (typeof value === 'string') value = await guarded(key, value) as T
+    await markIndexDirty(key)
+    if (hasDesktopByteStorage()) await writeDesktopBytes(key, await encodeDesktopValue(value))
+    else await localforage.setItem(key, value)
+    if (key === RESOURCE_POLICY_KEY) installResourcePolicy(typeof value === 'string' ? JSON.parse(value) : value as never)
+    await updateIndex(key, value)
+    return value
   },
 
   async removeItem(key: string): Promise<void> {
@@ -140,7 +194,7 @@ const desktopAwareStorage = {
 
   async keys(): Promise<string[]> {
     if (hasDesktopByteStorage()) {
-      throw new Error('Desktop storage does not support key listing')
+      return getDesktopByteStorage().keys()
     }
     return localforage.keys()
   },

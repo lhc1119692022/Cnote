@@ -163,6 +163,7 @@ useRuntimeStore.getState().putAISession({
 })
 useRuntimeStore.getState().putRun({
   id: 'run-1',
+  resultNodeId: 'batch-result-1',
   status: 'created',
   tasks: [],
   createdAt: 3,
@@ -188,6 +189,7 @@ assert.equal(storage.has(runtimeAssetKey('asset-1')), true)
 assert.equal(storage.has(runtimeAiSessionKey('ai-1')), true)
 assert.equal(parse(runtimeAiSessionKey('ai-1')).nodeId, 'qa-ai-node')
 assert.equal(storage.has(runtimeRunKey('run-1')), true)
+assert.equal(parse(runtimeRunKey('run-1')).resultNodeId, 'batch-result-1')
 
 for (const [key, value] of storage.entries()) {
   if (key === runtimeCaptureKey('cap-1')) continue

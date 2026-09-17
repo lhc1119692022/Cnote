@@ -1,3 +1,4 @@
+import { restoreHostFocus } from '@/canvas/restore-host-focus'
 /**
  * 画布视口上下文 + 指针手势接线。
  * 节点拖拽契约：原始 position + 累计 deltaWorld，禁止增量累加。
@@ -755,6 +756,7 @@ export function CanvasProvider({
   }, [overlayInsets, setViewport])
 
   const onPointerDownCapture = (event: ReactPointerEvent<HTMLDivElement>) => {
+    restoreHostFocus(event.currentTarget, event.target)
     panClickRef.current = false
     const target = event.target as Element | null
     if (target?.closest('[data-canvas-chrome]')) return
@@ -914,8 +916,9 @@ export function CanvasProvider({
       <div
         ref={containerRef}
         data-cnote-canvas="engine"
+        tabIndex={-1}
         className={[
-          'relative h-full w-full overflow-hidden select-none',
+          'relative h-full w-full overflow-hidden select-none outline-none',
           isViewportMoving ? 'canvas-viewport-moving' : '',
           spacePressed ? 'cursor-grab' : '',
           className ?? '',

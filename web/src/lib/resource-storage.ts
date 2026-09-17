@@ -1,4 +1,5 @@
-import localforage from '@/lib/localforage-storage'
+import localforage, { ensureResourcePolicy } from '@/lib/localforage-storage'
+import { isResourceDeleted, currentResourcePolicy, identityAliases, RESOURCE_POLICY_KEY } from '@/storage/resource-policy'
 
 const RESOURCE_PREFIX = 'resource:'
 const RESOURCE_META_PREFIX = 'resource-meta:'
@@ -138,10 +139,17 @@ async function assertBrowserStorageCapacity(additionalBytes: number) {
   }
 }
 
-export async function storeLocalResource(file: Blob, fileName?: string, persistToDisk = false) {
+export async function storeLocalResource(file: Blob, fileName?: string, _persistToDisk = false) {
   return enqueueResourceMutation(async () => {
     const checksum = await checksumBlob(file)
     const resourceId = `sha256-${checksum}`
+    await ensureResourcePolicy()
+    if (isResourceDeleted(resourceId)) {
+      const policy = currentResourcePolicy()
+      if (policy.pending.includes(resourceId)) throw new Error('资源删除尚未完成，请完成清理后重新导入')
+      const aliases = new Set(identityAliases(resourceId))
+      await localforage.setItem(RESOURCE_POLICY_KEY, JSON.stringify({ ...policy, deleted: policy.deleted.filter(value => !aliases.has(value)) }))
+    }
     const previous = await getMeta(resourceId)
     if (!previous) {
       await assertBrowserStorageCapacity(file.size)
@@ -152,9 +160,7 @@ export async function storeLocalResource(file: Blob, fileName?: string, persistT
       : { id: resourceId, checksum, mimeType: file.type || 'application/octet-stream', size: file.size, refCount: 1, createdAt: Date.now(), ...(fileName ? { fileName } : {}) }
     const nextMeta = fileName && !meta.fileName ? { ...meta, fileName } : meta
     await saveMeta(nextMeta)
-    if (persistToDisk && typeof window !== 'undefined' && window.cnoteDesktop?.system.saveResource && nextMeta.fileName) {
-      await window.cnoteDesktop.system.saveResource({ resourceId, fileName: nextMeta.fileName, data: new Uint8Array(await file.arrayBuffer()) })
-    }
+
     return { resourceId, checksum, mimeType: nextMeta.mimeType, size: nextMeta.size, fileName: nextMeta.fileName, url: createManagedObjectUrl(file) }
   })
 }
@@ -175,6 +181,8 @@ export async function cloneLocalResource(resourceId?: string) {
 }
 
 export async function loadLocalResourceBlob(resourceId: string) {
+  await ensureResourcePolicy()
+  if (isResourceDeleted(resourceId)) return null
   if (hasDesktopByteStorage()) {
     const bytes = await readDesktopBytes(resourceBytesKey(resourceId))
     if (bytes == null) return null
@@ -196,12 +204,12 @@ export async function deleteLocalResource(resourceId?: string) {
     if (!resourceId) return
     const meta = await getMeta(resourceId)
     if (!meta) return
-    if (meta.refCount > 1) {
-      await saveMeta({ ...meta, refCount: meta.refCount - 1 })
-      return
-    }
-    await removeResourceRecord(resourceId)
+    await saveMeta({ ...meta, refCount: Math.max(0, meta.refCount - 1) })
   })
+}
+
+export async function purgeLocalResource(resourceId: string) {
+  await enqueueResourceMutation(() => removeResourceRecord(resourceId))
 }
 
 export async function getLocalResourceMeta(resourceId: string) {

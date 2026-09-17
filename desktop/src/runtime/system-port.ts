@@ -107,6 +107,6 @@ export class NativeSystemPort implements SystemPort {
 
   async restart() {
     app.relaunch()
-    app.exit(0)
+    app.quit()
   }
 }

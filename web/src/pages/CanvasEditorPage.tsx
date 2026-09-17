@@ -135,6 +135,17 @@ export function CanvasEditorPage() {
 
   const openLoaded = useCallback((doc: FlowDocument) => {
     useGraphStore.getState().openDocument(doc)
+    const search = new URLSearchParams(window.location.hash.split('?')[1] || window.location.search)
+    const node = doc.nodes.find(candidate => candidate.id === search.get('node'))
+    if (node) {
+      useGraphStore.getState().setSelection([node.id])
+      const zoom = Math.min(1, (window.innerWidth - 160) / node.size.width, (window.innerHeight - 160) / node.size.height)
+      useGraphStore.getState().setViewport({ x: window.innerWidth / 2 - (node.position.x + node.size.width / 2) * zoom, y: window.innerHeight / 2 - (node.position.y + node.size.height / 2) * zoom, zoom })
+      if (node.kind === 'content' && node.payload && (node.payload.kind === 'image' || node.payload.kind === 'video')) {
+        const index = Number(search.get('resource'))
+        if (Number.isInteger(index) && index >= 0 && index < (node.payload.resources?.length || 0)) useGraphStore.getState().updateNode(node.id, { payload: { ...node.payload, activeResourceIndex: index } })
+      }
+    }
     rememberOpenedGraph(doc, doc.viewport)
     setPersistTick((value) => value + 1)
   }, [])

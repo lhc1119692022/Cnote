@@ -151,7 +151,7 @@ export class BrowserSessionManager implements BrowserPort {
       // session settings panel can turn individual permissions on explicitly.
       callback(false)
     })
-    const downloadsDirectory = path.join(app.getPath('downloads'), 'Cnote')
+    const downloadsDirectory = path.join(app.getPath('userData'), 'downloads')
     browserSession.on('will-download', (_event, item) => {
       const fileName = path.basename(item.getFilename()) || `download-${Date.now()}`
       mkdirSync(downloadsDirectory, { recursive: true })

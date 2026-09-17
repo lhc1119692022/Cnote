@@ -1,6 +1,7 @@
 import { runDesktopNativeJob } from '@/lib/desktop-native-jobs'
 
 export interface DesktopFetchOptions {
+  stream?: boolean
   /** Header name -> SafeStorage secret name. Values never enter the renderer job payload. */
   secretRefs?: Record<string, string>
   /** Maximum time for the native request, including response body download. */
@@ -89,6 +90,7 @@ async function performDesktopFetch(input: RequestInfo | URL, init: RequestInit =
   // so exports and generation references work in the desktop app as well.
   if (!supportsNativeNetwork(url)) return fetch(input, { ...init, headers })
   if (hasDirectNativeNetwork()) {
+    if (options.stream) return openDesktopStream(url, { ...init, headers: normalized.headers, body: normalized.body as BodyInit | undefined }, options)
     if (init.signal?.aborted) throw abortError()
     const requestId = crypto.randomUUID()
     const request = window.cnoteDesktop!.network.request({
@@ -130,6 +132,7 @@ async function performDesktopFetch(input: RequestInfo | URL, init: RequestInit =
   }
 
   if (!hasNativeDesktop()) return fetch(input, { ...init, headers })
+  if (options.stream) throw new Error('当前桌面版本不支持流式回复，请更新并重启桌面端。')
 
   const output = await runDesktopNativeJob<NativeNetworkOutput>({
     kind: 'native:network-request',
@@ -179,5 +182,63 @@ export async function desktopFetch(input: RequestInfo | URL, init: RequestInit =
     return await performDesktopFetch(url, { ...init, headers }, { ...options, secretRefs })
   } finally {
     await Promise.all(temporarySecrets.map((name) => secrets!.delete(name)))
+  }
+}
+
+async function openDesktopStream(url: string, init: RequestInit, options: DesktopFetchOptions) {
+  const network = window.cnoteDesktop!.network
+  if (!network.openStream || !network.readStream) throw new Error('当前桌面版本不支持流式回复，请更新并重启桌面端。')
+  if (init.signal?.aborted) throw abortError()
+  const requestId = crypto.randomUUID()
+  let finished = false
+  let controller: ReadableStreamDefaultController<Uint8Array> | undefined
+  let rejectOpen: (error: unknown) => void = () => {}
+  const aborted = new Promise<never>((_resolve, reject) => { rejectOpen = reject })
+  const cleanup = () => {
+    finished = true
+    init.signal?.removeEventListener('abort', stop)
+  }
+  const stop = () => {
+    if (finished) return
+    const error = abortError()
+    rejectOpen(error)
+    controller?.error(error)
+    cleanup()
+    void network.abort(requestId).catch(() => undefined)
+  }
+  init.signal?.addEventListener('abort', stop, { once: true })
+  try {
+    const metadata = await Promise.race([network.openStream({
+      url, requestId, method: init.method || 'GET', headers: Object.fromEntries(new Headers(init.headers)),
+      secretRefs: options.secretRefs, body: init.body as string | Uint8Array | undefined, timeoutMs: options.timeoutMs ?? 300_000,
+    }), aborted])
+    if (init.signal?.aborted) throw abortError()
+    if ([204, 205, 304].includes(metadata.status)) {
+      cleanup()
+      await network.abort(requestId)
+      return new Response(null, metadata)
+    }
+    const body = new ReadableStream<Uint8Array>({
+      start(value) { controller = value },
+      async pull(value) {
+        try {
+          const chunk = await network.readStream!(requestId)
+          if (finished) return
+          if (chunk === null) { cleanup(); value.close() }
+          else value.enqueue(new Uint8Array(chunk))
+        } catch (error) {
+          if (finished) return
+          cleanup()
+          value.error(init.signal?.aborted ? abortError() : error)
+          await network.abort(requestId).catch(() => undefined)
+        }
+      },
+      async cancel() { cleanup(); await network.abort(requestId).catch(() => undefined) },
+    })
+    return new Response(body, metadata)
+  } catch (error) {
+    cleanup()
+    await network.abort(requestId).catch(() => undefined)
+    throw error
   }
 }

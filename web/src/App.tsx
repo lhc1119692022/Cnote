@@ -1,7 +1,9 @@
 import { Routes, Route, Navigate } from 'react-router-dom'
+
 import { lazy, Suspense, useEffect } from 'react'
 import { hydrateRuntimeStore, persistSessionForExit, startRuntimePersistence } from '@/storage'
 
+const Gallery = lazy(() => import('@/pages/Gallery').then(module => ({ default: module.Gallery })))
 const Dashboard = lazy(() => import('@/pages/Dashboard').then((module) => ({ default: module.Dashboard })))
 const CanvasEditor = lazy(() => import('@/pages/CanvasEditorPage').then((module) => ({ default: module.CanvasEditorPage })))
 const TemplatesManager = lazy(() => import('@/pages/TemplatesManager').then((module) => ({ default: module.TemplatesManager })))
@@ -18,6 +20,13 @@ function App() {
   }, [])
 
   useEffect(() => startRuntimePersistence(), [])
+  useEffect(() => {
+    let stopped = false
+    const sweep = () => { if (!stopped) void import('@/storage/resource-library').then(async library => { await library.resumeResourceCleanup(); await library.collectUnusedResources() }).catch(error => console.warn('资源清理暂缓', error)) }
+    const initial = window.setTimeout(sweep, 30000)
+    const periodic = window.setInterval(sweep, 6 * 60 * 60 * 1000)
+    return () => { stopped = true; clearTimeout(initial); clearInterval(periodic) }
+  }, [])
 
   useEffect(() => {
     const flush = () => {
@@ -53,6 +62,7 @@ function App() {
         <Route path="/flows/:flowId" element={<CanvasEditor />} />
         <Route path="/templates" element={<TemplatesManager />} />
         <Route path="/sources" element={<SourcesManager />} />
+        <Route path="/gallery" element={<Gallery />} />
         <Route path="/outputs" element={<Navigate to="/settings/api-keys" replace />} />
         <Route path="/settings" element={<APIKeysManager />} />
         <Route path="/settings/api-keys" element={<APIKeysManager />} />

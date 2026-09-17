@@ -249,30 +249,17 @@ function NodeDetails({ node }: { node: NodeSpec }) {
 
   if (node.kind === 'sticky') {
     return (
-      <div className="min-h-0 flex-1 space-y-4 overflow-y-auto border-t border-border p-4">
-        <PanelSection title="贴纸节点">
-          <RichTextEditor
-            key={node.id}
-            value={node.content || ''}
-            onChange={(value) => useGraphStore.getState().updateNode(node.id, { content: value })}
-            onCommit={() => useGraphStore.getState().commitHistory()}
-            className="h-80 rounded-xl border border-border text-foreground"
-            placeholder="输入贴纸内容"
-          />
-          <Field label="颜色">
-            <select
-              value={node.color || 'yellow'}
-              onChange={(event) => patchNode(node.id, { color: event.target.value as typeof node.color })}
-              className="h-10 w-full rounded-xl border border-border bg-card px-3 text-sm text-foreground outline-none focus:border-foreground/30"
-            >
-              <option value="yellow">黄色</option>
-              <option value="pink">粉色</option>
-              <option value="green">绿色</option>
-              <option value="blue">蓝色</option>
-              <option value="purple">紫色</option>
-            </select>
-          </Field>
-        </PanelSection>
+      <div className="min-h-0 flex-1 border-t border-border p-4">
+        <RichTextEditor
+          compactToolbar
+          key={node.id}
+          value={node.content || ''}
+          document={node.document}
+          onChange={(content, document) => useGraphStore.getState().updateNode(node.id, { content, document })}
+          onCommit={() => useGraphStore.getState().commitHistory()}
+          className="h-full text-foreground"
+          placeholder="输入贴纸内容"
+        />
       </div>
     )
   }

@@ -454,8 +454,8 @@ export function NodeHoverToolbar({ node, selected }: { node: NodeSpec; selected:
 
   const document = useGraphStore.getState().currentDocument
   const showRefreshUpstream = node.kind === 'content' && Boolean(document?.edges.some((edge) => edge.target === node.id && textFromNode(document.nodes.find((candidate) => candidate.id === edge.source))))
-  const showSplitMedia = node.kind === 'content' && mediaItems(node).length > 1
-  const showReparse = node.kind === 'content' && Boolean(node.source)
+  const showSplitMedia = node.kind === 'content' && !node.generationBatch && mediaItems(node).length > 1
+  const showReparse = node.kind === 'content' && !node.generationBatch && Boolean(node.source)
   const showRestore = canRestoreContent(node)
 
   return (

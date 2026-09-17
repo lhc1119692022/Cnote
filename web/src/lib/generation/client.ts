@@ -309,7 +309,8 @@ async function assertMediaUploadSecretReady(endpoint: MediaUploadEndpoint) {
   const desktop = typeof window !== 'undefined' ? window.cnoteDesktop : undefined
   if (!desktop?.secrets || !endpoint.secretName) return
   if (endpoint.token) {
-    await syncDesktopSecret(endpoint.secretName, endpoint.token)
+    const token = endpoint.token.trim().replace(/^Bearer\s+/i, '')
+    await syncDesktopSecret(endpoint.secretName, token ? `Bearer ${token}` : '')
     return
   }
   if (!(await ensureDesktopSecret(endpoint.secretName))) {

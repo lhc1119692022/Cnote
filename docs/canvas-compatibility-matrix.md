@@ -434,7 +434,7 @@ This ledger supersedes broad historical status labels. Each row remains incomple
 | Group continuous scenario | Partial toolbar plus automated membership/history evidence | Native select/group/move/drop/unbind/member retention sequence and persisted absolute coordinates/edges |
 | Desktop acceptance environments | Several isolated normal/narrow/maximized, dark/light, panel samples | Cross-check empty/single/multiple/offscreen nodes, canvas/panel edges and continuous min-to-max zoom; explicitly record untested combinations |
 | Automated gates and final regression | Previous passing runs recorded chronologically | Fresh complete gate run against final source, inspect test coverage, then native regression of changed surfaces |
-| Final delivery and rollback points | Incomplete; mixed dirty worktree preserved | Reconcile every ledger row, document all differences, obtain required native/provider evidence before any final completion claim or commit |
+| Final delivery and rollback points | Prior batch committed and pushed as 60f9c9b; current follow-up changes await user manual acceptance | Full baseline inventory deferred by user; current UI choices supersede baseline. Do not claim native completion from scripts or commit this batch without a new request. |
 
 Provider approval is an external dependency for real generation only. It does not block remaining canvas, layout, geometry, history, grouping and non-destructive native checks. UI deletion is a separate action-time confirmation dependency and must not be silently executed on QA data.
 
@@ -582,6 +582,29 @@ Provider approval is an external dependency for real generation only. It does no
 - Replaced the separate start/cancel/resume controls with GenerationActionButton. Idle retains the icon; running shows generating plus elapsed time, with red cancellation on hover or keyboard focus; paused uses the same control with a visible resume label. Switching labels reserves the same width. Existing task snapshot/polling/cancellation paths are reused, not replaced with a new submission on resume. Abandoning paused work remains available inside the parameters menu.
 - Typecheck, lint, user-flow component tests, generation-selection, rich-text, upstream transport, persistence, session-exit, autosave, canvas navigation, generation inputs and capture checks passed. Desktop build:all also passed, with the existing bundle-size advisory only. Manual acceptance is appended to docs/canvas-user-flow-acceptance.md; no desktop control, actual provider calls or full-compatibility completion is claimed.
 
+## 本轮 — Streaming, add-menu scope, resource dragging and guest focus
+
+- Implemented actual desktop response streaming through owner-scoped IPC reads, cancellation and lifecycle cleanup; retained SecretStore boundaries and the buffered API for existing callers. AI consumes incremental deltas into one runtime assistant message, supports stopping from either node or details, preserves partial replies, and aborts when leaving the document or deleting the node.
+- The top toolbar keeps two buttons, including compact windows. Its left menu contains only 添加内容节点 → 添加请求体 → 添加浏览器节点; the right button directly adds AI. The blank-canvas three-group menu intentionally remains different, following the user's newer requirement.
+- Resource capsules now use captured pointer gestures and screen-space preview hit tests, with outside-drop rejection and Escape/cancel cleanup. Browser guest focus is released when interacting with the host, and blank-canvas clicks explicitly restore native host focus without globally intercepting guest shortcuts.
+- Fresh desktop build:all/typecheck, web typecheck/lint, ai-streaming, ai-upstream-transport, canvas-user-flow, canvas-navigation, rich-text, schema, document-autosave, session-exit, runtime-persistence, generation-selection, generation-inputs, capture-materializer and prompt-mentions checks passed. Existing large-bundle advisory remains. Tests use mock network/DOM, not live providers or native mouse evidence.
+- User-operated acceptance is in docs/canvas-manual-acceptance.md. All current native checks remain pending. No desktop control, real keys or paid requests were used. Full old-version differences are deliberately deferred, and the original whole-project completion is not claimed.
+
+## 本轮截图追加 — Sticky details, text selection, Browser loading and YouTube
+
+- Sticky details use a single flat editor with the same six compact formatting actions, no duplicated title or color selector. Both plain content and the rich-text document are updated together.
+- Capture-phase outside pointer handling clears the previous editor selection without suppressing its own formatting toolbar. Cross-node selection clearing also covers other node content regions.
+- Browser loading starts only for top-level, non-in-place navigation and is finalized by did-stop-loading as well as DOM readiness. Main-frame failures remain errors; subframe activity no longer reopens the central loading overlay.
+- YouTube iframe requests with no valid web Referer receive the packaged Cnote application identifier, limited to the host renderer's YouTube embed subframes. Existing valid referrers and unrelated/guest requests remain untouched. The iframe explicitly preserves the origin referrer policy. Actual playback, including whether the reported 153 is resolved for the user's video, awaits user verification after a full desktop restart.
+- Desktop build:all, web typecheck/lint and fourteen regression scripts passed, including the new browser-feedback suite and expanded rich-text/user-flow tests. Native acceptance is in docs/canvas-manual-acceptance.md; no real player success or full project completion is claimed.
+
+## 本轮 — Per-run result batches and grid detach
+
+- Supersedes legacy reusable output slots: each new run creates one connected Content result node; child completions merge into that run's resource list by task/output identity. Prior runs remain unchanged. Late/repeated completions do not duplicate results, recreate a deleted batch or steal the active image selection.
+- Expanded/collapsed state and original size are persisted as graph presentation metadata, while live task status remains in runtime. Expanded grids hide the switching rail items and show collapse/detach. Detach is terminal-state-only, removes the batch and all inbound edges, places standalone media at grid positions, routes existing outbound edges through the selected item and commits one undo step.
+- Copies and split outputs retain provenance but are detached from generation ownership. Ordinary non-batch media keep their existing resource presentation. A batch supplies only its selected resource to downstream generation; expanding is not a change of inputs.
+- Added generation-batch logic coverage, actual RequestContent/ContentContent fixture tests for progressive outputs, partial failure, cancellation, grid controls, undo and resumed rounds, and a runtime result-node reference persistence assertion. Manual criteria are appended to docs/canvas-manual-acceptance.md. Native/paid-provider behavior remains pending user acceptance.
+
 ## Architecture Constraints
 
 - React Flow is not reintroduced as the canvas engine.
@@ -589,6 +612,17 @@ Provider approval is an external dependency for real generation only. It does no
 - Node positions remain absolute world coordinates.
 - Runtime behavior is provided by the current runtime layer; the legacy `executeFlow` implementation is not restored.
 - Virtualization may remove content mounts outside the visible region, but shells, edges, and active interaction targets remain available.
+
+## Media Preview Follow-up
+
+The latest user-directed preview rules supersede the earlier expandable-in-progress batch proposal:
+
+- Media metadata drives automatic aspect-ratio sizing unless the user has manually resized the node.
+- Running generation shows red cancellation styling only on pointer hover, not retained keyboard focus.
+- Expansion is available only for terminal batches with at least two outputs. Three outputs occupy one row; grids use at most four columns. Each output has its own visible frame, without captions or an enclosing card.
+- Empty output placeholders show a single centered status/count/elapsed-time line. Repeated content-type headings are removed.
+- Dropping a resource capsule onto blank canvas creates an independent, undoable copy; source resources and connections remain unchanged. Coordinates respect canvas offset and zoom.
+- Automated coverage: generation-batch and canvas-user-flow exercise sizing, manual-size preservation, terminal guards, individual frames, centered status, blank-drop placement, original preservation and undo. Desktop visual acceptance remains pending in canvas-user-flow-acceptance.md.
 
 ## Automated Gates
 

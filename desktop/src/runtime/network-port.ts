@@ -1,5 +1,5 @@
 import { net } from 'electron'
-import type { NetworkPort, NetworkRequest, NetworkResponse } from './types'
+import type { NetworkPort, NetworkRequest, NetworkResponse, NetworkStreamResponse } from './types'
 
 function normalizeHeaders(headers: Headers) {
   const result: Record<string, string> = {}
@@ -11,13 +11,33 @@ function normalizeHeaders(headers: Headers) {
 
 export class NativeNetworkPort implements NetworkPort {
   async request(input: NetworkRequest): Promise<NetworkResponse> {
+    const stream = await this.openStream(input)
+    const chunks: Uint8Array[] = []
+    try {
+      while (true) {
+        const chunk = await stream.read()
+        if (chunk === null) break
+        chunks.push(chunk)
+      }
+      return { status: stream.status, statusText: stream.statusText, headers: stream.headers, url: stream.url, body: Buffer.concat(chunks) }
+    } finally {
+      await stream.cancel()
+    }
+  }
+
+  async openStream(input: NetworkRequest): Promise<NetworkStreamResponse> {
     const maxResponseBytes = 256 * 1024 * 1024
     const timeoutMs = Math.max(1_000, input.timeoutMs ?? 300_000)
     const controller = new AbortController()
     const abortFromCaller = () => controller.abort()
     input.signal?.addEventListener('abort', abortFromCaller, { once: true })
+    if (input.signal?.aborted) controller.abort()
     const timeout = setTimeout(() => controller.abort(), timeoutMs)
 
+    const cleanup = () => {
+      clearTimeout(timeout)
+      input.signal?.removeEventListener('abort', abortFromCaller)
+    }
     try {
       // Use Chromium's network stack so desktop requests follow the user's
       // configured proxy and connection settings. Node's undici fetch ignores
@@ -31,22 +51,43 @@ export class NativeNetworkPort implements NetworkPort {
         redirect: 'follow',
       })
 
-      const body = new Uint8Array(await response.arrayBuffer())
-      if (body.byteLength > maxResponseBytes) throw new Error('Native network response 超过 256 MiB。')
+      const reader = response.body?.getReader()
+      let received = 0
+      let finished = false
       return {
         status: response.status,
         statusText: response.statusText,
         headers: normalizeHeaders(response.headers),
-        body,
         url: response.url,
+        async read() {
+          if (finished) return null
+          try {
+            if (controller.signal.aborted) throw new Error(input.signal?.aborted ? '桌面网络请求已停止' : '网络请求超时或被中止')
+            const result = reader ? await reader.read() : { done: true, value: undefined }
+            if (result.done) { finished = true; cleanup(); return null }
+            received += result.value!.byteLength
+            if (received > maxResponseBytes) throw new Error('Native network response 超过 256 MiB。')
+            return result.value!
+          } catch (error) {
+            finished = true
+            controller.abort()
+            cleanup()
+            await reader?.cancel().catch(() => undefined)
+            throw error
+          }
+        },
+        async cancel() {
+          finished = true
+          controller.abort()
+          cleanup()
+          await reader?.cancel().catch(() => undefined)
+        },
       }
     } catch (error) {
+      cleanup()
       if (input.signal?.aborted) throw error
       if (controller.signal.aborted) throw new Error(`网络请求超时或被中止（${Math.round(timeoutMs / 1000)} 秒）`)
       throw error
-    } finally {
-      clearTimeout(timeout)
-      input.signal?.removeEventListener('abort', abortFromCaller)
     }
   }
 }

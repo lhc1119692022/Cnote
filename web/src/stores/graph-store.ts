@@ -13,6 +13,7 @@
  */
 
 import { create } from 'zustand'
+import { scrubResources, currentResourcePolicy } from '@/storage/resource-policy'
 import { nanoid } from 'nanoid'
 import { assignNodesToOverlappingGroups, createGroupFromNodes, expandDragIds, membersOf, outlineGapOffset, syncGroupCounts, ungroupNode } from '@/canvas/grouping'
 import type { EdgeSpec, FlowDocument, NodeSpec, Point, Viewport } from '@/domain'
@@ -86,6 +87,8 @@ export const useGraphStore = create<GraphStore>((set, get) => ({
   historyIndex: -1,
 
   openDocument: (doc) => {
+    if (currentResourcePolicy().deletedFlows.includes(doc.id)) return
+    doc = scrubResources(doc)
     set({
       currentDocument: doc,
       currentDocumentId: doc.id,
@@ -131,13 +134,15 @@ export const useGraphStore = create<GraphStore>((set, get) => ({
     const { currentDocument: doc, isLocked } = get()
     if (!doc || isLocked) return false
     const node = doc.nodes.find((candidate) => candidate.id === id)
-    if (!node || node.kind !== 'content') return false
+    if (!node || node.kind !== 'content' || node.generationBatch || node.disabled) return false
     const payload = node.payload
     if (!payload || (payload.kind !== 'image' && payload.kind !== 'video')) return false
     const items = payload.resources
     if (!items || items.length < 2) return false
     const copies = items.slice(1).map((item, index): NodeSpec => ({
       ...structuredClone(node),
+      generationBatch: undefined,
+      generatedBy: node.generatedBy ? { ...node.generatedBy, detached: true } : undefined,
       id: nanoid(),
       label: item.label || `${node.label} ${index + 2}`,
       position: { x: node.position.x + node.size.width + 40, y: node.position.y + index * (node.size.height + 24) },
@@ -237,6 +242,7 @@ export const useGraphStore = create<GraphStore>((set, get) => ({
     const node = doc.nodes.find((candidate) => candidate.id === id)
     if (!node) return
     const cloned = structuredClone(node)
+    if (cloned.kind === 'content') { cloned.generationBatch = undefined; if (cloned.generatedBy) cloned.generatedBy = { ...cloned.generatedBy, detached: true } }
     const newId = nanoid()
     const offset = outlineGapOffset([node])
     const duplicate: NodeSpec = {
@@ -396,6 +402,7 @@ export const useGraphStore = create<GraphStore>((set, get) => ({
     const offset = options?.offset ?? outlineGapOffset(sourceNodes)
     const copies = sourceNodes.map((node) => {
       const copy = structuredClone(node)
+      if (copy.kind === 'content') { copy.generationBatch = undefined; if (copy.generatedBy) copy.generatedBy = { ...copy.generatedBy, detached: true } }
       copy.id = idMap.get(node.id) as string
       copy.position = { x: node.position.x + offset.x, y: node.position.y + offset.y }
       copy.label = copyLabel(node.label)
@@ -430,6 +437,7 @@ export const useGraphStore = create<GraphStore>((set, get) => ({
     nodes.forEach((node) => idMap.set(node.id, nanoid()))
     const copies = nodes.map((node) => {
       const copy = structuredClone(node)
+      if (copy.kind === 'content') { copy.generationBatch = undefined; if (copy.generatedBy) copy.generatedBy = { ...copy.generatedBy, detached: true } }
       copy.id = idMap.get(node.id) as string
       copy.position = { x: node.position.x + offset.x, y: node.position.y + offset.y }
       if (copy.parentGroupId) copy.parentGroupId = idMap.get(copy.parentGroupId)
@@ -459,7 +467,7 @@ export const useGraphStore = create<GraphStore>((set, get) => ({
     const { history, historyIndex } = get()
     if (historyIndex <= 0) return
     const nextIndex = historyIndex - 1
-    const doc = history[nextIndex]
+    const doc = scrubResources(history[nextIndex])
     if (!doc) return
     // Reuse the history snapshot by reference: entries are already deep-cloned
     // and store updates are immutable, so this alias is not mutated in place.
@@ -475,7 +483,7 @@ export const useGraphStore = create<GraphStore>((set, get) => ({
     const { history, historyIndex } = get()
     if (historyIndex >= history.length - 1) return
     const nextIndex = historyIndex + 1
-    const doc = history[nextIndex]
+    const doc = scrubResources(history[nextIndex])
     if (!doc) return
     // Same as undo: restore by reference; the next commitHistory clones again.
     set((state) => ({

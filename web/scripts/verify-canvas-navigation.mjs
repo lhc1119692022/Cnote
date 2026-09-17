@@ -352,7 +352,7 @@ const { minimapColor } = loadFrom(withExt(join(srcRoot, 'canvas/minimap')))
       assert.equal(copy.parentGroupId, undefined, 'new independent outputs do not inherit stale group membership')
       assert.equal(copy.sourceId, undefined)
       assert.equal(copy.favorite, false)
-      assert.deepEqual(copy.generatedBy, node.generatedBy)
+      assert.deepEqual(copy.generatedBy, { ...node.generatedBy, detached: true })
     }
     assert.equal(node.payload.resources.length, 3, 'input document remains immutable')
     store().undo()
@@ -1210,7 +1210,7 @@ function stickyNode(id, x, y, width = 100, height = 80, extra = {}) {
   ]) {
     const calls = []
     const panClickRef = { current: false }
-    const handler = new Function('panClickRef', 'spacePressed', 'interaction', 'resizeRef', 'pointerDown', 'getPointerInput', compiled + '; return handler')(panClickRef, scenario.space, { getMode: () => scenario.mode }, { current: scenario.resize }, () => calls.push('pan'), () => ({}))
+    const handler = new Function('restoreHostFocus', 'panClickRef', 'spacePressed', 'interaction', 'resizeRef', 'pointerDown', 'getPointerInput', compiled + '; return handler')(() => {}, panClickRef, scenario.space, { getMode: () => scenario.mode }, { current: scenario.resize }, () => calls.push('pan'), () => ({}))
     handler({ button: scenario.button, pointerId: 7, target: { closest: () => scenario.chrome }, preventDefault: () => calls.push('prevent'), stopPropagation: () => calls.push('stop'), currentTarget: { setPointerCapture: (id) => { assert.equal(id, 7); calls.push('capture') } } })
     assert.deepEqual(calls, scenario.expected ? ['prevent', 'stop', 'capture', 'pan'] : [], JSON.stringify(scenario))
     assert.equal(panClickRef.current, scenario.expected)
@@ -1579,7 +1579,7 @@ function stickyNode(id, x, y, width = 100, height = 80, extra = {}) {
   assert.equal(api.state().address, failed.address, 'subframe hash navigation must not replace the address bar');
   assert.equal(api.state().error, failed.error, 'subframe navigation must not clear a main-frame failure');
   assert.equal(api.state().status, 'error');
-  api.onStartLoading()
+  api.onStartLoading({isMainFrame:true, isInPlace:false})
   assert.equal(api.state().error, '', 'retry clears obsolete navigation error')
   assert.equal(api.state().status, 'loading')
   assert.equal(api.loading(true, true, true), true)

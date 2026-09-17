@@ -1,10 +1,9 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   ArrowLeft,
   Check,
   ChevronDown,
-  ChevronRight,
   Download,
   Layers,
   PanelLeft,
@@ -16,17 +15,15 @@ import {
   Sparkles,
   Upload,
 } from 'lucide-react'
-import { addLibrarySource, addNodeAtViewportCenter, type AddableKind } from '@/canvas/node-factory'
+import { addNodeAtViewportCenter, type AddableKind } from '@/canvas/node-factory'
 import { documentToLegacyFlow } from '@/canvas/document-legacy'
 import { NodeMenuIcon } from '@/canvas/components/NodeMenuIcon'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import type { Size } from '@/domain'
 import { showMessage } from '@/lib/app-dialog'
-import { getContentCategoryVisual } from '@/lib/content-visuals'
 import { FlowBackupError, restoreFlowBackup, saveFlowBackup } from '@/lib/flow-backup'
 import { openBlobFromFile, saveBlobToFile, safeFileName } from '@/lib/file-save'
-import { retainLocalResource } from '@/lib/resource-storage'
 import { migrateDocument } from '@/domain'
 import { legacyFlowToDocument } from '@/runtime/legacy-loader'
 import { createDocument, loadDocument } from '@/storage'
@@ -34,7 +31,6 @@ import { captureCanvasThumbnail } from '@/lib/flow/thumbnail'
 import { listResumableDocumentRuns, requestResumeDocumentGeneration } from '@/canvas/contents/request-generation'
 import { useGraphStore } from '@/stores/graph-store'
 import { useRuntimeStore } from '@/stores/runtime-store'
-import { useSourceStore } from '@/stores/use-source-store'
 import { useTemplateStore } from '@/stores/use-template-store'
 import { useUiStore } from '@/stores/ui-store'
 import { canvasOverlayInsets, hasSafePanelToolbarSpacing, NODE_PANEL_INSET } from '@/canvas/overlay-insets'
@@ -62,13 +58,11 @@ export function CanvasToolbar({
   const showNodePanel = useUiStore((state) => state.showNodePanel)
   const showExtensionPanel = useUiStore((state) => state.showExtensionPanel)
   const extensionWidth = useUiStore((state) => state.extensionWidth)
-  const sources = useSourceStore((state) => state.sources)
   const createTemplate = useTemplateStore((state) => state.createTemplate)
 
   const [editingTitle, setEditingTitle] = useState(false)
   const [titleDraft, setTitleDraft] = useState(documentName)
   const [showAddMenu, setShowAddMenu] = useState(false)
-  const [showLibrarySubmenu, setShowLibrarySubmenu] = useState(false)
   const [showTemplateDialog, setShowTemplateDialog] = useState(false)
   const [templateTitle, setTemplateTitle] = useState('')
   const [templateDescription, setTemplateDescription] = useState('')
@@ -78,22 +72,13 @@ export function CanvasToolbar({
   const [exportFormat, setExportFormat] = useState<'json' | 'png' | 'backup'>('json')
   const [resumeBusy, setResumeBusy] = useState(false)
   const [expandedGroupWidths, setExpandedGroupWidths] = useState({ left: 88, center: 128, right: 48, leftInset, rightInset })
-  const [librarySubmenuLayout, setLibrarySubmenuLayout] = useState<{ maxHeight?: number; overflowY: 'visible' | 'auto' }>({
-    overflowY: 'visible',
-  })
 
   const addMenuRef = useRef<HTMLDivElement>(null)
   const leftGroupRef = useRef<HTMLDivElement>(null)
   const centerGroupRef = useRef<HTMLDivElement>(null)
   const rightGroupRef = useRef<HTMLDivElement>(null)
-  const librarySubmenuRef = useRef<HTMLDivElement>(null)
   const exportFormatMenuRef = useRef<HTMLDivElement>(null)
-  const libraryCloseTimerRef = useRef<number | null>(null)
 
-  const libraryItems = useMemo(
-    () => sources.slice().sort((a, b) => b.updatedAt - a.updatedAt),
-    [sources],
-  )
 
   useEffect(() => {
     if (!editingTitle) setTitleDraft(documentName)
@@ -104,7 +89,6 @@ export function CanvasToolbar({
     const closeOnOutsideAction = (event: Event) => {
       if (!addMenuRef.current?.contains(event.target as Node)) {
         setShowAddMenu(false)
-        setShowLibrarySubmenu(false)
       }
     }
     document.addEventListener('pointerdown', closeOnOutsideAction, true)
@@ -115,9 +99,6 @@ export function CanvasToolbar({
     }
   }, [showAddMenu])
 
-  useEffect(() => () => {
-    if (libraryCloseTimerRef.current !== null) window.clearTimeout(libraryCloseTimerRef.current)
-  }, [])
 
   useEffect(() => {
     if (!showExportFormatMenu) return
@@ -134,26 +115,6 @@ export function CanvasToolbar({
     }
   }, [showExportFormatMenu])
 
-  useLayoutEffect(() => {
-    if (!showLibrarySubmenu || !librarySubmenuRef.current) return
-    const measure = () => {
-      const submenu = librarySubmenuRef.current
-      if (!submenu) return
-      const availableHeight = Math.max(120, window.innerHeight - submenu.getBoundingClientRect().top - 12)
-      const needsScroll = submenu.scrollHeight > availableHeight + 1
-      const nextLayout = needsScroll
-        ? { maxHeight: availableHeight, overflowY: 'auto' as const }
-        : { overflowY: 'visible' as const }
-      setLibrarySubmenuLayout((current) => (
-        current.maxHeight === nextLayout.maxHeight && current.overflowY === nextLayout.overflowY
-          ? current
-          : nextLayout
-      ))
-    }
-    measure()
-    window.addEventListener('resize', measure)
-    return () => window.removeEventListener('resize', measure)
-  }, [libraryItems.length, showLibrarySubmenu])
 
   const viewportWidth = containerSize.width || window.innerWidth
   const layoutWidth = viewportWidth - leftInset - rightInset - 32
@@ -232,7 +193,6 @@ export function CanvasToolbar({
   const addKind = (kind: AddableKind) => {
     addNodeAtViewportCenter(kind, containerSize, inset)
     setShowAddMenu(false)
-    setShowLibrarySubmenu(false)
   }
 
   const handleBack = () => {
@@ -346,15 +306,6 @@ export function CanvasToolbar({
     }
   }
 
-  const addLibraryItem = async (item: (typeof libraryItems)[number]) => {
-    const resource = item.nodeData.source
-    if (resource?.kind === 'file' || resource?.kind === 'clipboard-image') {
-      await retainLocalResource(resource.resourceId)
-    }
-    addLibrarySource(item, containerSize, inset)
-    setShowLibrarySubmenu(false)
-    setShowAddMenu(false)
-  }
 
   const openNodePanel = () => {
     if (!canOpenNodePanel) return
@@ -455,10 +406,7 @@ export function CanvasToolbar({
               variant="ghost"
               className={compactCenter ? 'h-10 w-10 rounded-full p-2 text-muted-foreground' : 'group h-9 gap-1.5 rounded-full px-3 text-muted-foreground'}
               onClick={() => {
-                setShowAddMenu((value) => {
-                  if (value) setShowLibrarySubmenu(false)
-                  return !value
-                })
+                setShowAddMenu(value => !value)
               }}
               title="添加节点"
               aria-label="添加节点"
@@ -472,94 +420,33 @@ export function CanvasToolbar({
                 添加
               </span>
             </Button>
-            {!compactCenter && <><div className="mx-1 h-5 w-px bg-border" />
+            <div className="mx-1 h-5 w-px bg-border" />
             <Button
               variant="ghost"
-              className="group h-9 gap-1.5 rounded-full px-3 text-muted-foreground"
+              className={compactCenter ? 'h-10 w-10 rounded-full p-2 text-muted-foreground' : 'group h-9 gap-1.5 rounded-full px-3 text-muted-foreground'}
               onClick={() => addKind('ai')}
               title="AI 节点"
               aria-label="新增 AI 节点"
             >
               <Sparkles className="h-4 w-4 text-violet-500" />
-              <span className="max-w-0 overflow-hidden whitespace-nowrap opacity-0 transition-all group-hover:max-w-16 group-hover:opacity-100">
+              <span className={compactCenter ? 'hidden' : 'max-w-0 overflow-hidden whitespace-nowrap opacity-0 transition-all group-hover:max-w-16 group-hover:opacity-100'}>
                 AI 节点
               </span>
             </Button>
-            </>}
             {showAddMenu && (
               <div data-toolbar-add-menu role="menu" aria-label="新增节点" className="cnote-menu-surface absolute left-0 top-12 z-50 w-48">
-                <button type="button" role="menuitem" className="cnote-menu-item" onClick={() => addKind('ai')}>
-                  <NodeMenuIcon kind="ai" compact />
-                  添加 AI 节点
-                </button>
                 <button type="button" role="menuitem" className="cnote-menu-item" onClick={() => addKind('content')}>
                   <NodeMenuIcon kind="content" compact />
                   添加内容节点
+                </button>
+                <button type="button" role="menuitem" className="cnote-menu-item" onClick={() => addKind('request')}>
+                  <NodeMenuIcon kind="request" compact />
+                  添加请求体
                 </button>
                 <button type="button" role="menuitem" className="cnote-menu-item" onClick={() => addKind('browser')}>
                   <NodeMenuIcon kind="browser" compact />
                   添加浏览器节点
                 </button>
-                <button type="button" role="menuitem" className="cnote-menu-item" onClick={() => addKind('request')}>
-                  <NodeMenuIcon kind="request" compact />
-                  添加请求体节点
-                </button>
-                <button type="button" role="menuitem" className="cnote-menu-item" onClick={() => addKind('sticky')}>
-                  <NodeMenuIcon kind="sticky" compact />
-                  添加贴纸
-                </button>
-                <div className="my-1 h-px bg-border/60" />
-                <div
-                  className="relative"
-                  onMouseEnter={() => {
-                    if (libraryCloseTimerRef.current !== null) window.clearTimeout(libraryCloseTimerRef.current)
-                    setShowLibrarySubmenu(true)
-                  }}
-                  onMouseLeave={() => {
-                    libraryCloseTimerRef.current = window.setTimeout(() => setShowLibrarySubmenu(false), 140)
-                  }}
-                >
-                  <button type="button" className="cnote-menu-item" onClick={() => setShowLibrarySubmenu(true)}>
-                    <NodeMenuIcon kind="library" compact />
-                    <span className="min-w-0 flex-1">内容资料库 ({libraryItems.length})</span>
-                    <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />
-                  </button>
-                  {showLibrarySubmenu && (
-                    <div
-                      ref={librarySubmenuRef}
-                      className="absolute left-[calc(100%-4px)] top-0 z-[52] w-56 rounded-xl border border-border bg-card p-1.5 shadow-xl"
-                      style={librarySubmenuLayout}
-                      onMouseEnter={() => {
-                        if (libraryCloseTimerRef.current !== null) window.clearTimeout(libraryCloseTimerRef.current)
-                      }}
-                      onMouseLeave={() => {
-                        libraryCloseTimerRef.current = window.setTimeout(() => setShowLibrarySubmenu(false), 140)
-                      }}
-                    >
-                      <p className="px-3 py-1.5 text-[10px] font-medium text-muted-foreground">最近使用</p>
-                      {libraryItems.slice(0, 8).map((item) => {
-                        const visual = getContentCategoryVisual(undefined, item.nodeData.category ?? undefined)
-                        const Icon = visual?.icon
-                        return (
-                          <button
-                            key={item.id}
-                            type="button"
-                            className="cnote-menu-item"
-                            onClick={() => void addLibraryItem(item)}
-                          >
-                            <span className="flex h-6 w-6 shrink-0 items-center justify-center">
-                              {Icon ? <Icon className={`h-3.5 w-3.5 ${visual?.iconClass || 'text-blue-500'}`} /> : null}
-                            </span>
-                            <span className="truncate">{item.title}</span>
-                          </button>
-                        )
-                      })}
-                      {libraryItems.length === 0 && (
-                        <p className="px-3 py-4 text-center text-xs text-muted-foreground">暂无收藏内容</p>
-                      )}
-                    </div>
-                  )}
-                </div>
               </div>
             )}
           </div>

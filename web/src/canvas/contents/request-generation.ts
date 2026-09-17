@@ -1,3 +1,4 @@
+import { batchLayout } from '@/canvas/generation-batch'
 /**
  * Request 节点的运行时素材派生与结果落盘。
  * GenerationReference 只在提交/预览时存在，不写入 FlowDocument。
@@ -43,6 +44,7 @@ export function collectOwnedResultNodeIds(
   const generated = nodes
     .filter((node): node is ContentNodeSpec => (
       node.kind === 'content'
+      && !node.generatedBy?.detached
       && node.generatedBy?.requestNodeId === request.id
       && node.generatedBy.variant === variant
     ))
@@ -164,7 +166,8 @@ export function collectUpstreamText(upstreams: NodeSpec[]): string {
 function contentNodeReferences(node: ContentNodeSpec, assets: Record<string, ContentAsset>): GenerationReference[] {
   const payload = node.payload
   if (payload && (payload.kind === 'image' || payload.kind === 'video') && payload.resources?.length) {
-    return payload.resources.flatMap((item) => {
+    const resources = node.generationBatch ? [payload.resources[Math.max(0, Math.min(payload.resources.length - 1, payload.activeResourceIndex || 0))]] : payload.resources
+    return resources.flatMap((item) => {
       const resource = item.resource
       const identity = resource.resourceId || resource.url
       if (!identity) return []
@@ -465,6 +468,9 @@ export function upsertGenerationResultNodes(options: {
   requestNodeId: string
   variant: 'image' | 'video'
   results: GenerationResultMedia[]
+  taskIndex?: number
+  expectedCount?: number
+  createIfMissing?: boolean
   documentId: string
   runId?: string
   taskId?: string
@@ -476,103 +482,55 @@ export function upsertGenerationResultNodes(options: {
   inputNodeIds?: string[]
   createdAt?: number
 }): string[] {
-  const persistable = options.results.filter((result) => result.assetId || isPersistableResultUrl(result.url))
-  if (!persistable.length) return []
-
-  const target = isWritableGenerationTarget({
-    documentId: options.documentId,
-    requestNodeId: options.requestNodeId,
-    variant: options.variant,
-    runId: options.runId,
-  })
+  const target = isWritableGenerationTarget(options)
   if (!target) return []
-
   const { document: doc, request: current } = target
-  const ownedIds = collectOwnedResultNodeIds(current, doc.nodes, options.variant)
-  const ownedNodes = ownedIds
-    .map((id) => doc.nodes.find((node) => node.id === id))
-    .filter((node): node is ContentNodeSpec => node?.kind === 'content')
-
-  const nextNodes = [...doc.nodes]
-  const nextEdges = [...doc.edges]
-  const resultNodeIds: string[] = []
-  const now = Date.now()
-  const stackStride = CONTENT_NODE_DEFAULT_SIZE.height + RESULT_STACK_GAP
-
-  persistable.forEach((result, index) => {
-    const existing = ownedNodes[index]
-    const label = `${current.label || (options.variant === 'image' ? '图片' : '视频')}结果`
-    const source: ContentSourceRef = result.assetId
-      ? {
-          kind: 'file',
-          assetId: result.assetId,
-          mimeType: result.mimeType,
-          fileName: result.fileName,
-        }
-      : { kind: 'url', url: result.url! }
-    const patch: Pick<ContentNodeSpec, 'category' | 'subtype' | 'source' | 'assetId' | 'label' | 'generatedBy'> = {
-      category: options.variant,
-      subtype: options.variant === 'image' ? 'image' : result.assetId ? 'local-video' : 'remote-video',
-      source,
-      assetId: result.assetId,
-      label,
-      generatedBy: contentGenerationProvenance(options),
-    }
-
-    if (existing) {
-      const nodeIndex = nextNodes.findIndex((node) => node.id === existing.id)
-      if (nodeIndex >= 0) {
-        nextNodes[nodeIndex] = { ...existing, ...patch, content: undefined }
-      }
-      resultNodeIds.push(existing.id)
-      return
-    }
-
-    const createdId = nanoid()
-    const created: ContentNodeSpec = {
-      id: createdId,
-      kind: 'content',
-      position: {
-        x: current.position.x + current.size.width + DOWNSTREAM_OFFSET_X,
-        y: current.position.y + index * stackStride,
-      },
-      size: { width: CONTENT_NODE_DEFAULT_SIZE.width, height: CONTENT_NODE_DEFAULT_SIZE.height },
-      ...patch,
-    }
-    nextNodes.push(created)
-    if (!nextEdges.some((edge) => edge.source === options.requestNodeId && edge.target === createdId)) {
-      nextEdges.push({
-        id: nanoid(),
-        source: options.requestNodeId,
-        target: createdId,
-        sourceHandle: 'out',
-        targetHandle: 'in',
-      })
-    }
-    resultNodeIds.push(createdId)
+  const runId = options.runId || nanoid()
+  const existing = doc.nodes.find((node): node is ContentNodeSpec => node.kind === 'content' && node.generationBatch?.runId === runId && node.generatedBy?.requestNodeId === current.id && ownedResultNodeIds(current.resultNodeIds?.[options.variant]).includes(node.id))
+  if (!existing && options.createIfMissing === false) return []
+  if (existing && !doc.edges.some(edge => edge.source === current.id && edge.target === existing.id)) return []
+  const oldMedia = existing?.payload?.kind === options.variant ? existing.payload : undefined
+  const oldResources = oldMedia && (oldMedia.kind === 'image' || oldMedia.kind === 'video') ? oldMedia.resources || [] : []
+  const oldKeys = existing?.generationBatch?.resourceKeys || []
+  const selectedKey = oldKeys[oldMedia && 'activeResourceIndex' in oldMedia ? oldMedia.activeResourceIndex || 0 : 0]
+  const entries = new Map(oldResources.map((item, index) => [oldKeys[index], item]))
+  options.results.forEach((result, index) => {
+    if (!result.assetId && !isPersistableResultUrl(result.url)) return
+    const key = String(options.taskIndex || 0).padStart(6, '0') + ':' + String(index).padStart(6, '0')
+    entries.set(key, { resource: { ...entries.get(key)?.resource, resourceId: result.assetId ? resourceIdForAsset(result.assetId) : undefined, url: result.url && isPersistableResultUrl(result.url) ? result.url : '', mimeType: result.mimeType, fileName: result.fileName }, label: '' })
   })
-
-  const requestIndex = nextNodes.findIndex((node) => node.id === options.requestNodeId)
-  if (requestIndex >= 0) {
-    const requestNode = nextNodes[requestIndex]
-    if (requestNode.kind === 'request') {
-      nextNodes[requestIndex] = {
-        ...requestNode,
-        resultNodeIds: { ...requestNode.resultNodeIds, [options.variant]: resultNodeIds },
-      }
+  const resourceKeys = [...entries.keys()].sort()
+  const resources = resourceKeys.map((key, index) => ({ ...entries.get(key)!, label: (options.variant === 'image' ? '图片 ' : '视频 ') + (index + 1) }))
+  const activeResourceIndex = selectedKey ? Math.max(0, resourceKeys.indexOf(selectedKey)) : 0
+  const active = resources[activeResourceIndex]?.resource
+  const label = existing?.label || (current.label || (options.variant === 'image' ? '图片' : '视频')) + '结果'
+  const id = existing?.id || nanoid()
+  const size = existing?.size || { ...CONTENT_NODE_DEFAULT_SIZE }
+  const position = existing?.position || { x: current.position.x + current.size.width + DOWNSTREAM_OFFSET_X, y: current.position.y }
+  if (!existing) {
+    while (doc.nodes.some(node => position.x < node.position.x + node.size.width + RESULT_STACK_GAP && position.x + size.width + RESULT_STACK_GAP > node.position.x && position.y < node.position.y + node.size.height + RESULT_STACK_GAP && position.y + size.height + RESULT_STACK_GAP > node.position.y)) {
+      position.y = Math.max(...doc.nodes.filter(node => position.x < node.position.x + node.size.width + RESULT_STACK_GAP && position.x + size.width + RESULT_STACK_GAP > node.position.x && position.y < node.position.y + node.size.height + RESULT_STACK_GAP && position.y + size.height + RESULT_STACK_GAP > node.position.y).map(node => node.position.y + node.size.height + RESULT_STACK_GAP))
     }
   }
-
-  useGraphStore.setState({
-    currentDocument: {
-      ...doc,
-      nodes: nextNodes,
-      edges: nextEdges,
-      updatedAt: now,
-    },
-  })
+  const assetId = active?.resourceId ? assetIdForResource(active.resourceId) : undefined
+  const next: ContentNodeSpec = {
+    ...existing, id, kind: 'content', position, size, label, category: options.variant,
+    subtype: options.variant === 'image' ? 'image' : 'remote-video',
+    source: assetId ? { kind: 'file', assetId, mimeType: active?.mimeType || (options.variant === 'image' ? 'image/png' : 'video/mp4'), fileName: active?.fileName } : active?.url ? { kind: 'url', url: active.url } : null,
+    assetId, content: undefined,
+    payload: options.variant === 'image' ? { kind: 'image', resources, activeResourceIndex } : { kind: 'video', provider: 'direct', playback: 'video', resources, activeResourceIndex },
+    generatedBy: existing?.generatedBy || contentGenerationProvenance({ ...options, runId }),
+    generationBatch: { ...existing?.generationBatch, runId, expectedCount: existing?.generationBatch?.expectedCount || options.expectedCount || Math.max(1, resources.length), resourceKeys },
+  }
+  if (next.generationBatch?.expanded && next.generationBatch.collapsedSize) next.size = batchLayout(next).size
+  if (existing && JSON.stringify(existing) === JSON.stringify(next)) return [id]
+  const nodes = existing ? doc.nodes.map(node => node.id === id ? next : node) : [...doc.nodes, next]
+  const requestIndex = nodes.findIndex(node => node.id === current.id)
+  nodes[requestIndex] = { ...current, resultNodeIds: { ...current.resultNodeIds, [options.variant]: [...new Set([...ownedResultNodeIds(current.resultNodeIds?.[options.variant]), id])] } }
+  const edges = existing ? doc.edges : [...doc.edges, { id: nanoid(), source: current.id, target: id, sourceHandle: 'out', targetHandle: 'in' }]
+  useGraphStore.setState({ currentDocument: { ...doc, nodes, edges, updatedAt: Date.now() } })
   useGraphStore.getState().commitHistory()
-  return resultNodeIds
+  return [id]
 }
 
 export const RESUME_GENERATION_EVENT = 'cnote:resume-generation'

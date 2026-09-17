@@ -38,6 +38,7 @@ export function NodeShell({ node }: { node: NodeSpec }) {
   const selected = selection.includes(node.id)
   const resizingThis = resizing?.nodeId === node.id
   const hovered = hoveredNodeId === node.id
+  const expandedBatch = node.kind === 'content' && node.generationBatch?.expanded === true
 
   const keepNodeHover = (event: ReactPointerEvent<HTMLDivElement>) => {
     const related = event.relatedTarget
@@ -77,10 +78,10 @@ export function NodeShell({ node }: { node: NodeSpec }) {
       data-node-connection-target={connectingTargetId === node.id ? 'valid' : connectingTargetId === `invalid:${node.id}` ? 'invalid' : undefined}
       className={[
         'group absolute box-border rounded-[24px] border bg-transparent pointer-events-none [&:hover_.node-resize-arc]:opacity-100',
-        selected ? 'shadow-[0_0_0_1px_var(--primary)]' : '',
-        hovered && !selected ? 'shadow-[0_0_0_1px_color-mix(in_srgb,var(--primary)_45%,transparent)]' : '',
+        selected && !expandedBatch ? 'shadow-[0_0_0_1px_var(--primary)]' : '',
+        hovered && !selected && !expandedBatch ? 'shadow-[0_0_0_1px_color-mix(in_srgb,var(--primary)_45%,transparent)]' : '',
         node.disabled ? 'opacity-50' : '',
-        node.kind === 'group' ? 'border-0 shadow-none' : '',
+        node.kind === 'group' || expandedBatch ? 'border-0 shadow-none' : '',
       ]
         .filter(Boolean)
         .join(' ')}
@@ -90,7 +91,7 @@ export function NodeShell({ node }: { node: NodeSpec }) {
         width: node.size.width,
         height: node.size.height,
         zIndex: node.z ?? 0,
-        borderColor: node.kind === 'group' ? 'transparent' : selected ? 'var(--primary)' : 'var(--border)',
+        borderColor: node.kind === 'group' || expandedBatch ? 'transparent' : selected ? 'var(--primary)' : 'var(--border)',
       }}
       onPointerDown={onNodePointerDown}
       onPointerEnter={() => setHoveredNode(node.id)}

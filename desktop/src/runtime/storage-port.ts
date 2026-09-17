@@ -47,6 +47,13 @@ export class NativeStoragePort implements StoragePort {
     return assertInsideDirectory(this.rootDirectory, path.join(this.rootDirectory, fileName))
   }
 
+  async keys(): Promise<string[]> {
+    await this.writeChain
+    try {
+      return (await fs.readdir(this.rootDirectory)).filter(name => name.endsWith('.bin')).map(name => Buffer.from(name.slice(0, -4), 'base64url').toString('utf8')).filter(key => encodeStorageKey(key).endsWith('.bin'))
+    } catch (error) { if (isNotFound(error)) return []; throw error }
+  }
+
   async read(key: string) {
     const target = this.resolveKeyPath(key)
     try {

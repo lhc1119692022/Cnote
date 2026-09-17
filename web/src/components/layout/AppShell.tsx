@@ -2,6 +2,7 @@ import type { ReactNode } from 'react'
 import { NavLink } from 'react-router-dom'
 import {
   FileStack,
+  Images,
   FolderKanban,
   Github,
   LayoutDashboard,
@@ -15,6 +16,7 @@ import { cn } from '@/lib/utils'
 const navigation = [
   { to: '/dashboard', label: '控制台', icon: LayoutDashboard },
   { to: '/sources', label: '内容', icon: FileStack },
+  { to: '/gallery', label: '画廊', icon: Images },
   { to: '/templates', label: '模板', icon: FolderKanban },
   { to: '/settings/api-keys', label: '设置', icon: Settings },
 ]
@@ -81,7 +83,7 @@ export function AppShell({ children }: AppShellProps) {
         </div>
       </aside>
 
-      <div className="min-w-0 flex-1 overflow-hidden rounded-xl border border-border bg-background">
+      <div className="flex min-w-0 flex-1 flex-col overflow-hidden rounded-xl border border-border bg-background">
         {children}
       </div>
     </div>

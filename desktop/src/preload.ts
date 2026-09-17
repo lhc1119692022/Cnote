@@ -7,6 +7,7 @@ const invoke = <T>(channel: string, ...args: unknown[]) => ipcRenderer.invoke(ch
 const api = {
   getRuntimeInfo: () => invoke<RuntimeInfo>('runtime:get-info'),
   window: {
+    focus: () => invoke<void>('window:focus'),
     minimize: () => invoke<void>('window:minimize'),
     toggleMaximize: () => invoke<boolean>('window:toggle-maximize'),
     close: () => invoke<void>('window:close'),
@@ -64,6 +65,8 @@ const api = {
     parseHtml: (input: ContentParseInput) => invoke<ParsedPageContent>('content:parse-html', input),
   },
   network: {
+    openStream: (input: NetworkRequest & { secretRefs?: Record<string, string> }) => invoke<Omit<NetworkResponse, 'body'>>('network:stream-open', input),
+    readStream: (requestId: string) => invoke<Uint8Array | null>('network:stream-read', requestId),
     request: (input: NetworkRequest & { secretRefs?: Record<string, string> }) => invoke<NetworkResponse>('network:request', input),
     abort: (requestId: string) => invoke<boolean>('network:abort', requestId),
   },
@@ -75,12 +78,16 @@ const api = {
     saveResource: (request: { resourceId: string; fileName: string; data: Uint8Array }) =>
       invoke<string>('system:save-resource', request),
     selectDirectory: (request?: DirectoryDialogRequest) => invoke<string | null>('system:select-directory', request),
+    getStorageUsage: () => invoke<{ resources: number; data: number; cache: number; total: number }>('system:storage-usage'),
+    clearCache: () => invoke<{ resources: number; data: number; cache: number; total: number }>('system:clear-cache'),
+    removeManagedResource: (identity: string) => invoke<void>('system:remove-managed-resource', identity),
     getStorageLocation: () => invoke<StorageLocationInfo>('system:get-storage-location'),
     setStorageLocation: (value: string) => invoke<StorageLocationInfo>('system:set-storage-location', value),
     resetStorageLocation: () => invoke<StorageLocationInfo>('system:reset-storage-location'),
     restart: () => invoke<void>('system:restart'),
   },
   storage: {
+    keys: () => invoke<string[]>('storage:keys'),
     read: (key: string) => invoke<Uint8Array | null>('storage:read', key),
     write: (key: string, data: Uint8Array) => invoke<void>('storage:write', key, data),
     remove: (key: string) => invoke<void>('storage:remove', key),

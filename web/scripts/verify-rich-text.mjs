@@ -144,6 +144,21 @@ useGraphStore.setState({ currentDocument: savedSticky })
 const reopenedRoot = createRoot(document.getElementById('app'))
 await act(async () => { reopenedRoot.render(React.createElement(StickyHarness)); await new Promise(resolve => setTimeout(resolve, 30)) })
 assert.equal(document.querySelector('.cnote-rich-text strong').textContent, '保留格式')
+const selectedText = document.querySelector('.cnote-rich-text strong').firstChild
+const selectVisibleText = () => {
+  const range = document.createRange()
+  range.selectNodeContents(selectedText)
+  window.getSelection().removeAllRanges()
+  window.getSelection().addRange(range)
+}
+selectVisibleText()
+await act(async () => document.querySelector('button[aria-label="粗体"]').dispatchEvent(new window.Event('pointerdown', { bubbles: true })))
+assert.equal(window.getSelection().toString(), '保留格式', 'own formatting toolbar preserves selection')
+for (const target of [document.body, document.body.appendChild(document.createElement('div'))]) {
+  selectVisibleText()
+  await act(async () => target.dispatchEvent(new window.Event('pointerdown', { bubbles: true })))
+  assert.equal(window.getSelection().rangeCount, 0, 'outside pointer clears selection before canvas prevents default')
+}
 await act(async () => reopenedRoot.unmount())
 dom.window.close()
 console.log('rich text: JSON persistence, import, formatting, two-view sync, selection, undo/redo, Chinese text, URL safety: PASS')

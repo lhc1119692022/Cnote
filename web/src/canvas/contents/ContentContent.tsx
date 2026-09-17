@@ -1,3 +1,5 @@
+import { batchCanDetach, batchLayout, copyMediaResource, detachGenerationBatch, mediaIdentity, mediaItemNode, recordMediaDimensions, toggleBatchExpanded } from '@/canvas/generation-batch'
+import { useMediaResourceDrag } from '@/canvas/use-media-resource-drag'
 /**
  * 内容节点：只在 CanvasViewport 内容抬升层渲染。
  * 根节点填满父盒（w-full h-full），不做 scale/transform 定位。
@@ -12,6 +14,7 @@ import {
   FileText,
   FileUp,
   Image as ImageIcon,
+  LoaderCircle,
   Maximize2,
   Presentation,
   Share2,
@@ -23,7 +26,7 @@ import {
 import { chooseContentCategory, importContentIntoNode } from '@/canvas/content-import-adapter'
 import { RichTextEditor } from '@/components/ui/rich-text-editor'
 import { useCanvas } from '@/canvas/components/CanvasProvider'
-import type { ContentCategory, ContentNodeSpec, ContentSourceRef, NodeSpec } from '@/domain'
+import type { ContentCategory, ContentNodeSpec, ContentSourceRef, GenerationRun, NodeSpec } from '@/domain'
 import { CONTENT_FILE_ACCEPT, CONTENT_FILE_ACCEPT_BY_CATEGORY, getContentFileAccept } from '@/lib/content-import'
 import { CONTENT_NODE_MIN_SIZE } from '@/lib/flow/node-dimensions'
 import { showMessage } from '@/lib/app-dialog'
@@ -105,6 +108,8 @@ function selectMediaResource(nodeId: string, index: number): void {
   if (!payload || (payload.kind !== 'image' && payload.kind !== 'video') || !payload.resources?.[index]) return
   if (payload.activeResourceIndex === index) return
   graph.updateNode(nodeId, { payload: { ...payload, activeResourceIndex: index } })
+  const resource = payload.resources[index].resource
+  if (resource.width && resource.height) recordMediaDimensions(nodeId, resource.resourceId || resource.url, resource.width, resource.height)
   graph.commitHistory()
 }
 
@@ -250,10 +255,7 @@ function TextBody({ node }: { node: ContentNodeSpec }) {
 
   return (
     <>
-      <div className="flex shrink-0 items-center px-3 py-1.5">
-        <span className="min-w-0 truncate text-xs font-medium text-foreground" title={node.label}>{node.label || '文本'}</span>
-      </div>
-      <div className="min-h-0 flex-1 overflow-hidden px-3 pb-3" onPointerDown={stopNodeGesture}>
+      <div className="min-h-0 flex-1 overflow-hidden p-3" onPointerDown={stopNodeGesture}>
         <RichTextEditor
           key={node.id}
           value={content}
@@ -278,7 +280,7 @@ function ImageBody({ node }: { node: ContentNodeSpec }) {
   if (!src) return <ImportEmpty node={node} description="导入图片，或粘贴图片链接" />
   return (
     <div className="min-h-0 flex-1 overflow-hidden bg-muted/20" onPointerDown={stopNodeGesture}>
-      <img src={src} alt={node.label || '图片'} className="h-full w-full object-contain" draggable={false} />
+      <img src={src} alt={node.label || '图片'} className="h-full w-full object-contain" draggable={false} onLoad={event => recordMediaDimensions(node.id, mediaIdentity(node), event.currentTarget.naturalWidth, event.currentTarget.naturalHeight)} />
     </div>
   )
 }
@@ -314,6 +316,7 @@ function VideoBody({ node }: { node: ContentNodeSpec }) {
         <iframe
           title={video?.title || node.label || 'YouTube'}
           src={`https://www.youtube-nocookie.com/embed/${encodeURIComponent(embedId)}?playsinline=1`}
+          referrerPolicy="strict-origin-when-cross-origin"
           className="h-full w-full border-0"
           allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
           allowFullScreen
@@ -344,7 +347,7 @@ function VideoBody({ node }: { node: ContentNodeSpec }) {
   }
   return (
     <div className="min-h-0 flex-1 overflow-hidden bg-black" onPointerDown={stopNodeGesture}>
-      <video src={playbackUrl} className="h-full w-full object-contain" controls playsInline preload="metadata" />
+      <video src={playbackUrl} className="h-full w-full object-contain" controls playsInline preload="metadata" onLoadedMetadata={event => recordMediaDimensions(node.id, mediaIdentity(node), event.currentTarget.videoWidth, event.currentTarget.videoHeight)} />
     </div>
   )
 }
@@ -355,7 +358,6 @@ function DocumentBody({ node }: { node: ContentNodeSpec }) {
   if (!text) return <ImportEmpty node={node} description="导入 PDF、Word 或 Markdown 文档" />
   return (
     <div className="min-h-0 flex-1 overflow-auto p-4" onPointerDown={stopNodeGesture}>
-      <div className="mb-3 text-sm font-medium text-foreground">{node.preview?.title || node.label || '文档'}</div>
       {documentPayload?.headings?.length ? (
         <div className="mb-3 space-y-1 text-xs text-muted-foreground">
           {documentPayload.headings.slice(0, 8).map((heading, index) => (
@@ -409,7 +411,6 @@ function PresentationBody({ node }: { node: ContentNodeSpec }) {
   const slides = presentation.slides || presentation.outline?.map((title, index) => ({ index: index + 1, title, text: '' })) || []
   return (
     <div className="min-h-0 flex-1 overflow-auto p-4" onPointerDown={stopNodeGesture}>
-      <div className="mb-3 text-sm font-medium text-foreground">{presentation.title || node.label || '演示文稿'}</div>
       <ol className="space-y-3">
         {slides.map((slide) => (
           <li key={slide.index} className="rounded-xl border border-border bg-muted/20 p-3">
@@ -765,15 +766,50 @@ function LeafBody({ node }: { node: ContentNodeSpec }) {
   }
 }
 
+function BatchProgress({ run, resultCount }: { run?: GenerationRun; resultCount: number }) {
+  const [now, setNow] = useState(Date.now)
+  const active = Boolean(run && ['created', 'validating', 'queued', 'running'].includes(run.status))
+  useEffect(() => {
+    if (!active) return
+    const timer = window.setInterval(() => setNow(Date.now()), 1000)
+    return () => window.clearInterval(timer)
+  }, [active, run?.id])
+  const end = active ? now : Math.max(run?.createdAt || now, ...(run?.tasks.map(task => task.completedAt || task.submittedAt || 0) || []))
+  const seconds = Math.max(0, Math.floor((end - (run?.createdAt || end)) / 1000))
+  const time = Math.floor(seconds / 60) + ':' + String(seconds % 60).padStart(2, '0')
+  const label = run ? ({ created: '准备生成', validating: '准备生成', queued: '等待生成', running: '生成中', completed: '生成完成', failed: '生成失败', cancelled: '已取消', 'waiting-for-user': '等待继续' })[run.status] : '等待任务状态'
+  return <div role="status" data-batch-progress className="flex min-h-0 flex-1 flex-col items-center justify-center gap-2 px-6 text-center text-sm text-muted-foreground">
+    {active && <LoaderCircle className="h-5 w-5 animate-spin" aria-hidden />}
+    <span>{label} · {resultCount} 个结果 · {run?.tasks.filter(task => task.status === 'completed').length || 0}/{run?.tasks.length || 0} 项完成 · {time}</span>
+    {run?.tasks.find(task => task.error)?.error && <span className="max-w-full break-words text-xs">{run.tasks.find(task => task.error)?.error}</span>}
+  </div>
+}
+
 export const ContentContent = memo(function ContentContent({ node }: ContentContentProps) {
-  const { hoveredNodeId, selection } = useCanvas()
+  const { hoveredNodeId, selection, containerRef, screenToWorld, hitTestNode } = useCanvas()
+  const resourceDrag = useMediaResourceDrag(node.id, index => selectMediaResource(node.id, index), (index, point, target) => {
+    const canvas = containerRef?.current
+    if (!canvas || !target || !canvas.contains(target) || target.closest('[data-canvas-chrome], [data-content-node], [data-node-id], [data-media-preview], button, input, textarea, select, [contenteditable]')) return
+    const rect = canvas.getBoundingClientRect()
+    if (point.x < rect.left || point.x > rect.right || point.y < rect.top || point.y > rect.bottom) return
+    const world = screenToWorld({ x: point.x - rect.left, y: point.y - rect.top })
+    if (hitTestNode(world)) return
+    copyMediaResource(node.id, index, world)
+  }, node.payload && (node.payload.kind === 'image' || node.payload.kind === 'video') ? node.payload.resources?.map(item => item.resource.resourceId || item.resource.url) : undefined)
+  const isLocked = useGraphStore(state => state.isLocked)
+  const batch = node.generationBatch
+  const batchRun = useRuntimeStore(state => batch ? state.runs[batch.runId] : undefined)
   const editorVisible = hoveredNodeId === node.id || selection.includes(node.id)
   const media = node.payload?.kind === 'image' || node.payload?.kind === 'video' ? node.payload : undefined
   const resources = media?.resources || []
   const activeIndex = Number.isInteger(media?.activeResourceIndex) ? Math.max(0, Math.min(resources.length - 1, media!.activeResourceIndex!)) : 0
+  const expanded = Boolean(batch?.expanded)
+  const grid = batch ? batchLayout(node) : undefined
+  const canExpand = Boolean(batch && resources.length > 1 && batchCanDetach(node))
   return (
     <div
-      className="node-card node-panel-shadow relative flex h-full w-full min-h-0 min-w-0 flex-col overflow-visible rounded-[24px] border border-border bg-card"
+      data-batch-expanded={expanded || undefined}
+      className={expanded ? "relative flex h-full w-full min-h-0 min-w-0 flex-col overflow-visible" : "node-card node-panel-shadow relative flex h-full w-full min-h-0 min-w-0 flex-col overflow-visible rounded-[24px] border border-border bg-card"}
       onPointerDown={stopNodeGesture}
       onDragOver={(event) => {
         if (!media || !event.dataTransfer.types.includes(MEDIA_RESOURCE_TYPE)) return
@@ -804,32 +840,42 @@ export const ContentContent = memo(function ContentContent({ node }: ContentCont
       )}
       {resources.length > 1 && (node.category === 'image' || node.category === 'video') ? (
         <div className="media-resource-rail nodrag nowheel" role="toolbar" aria-label="媒体资源" onPointerDown={stopNodeGesture} onWheel={stopNodeGesture}>
-          {resources.map((item, index) => {
+          {!expanded && resources.map((item, index) => {
             const label = item.label || `${node.category === 'image' ? '图片' : '视频'} ${index + 1}`
             return (
               <button
-                key={`${item.resource.resourceId || item.resource.url}-${index}`}
+key={batch?.resourceKeys[index] || item.resource.resourceId || item.resource.url}
                 type="button"
-                draggable
+                draggable={false}
+                style={{ touchAction: 'none' }}
+                {...resourceDrag.handlers(index)}
                 className={`media-resource-capsule ${index === activeIndex ? 'is-active' : ''}`}
-                title={`拖入预览区或点击显示${label}`}
+                title={`点击或拖入预览区显示${label}；拖到画布空白处创建副本`}
                 aria-label={`显示${label}`}
                 aria-pressed={index === activeIndex}
-                onClick={() => selectMediaResource(node.id, index)}
-                onDragStart={(event) => {
-                  event.stopPropagation()
-                  event.dataTransfer.effectAllowed = 'move'
-                  event.dataTransfer.setData(MEDIA_RESOURCE_TYPE, JSON.stringify({ nodeId: node.id, kind: node.category, index }))
-                }}
+
               >
                 <span>{index + 1}</span><span className="truncate">{label}</span>
               </button>
             )
           })}
+          {(expanded || canExpand) && <button type="button" className="media-resource-capsule media-resource-action" disabled={isLocked || node.disabled} aria-label={expanded ? '收起批次' : '展开批次'} title={expanded ? '收起' : '展开'} onClick={() => toggleBatchExpanded(node.id)}>{expanded ? '收起' : '展开'}</button>}
+          {batch && expanded && <button type="button" className="media-resource-capsule media-resource-action" disabled={isLocked || node.disabled || !batchCanDetach(node) || !resources.length} aria-label="解绑批次" title={batchCanDetach(node) ? '解绑为独立节点，并断开上游连接' : '本轮任务结束后可解绑'} onClick={() => detachGenerationBatch(node.id)}>解绑</button>}
         </div>
       ) : null}
-      <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-[inherit]">
-        {node.category ? <LeafBody node={node} /> : <CategoryPicker node={node} />}
+      <div data-media-preview={media ? node.id : undefined} className={'flex min-h-0 min-w-0 flex-1 flex-col ' + (expanded ? 'overflow-visible ' : 'overflow-hidden rounded-[inherit] ') + (resourceDrag.dragging ? 'ring-2 ring-inset ring-primary/50' : '')}>
+        {batch && expanded && grid ? <div data-batch-grid className="relative min-h-0 flex-1">
+          {resources.map((item, index) => {
+            const cell = grid.cells[index]
+            return <div key={batch.resourceKeys[index]} data-batch-cell={index} role="button" tabIndex={0} aria-label={'选择' + item.label} aria-pressed={index === activeIndex} title={item.label}
+              className={'node-panel-shadow absolute flex min-h-0 min-w-0 flex-col overflow-hidden rounded-[24px] border bg-card outline-none focus-visible:ring-2 focus-visible:ring-primary ' + (index === activeIndex ? 'border-primary ring-1 ring-primary' : 'border-border')}
+              style={{ left: cell.x / grid.size.width * 100 + '%', top: cell.y / grid.size.height * 100 + '%', width: cell.width / grid.size.width * 100 + '%', height: cell.height / grid.size.height * 100 + '%' }}
+              onClickCapture={() => selectMediaResource(node.id, index)}
+              onKeyDown={event => { if (event.target === event.currentTarget && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); event.stopPropagation(); selectMediaResource(node.id, index) } }}>
+              <LeafBody node={mediaItemNode(node, item)} />
+            </div>
+          })}
+        </div> : batch && !resources.length ? <BatchProgress run={batchRun} resultCount={resources.length} /> : node.category ? <LeafBody node={node} /> : <CategoryPicker node={node} />}
       </div>
     </div>
   )

@@ -22,6 +22,7 @@ interface CnoteDesktopApi {
     webRuntime: 'development-server' | 'built-web' | 'fallback'
   }>
   window: {
+    focus?: () => Promise<void>
     minimize: () => Promise<void>
     toggleMaximize: () => Promise<boolean>
     close: () => Promise<void>
@@ -79,6 +80,8 @@ interface CnoteDesktopApi {
     }>
   }
   network: {
+    openStream?: (input: { url: string; requestId: string; method?: string; headers?: Record<string, string>; secretRefs?: Record<string, string>; body?: string | Uint8Array; timeoutMs?: number }) => Promise<{ status: number; statusText: string; headers: Record<string, string>; url: string }>
+    readStream?: (requestId: string) => Promise<Uint8Array | null>
     request: (input: {
       url: string
       requestId?: string
@@ -101,6 +104,9 @@ interface CnoteDesktopApi {
     saveFile: (request: { title?: string; suggestedName: string; filters?: Array<{ name: string; extensions: string[] }>; data: Uint8Array }) => Promise<boolean>
     saveResource: (request: { resourceId: string; fileName: string; data: Uint8Array }) => Promise<string>
     selectDirectory: (request?: { title?: string; defaultPath?: string }) => Promise<string | null>
+    getStorageUsage: () => Promise<{ resources: number; data: number; cache: number; total: number }>
+    clearCache: () => Promise<{ resources: number; data: number; cache: number; total: number }>
+    removeManagedResource: (identity: string) => Promise<void>
     getStorageLocation: () => Promise<{
       currentPath: string
       defaultPath: string
@@ -122,6 +128,7 @@ interface CnoteDesktopApi {
     restart: () => Promise<void>
   }
   storage: {
+    keys: () => Promise<string[]>
     read: (key: string) => Promise<Uint8Array | null>
     write: (key: string, data: Uint8Array) => Promise<void>
     remove: (key: string) => Promise<void>

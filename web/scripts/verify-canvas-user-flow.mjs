@@ -18,13 +18,34 @@ const require = createRequire(import.meta.url)
 const cache = new Map()
 const addedKinds = []
 let providerCalls = 0
+let pushResponse
+let lastProviderSignal
 let finishResponse
 let lastProviderRequest
-const fakeAIState = { apiKeys: [{ id: 'qa-channel', name: 'Test only', providerId: 'custom', modelIds: ['qa-model'] }], getAPIKey: () => 'fixture-not-a-key', createClientForChannel: () => ({ complete: request => { lastProviderRequest = request; providerCalls++; return new Promise(resolve => { finishResponse = resolve }) } }) }
+const fakeAIState = { apiKeys: [{ id: 'qa-channel', name: 'Test only', providerId: 'custom', modelIds: ['qa-model'] }], getAPIKey: () => 'fixture-not-a-key', createClientForChannel: () => ({ async *completeStream(request, signal) {
+  lastProviderRequest = request
+  lastProviderSignal = signal
+  providerCalls++
+  const queued = []
+  let done = false
+  let wake = () => {}
+  pushResponse = value => { queued.push(value); wake() }
+  finishResponse = value => { queued.push(value); done = true; wake() }
+  const stop = () => { done = true; wake() }
+  signal.addEventListener('abort', stop, { once: true })
+  try {
+    while (!signal.aborted) {
+      if (queued.length) yield queued.shift()
+      else if (done) return
+      else await new Promise(resolve => { wake = resolve })
+    }
+  } finally { signal.removeEventListener('abort', stop) }
+} }) }
+const canvasInteraction = { containerRef: { current: null }, screenToWorld: point => point, hitTestNode: () => null }
 const mocks = {
   '@/stores/use-ai-store': { useAIStore: selector => selector(fakeAIState) },
   '@/lib/api': { getProvider: () => ({ protocol: 'chatCompletions' }), getAIModelCapabilities: () => ({ webSearch: 'supported', reasoningLevels: ['low', 'medium', 'high'] }), adaptReasoningLevel: (_, level) => level },
-  '@/canvas/components/CanvasProvider': { useCanvas: () => ({ containerSize: { width: 1440, height: 900 }, hoveredNodeId: null, setHoveredNode() {}, resizing: null, draggingNodeIds: [], worldToScreen: point => point, viewport: { x: 0, y: 0, zoom: 1 }, nodes: [], selection: [] }) },
+  '@/canvas/components/CanvasProvider': { useCanvas: () => ({ ...canvasInteraction, containerSize: { width: 1440, height: 900 }, hoveredNodeId: null, setHoveredNode() {}, resizing: null, draggingNodeIds: [], worldToScreen: point => point, viewport: { x: 0, y: 0, zoom: 1 }, nodes: [], selection: [] }) },
   '@/canvas/content-import-adapter': {},
   '@/lib/content-import': {},
   '@/runtime': { AssetManager: class {} },
@@ -113,7 +134,7 @@ await act(async () => { composer.textContent = 'QA chat'; composer.dispatchEvent
 assert.equal(document.querySelector('[data-extension-panel] [aria-label="输入提示词"]').textContent, 'QA chat')
 await act(async () => document.querySelector('[data-extension-panel] [aria-label="发送消息"]').click())
 assert.equal(providerCalls, 1)
-assert.ok([...document.querySelectorAll('[aria-label="发送消息"]')].every(button => button.disabled), 'both views share sending state')
+assert.equal(document.querySelectorAll('[aria-label="停止生成"]').length, 2, 'both views expose the same stop action')
 assert.ok(inline.textContent.includes('QA chat'))
 await act(async () => { finishResponse('## Fixture reply\n\n**粗体内容**与普通文本。\n\n- 列表项\n\n\x60\x60\x60js\nconst answer = 42\n\x60\x60\x60\n\n| 名称 | 值 |\n| --- | --- |\n| 示例 | 42 |'); await new Promise(resolve => setTimeout(resolve, 0)) })
 assert.ok(inline.textContent.includes('Fixture reply'))
@@ -162,7 +183,33 @@ for (const value of ['识别上游图片', '{{node:image-input}} 识别此图片
   assert.equal(sentContent.find(part => part.type === 'image').source.data, 'aW1hZ2U=')
   await act(async () => { finishResponse('Image fixture reply'); await new Promise(resolve => setTimeout(resolve, 0)) })
 }
+await act(async () => useGraphStore.getState().setSelection([ai.id]))
+await act(async () => { composer.textContent = 'Streaming cancellation'; composer.dispatchEvent(new dom.window.Event('input', { bubbles: true })) })
+await act(async () => inline.querySelector('[aria-label="发送消息"]').click())
+await act(async () => { pushResponse('## Partial'); await new Promise(resolve => setTimeout(resolve, 0)) })
+for (const view of [inline, document.querySelector('[data-extension-panel]')]) {
+  assert.ok([...view.querySelectorAll('h2')].some(heading => heading.textContent === 'Partial'), 'partial Markdown visible before stream finishes')
+}
+await act(async () => { pushResponse(' reply'); await new Promise(resolve => setTimeout(resolve, 0)) })
+await act(async () => document.querySelector('[data-extension-panel] [aria-label="停止生成"]').click())
+assert.equal(lastProviderSignal.aborted, true)
+assert.equal(document.querySelectorAll('[aria-label="停止生成"]').length, 0)
+assert.equal(document.querySelectorAll('[aria-label="发送消息"]').length, 2)
+const cancelledSession = useRuntimeStore.getState().aiSessions[firstSession]
+assert.equal(cancelledSession.messages.at(-1).content, '## Partial reply', 'stop preserves already displayed text')
+await act(async () => { pushResponse(' MUST NOT APPEAR'); await new Promise(resolve => setTimeout(resolve, 0)) })
+assert.equal(inline.textContent.includes('MUST NOT APPEAR'), false)
+const retryUser = [...inline.querySelectorAll('[data-ai-message-role="user"]')].find(element => element.textContent.includes('Streaming cancellation'))
+await act(async () => retryUser.dispatchEvent(new dom.window.MouseEvent('mouseover', { bubbles: true })))
+await act(async () => inline.querySelector('[aria-label="重试最后一条用户消息"]').click())
+await act(async () => { finishResponse('Retry after stop'); await new Promise(resolve => setTimeout(resolve, 0)) })
+assert.equal(useRuntimeStore.getState().aiSessions[firstSession].messages.at(-1).content, 'Retry after stop')
+assert.equal(useRuntimeStore.getState().aiSessions[firstSession].messages.filter(message => message.content === 'Streaming cancellation').length, 1)
+await act(async () => { composer.textContent = 'Navigate away'; composer.dispatchEvent(new dom.window.Event('input', { bubbles: true })) })
+await act(async () => inline.querySelector('[aria-label="发送消息"]').click())
 await act(async () => rootView.unmount())
+await act(async () => useGraphStore.getState().closeDocument())
+assert.equal(lastProviderSignal.aborted, true, 'leaving the document stops its in-flight AI request')
 const { CanvasAddMenu } = load('canvas/components/CanvasAddMenu.tsx')
 const { NodeHoverToolbar } = load('canvas/components/NodeHoverToolbar.tsx')
 const { StickyContent } = load('canvas/contents/StickyContent.tsx')
@@ -186,6 +233,17 @@ assert.equal(useGraphStore.getState().currentDocument.nodes[0].color, 'blue')
 await act(async () => useGraphStore.setState({ isLocked: true }))
 assert.ok([...document.querySelectorAll('[aria-label="便签颜色"] button')].every(button => button.disabled))
 await act(async () => useGraphStore.setState({ isLocked: false }))
+await act(async () => {
+  useGraphStore.getState().setSelection([sticky.id])
+  useUiStore.getState().setShowExtensionPanel(true)
+})
+await act(async () => extraRoot.render(React.createElement(CanvasExtensionPanel)))
+const stickyDetails = document.querySelector('[data-extension-panel]')
+assert.ok(stickyDetails)
+assert.equal(stickyDetails.querySelector('select'), null)
+assert.equal(stickyDetails.querySelector('h3'), null)
+assert.equal(stickyDetails.querySelectorAll('[role="toolbar"] button').length, 6)
+assert.ok(!stickyDetails.querySelector('.cnote-rich-text').closest('.rounded-xl'), 'no nested rounded editor frame')
 await act(async () => extraRoot.render(React.createElement(CanvasAddMenu, { menu: { x: 10, y: 10, clientX: 10, clientY: 10 }, container: null, onClose() {} })))
 const menu = document.querySelector('[data-canvas-add-menu]')
 assert.deepEqual([...menu.children].filter(element => element.tagName !== 'INPUT').map(element => element.getAttribute('role') === 'separator' ? 'separator' : element.textContent.trim()), ['添加内容节点', '添加 AI 节点', '添加请求体', '添加浏览器节点', 'separator', '添加贴纸', '导入文件', 'separator', '内容资料库'])
@@ -214,7 +272,7 @@ assert.ok(!actionButton.classList.contains('bg-destructive'))
 await act(async () => extraRoot.render(React.createElement(GenerationActionButton, { ...buttonProps, running: true, elapsed: '0:11' })))
 assert.ok(actionButton.textContent.includes('生成中 0:11'))
 await act(async () => { actionButton.focus() })
-assert.ok(actionButton.classList.contains('bg-destructive'), 'keyboard focus exposes cancellation')
+assert.ok(!actionButton.classList.contains('bg-destructive'), 'keyboard focus alone does not expose cancellation')
 await act(async () => { actionButton.blur() })
 await act(async () => extraRoot.render(React.createElement(GenerationActionButton, { ...buttonProps, waiting: true })))
 assert.equal(actionButton.textContent, '继续生成')
@@ -224,6 +282,215 @@ assert.deepEqual(actions, ['start', 'cancel', 'resume'])
 await act(async () => extraRoot.render(React.createElement(GenerationActionButton, { ...buttonProps, disabled: true })))
 await act(async () => actionButton.click())
 assert.equal(actions.length, 3)
+const originalElementFromPoint = document.elementFromPoint
+let hitTarget = null
+document.elementFromPoint = () => hitTarget
+const pointerCaptures = new WeakMap()
+HTMLElement.prototype.setPointerCapture = function (id) { pointerCaptures.set(this, id) }
+HTMLElement.prototype.hasPointerCapture = function (id) { return pointerCaptures.get(this) === id }
+HTMLElement.prototype.releasePointerCapture = function () { pointerCaptures.delete(this) }
+function pointer(target, type, options = {}) {
+  const event = new dom.window.MouseEvent(type, { bubbles: true, cancelable: true, button: 0, clientX: 20, clientY: 30, ...options })
+  Object.defineProperty(event, 'pointerId', { value: 7 })
+  target.dispatchEvent(event)
+}
+for (const kind of ['image', 'video']) {
+  const mediaNode = { id: 'media-pointer', kind: 'content', category: kind, label: 'Media', position: { x: 0, y: 0 }, size: { width: 540, height: 430 }, source: null, payload: { kind, activeResourceIndex: 0, resources: [{ label: 'First', resource: { url: 'https://fixture.invalid/first' } }, { label: 'Second', resource: { url: 'https://fixture.invalid/second' } }] } }
+  await act(async () => useGraphStore.getState().openDocument({ id: 'pointer-flow', name: 'Pointer', nodes: [mediaNode], edges: [], viewport: { x: 0, y: 0, zoom: 1 }, createdAt: 1, updatedAt: 1 }))
+  function MediaHarness() { const node = useGraphStore(state => state.currentDocument.nodes[0]); return React.createElement(ContentContent, { node }) }
+  await act(async () => extraRoot.render(React.createElement(MediaHarness)))
+  const buttons = document.querySelectorAll('.media-resource-capsule')
+  assert.equal(buttons.length, 2)
+  assert.equal(buttons[1].draggable, false, 'pointer transfer does not compete with HTML drag-and-drop')
+  canvasInteraction.containerRef.current = document.body
+  document.body.getBoundingClientRect = () => ({ left: 10, top: 20, right: 1450, bottom: 920 })
+  canvasInteraction.screenToWorld = point => ({ x: point.x / 2, y: point.y / 2 })
+  hitTarget = document.body
+  await act(async () => pointer(buttons[1], 'pointerdown'))
+  await act(async () => pointer(buttons[1], 'pointermove', { clientX: 1010, clientY: 820 }))
+  await act(async () => pointer(buttons[1], 'pointerup', { clientX: 1010, clientY: 820 }))
+  const dragCopy = useGraphStore.getState().currentDocument.nodes[1]
+  assert.equal(dragCopy.payload.resources[0].resource.url, 'https://fixture.invalid/second')
+  assert.deepEqual(dragCopy.position, { x: 230, y: 185 }, 'copy uses canvas offset and zoom-correct world position')
+  assert.equal(useGraphStore.getState().currentDocument.nodes[0].payload.resources.length, 2)
+  await act(async () => useGraphStore.getState().undo())
+  canvasInteraction.containerRef.current = null
+  hitTarget = document.querySelector('[data-media-preview]')
+  await act(async () => pointer(buttons[1], 'pointerdown'))
+  await act(async () => pointer(buttons[1], 'pointermove', { clientX: 200, clientY: 120 }))
+  await act(async () => pointer(buttons[1], 'pointerup', { clientX: 200, clientY: 120 }))
+  assert.equal(useGraphStore.getState().currentDocument.nodes[0].payload.activeResourceIndex, 1)
+  await act(async () => buttons[1].dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true, detail: 1 })))
+  await act(async () => useGraphStore.getState().undo())
+  assert.equal(useGraphStore.getState().currentDocument.nodes[0].payload.activeResourceIndex, 0, 'drag commits exactly one history entry')
+  await act(async () => useGraphStore.getState().redo())
+  assert.equal(useGraphStore.getState().currentDocument.nodes[0].payload.activeResourceIndex, 1)
+  hitTarget = document.createElement('div')
+  hitTarget.setAttribute('data-media-preview', 'another-node')
+  await act(async () => { pointer(buttons[0], 'pointerdown'); pointer(buttons[0], 'pointermove', { clientX: 240 }); pointer(buttons[0], 'pointerup', { clientX: 240 }) })
+  assert.equal(useGraphStore.getState().currentDocument.nodes[0].payload.activeResourceIndex, 1, 'dropping into another node is rejected')
+  hitTarget = document.querySelector('[data-media-preview]')
+  for (const cancellation of ['pointercancel', 'lostpointercapture', 'escape']) {
+    await act(async () => { pointer(buttons[0], 'pointerdown'); pointer(buttons[0], 'pointermove', { clientX: 240 }) })
+    await act(async () => {
+      if (cancellation === 'escape') window.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Escape' }))
+      else pointer(buttons[0], cancellation)
+      pointer(buttons[0], 'pointerup', { clientX: 240 })
+    })
+    assert.equal(useGraphStore.getState().currentDocument.nodes[0].payload.activeResourceIndex, 1, cancellation + ' leaves selection intact')
+  }
+  await act(async () => buttons[0].click())
+  assert.equal(useGraphStore.getState().currentDocument.nodes[0].payload.activeResourceIndex, 0, 'keyboard activation still works after cancelled drag')
+}
+document.elementFromPoint = originalElementFromPoint
+const { restoreHostFocus } = load('canvas/restore-host-focus.ts')
+let hostFocusCalls = 0
+window.cnoteDesktop = { window: { focus: async () => { hostFocusCalls++ } } }
+const focusCanvas = document.createElement('div')
+focusCanvas.tabIndex = -1
+const guest = document.createElement('webview')
+guest.tabIndex = 0
+const textInput = document.createElement('input')
+focusCanvas.append(guest, textInput)
+document.body.append(focusCanvas)
+guest.focus()
+restoreHostFocus(focusCanvas, guest)
+assert.equal(document.activeElement, guest, 'clicking guest leaves its keyboard shortcuts alone')
+assert.equal(hostFocusCalls, 0)
+restoreHostFocus(focusCanvas, focusCanvas)
+assert.equal(document.activeElement, focusCanvas, 'blank canvas explicitly regains focus despite pointer preventDefault')
+assert.equal(hostFocusCalls, 1)
+guest.focus()
+restoreHostFocus(focusCanvas, textInput)
+textInput.focus()
+assert.equal(document.activeElement, textInput, 'host input remains editable after focus handoff')
+assert.equal(hostFocusCalls, 2)
+restoreHostFocus(focusCanvas, textInput)
+assert.equal(hostFocusCalls, 2, 'normal host editing does not trigger repeated IPC focus')
+textInput.blur()
+restoreHostFocus(focusCanvas, focusCanvas)
+assert.equal(hostFocusCalls, 3, 'blank click restores native focus even when DOM focus no longer reports the guest')
+focusCanvas.remove()
+delete window.cnoteDesktop
+const toolbarText = readFileSync(new URL('../src/canvas/components/CanvasToolbar.tsx', import.meta.url), 'utf8')
+const toolbarTree = ts.createSourceFile('toolbar.tsx', toolbarText, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX)
+let menuMarkup
+let aiButtonMarkup
+function findToolbarControls(syntax) {
+  if (ts.isJsxElement(syntax)) {
+    const attributes = syntax.openingElement.attributes.properties
+    if (attributes.some(attribute => attribute.name?.getText(toolbarTree) === 'data-toolbar-add-menu')) menuMarkup = syntax.getText(toolbarTree)
+    if (attributes.some(attribute => attribute.name?.getText(toolbarTree) === 'aria-label' && attribute.initializer?.text === '新增 AI 节点')) {
+      aiButtonMarkup = syntax.getText(toolbarTree)
+      let parent = syntax.parent
+      while (parent) { if (ts.isJsxExpression(parent)) assert.ok(!parent.getText(toolbarTree).startsWith('{!compactCenter'), 'AI shortcut must not disappear in compact layouts'); parent = parent.parent }
+    }
+  }
+  ts.forEachChild(syntax, findToolbarControls)
+}
+findToolbarControls(toolbarTree)
+assert.ok(menuMarkup && aiButtonMarkup)
+const toolbarAdds = []
+const { NodeMenuIcon } = load('canvas/components/NodeMenuIcon.tsx')
+const { Button } = load('components/ui/button.tsx')
+const { Sparkles } = require('lucide-react')
+function compiledToolbarFragment(markup, compactCenter = false) {
+  const code = ts.transpileModule('function Fixture() { return (' + markup + ') }', { compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX, target: ts.ScriptTarget.ES2022 } }).outputText
+  return new Function('exports', 'require', 'NodeMenuIcon', 'Button', 'Sparkles', 'addKind', 'compactCenter', code + '; return Fixture')({}, require, NodeMenuIcon, Button, Sparkles, kind => toolbarAdds.push(kind), compactCenter)
+}
+await act(async () => extraRoot.render(React.createElement(compiledToolbarFragment(menuMarkup))))
+assert.deepEqual([...document.querySelectorAll('[data-toolbar-add-menu] button')].map(button => button.textContent.trim()), ['添加内容节点', '添加请求体', '添加浏览器节点'])
+await act(async () => { for (const button of document.querySelectorAll('[data-toolbar-add-menu] button')) button.click() })
+for (const compact of [false, true]) {
+  await act(async () => extraRoot.render(React.createElement(compiledToolbarFragment(aiButtonMarkup, compact))))
+  await act(async () => document.querySelector('[aria-label="新增 AI 节点"]').click())
+}
+assert.deepEqual(toolbarAdds, ['content', 'request', 'browser', 'ai', 'ai'])
+const mainText = readFileSync(new URL('../../desktop/src/main.ts', import.meta.url), 'utf8')
+const mainTree = ts.createSourceFile('main.ts', mainText, ts.ScriptTarget.Latest, true)
+let focusHandler
+function findFocusHandler(syntax) {
+  if (ts.isCallExpression(syntax) && syntax.expression.getText(mainTree) === 'ipcMain.handle' && syntax.arguments[0]?.text === 'window:focus') focusHandler = syntax.arguments[1].getText(mainTree)
+  ts.forEachChild(syntax, findFocusHandler)
+}
+findFocusHandler(mainTree)
+assert.ok(focusHandler)
+let nativeFocused = 0
+const nativeFocus = new Function('mainWindow', 'return (' + focusHandler + ')')({ isDestroyed: () => false, webContents: { id: 1 } })
+nativeFocus({ sender: { id: 2, focus: () => nativeFocused++ } })
+assert.equal(nativeFocused, 0, 'guest cannot steal host focus via IPC')
+nativeFocus({ sender: { id: 1, focus: () => nativeFocused++ } })
+assert.equal(nativeFocused, 1)
+const { create: createStore } = require('zustand')
+const batchModel = { id: 'batch-model', name: 'Batch model', capabilities: ['text-to-image'], parameters: [] }
+const batchChannel = { id: 'batch-channel', name: 'Batch', providerId: 'openai', protocol: 'openai-images', baseURL: 'https://fixture.invalid', enabled: true, modelIds: [batchModel.id] }
+mocks['@/stores/use-generation-store'] = { useGenerationStore: createStore(() => ({ channels: [batchChannel], getModels: () => [batchModel] })), generationChannelSupportsVariant: () => true, generationChannelUsesModelInference: () => false }
+mocks['@/storage/runtime-persistence'] = { flushRuntimePersistence: async () => {} }
+const batchRequests = []
+mocks['@/lib/generation/client'] = { runGenerationTask: (_context, options) => new Promise((resolve, reject) => {
+  const index = batchRequests.length
+  if (options.onRemoteTaskId) void options.onRemoteTaskId('remote-' + index)
+  batchRequests.push({ complete() { const task = { status: 'completed', resultUrls: ['https://fixture.invalid/batch-' + index + '.png'], resultMimeTypes: ['image/png'] }; options.onTaskUpdate(task); resolve(task) }, fail() { const task = { status: 'failed', error: 'Fixture failure' }; options.onTaskUpdate(task); resolve(task) } })
+  options.signal.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')), { once: true })
+}) }
+const { RequestContent } = load('canvas/contents/RequestContent.tsx')
+const batchRequestNode = { id: 'batch-request', kind: 'request', variant: 'image', label: '图片生成', position: { x: 0, y: 0 }, size: { width: 480, height: 420 }, image: { prompt: 'Fixture prompt', channelId: batchChannel.id, model: batchModel.id, outputCount: 3 }, video: {} }
+await act(async () => useGraphStore.getState().openDocument({ id: 'batch-component-flow', name: 'Batch', nodes: [batchRequestNode], edges: [], viewport: { x: 0, y: 0, zoom: 1 }, createdAt: 1, updatedAt: 1 }))
+function BatchHarness() {
+  const nodes = useGraphStore(state => state.currentDocument.nodes)
+  return React.createElement('div', null, ...nodes.map(node => node.kind === 'request' ? React.createElement(RequestContent, { key: node.id, node }) : React.createElement('div', { key: node.id, 'data-batch-view': node.id }, React.createElement(ContentContent, { node }))))
+}
+await act(async () => extraRoot.render(React.createElement(BatchHarness)))
+await act(async () => document.querySelector('[aria-label="开始生成"]').click())
+assert.equal(batchRequests.length, 3)
+let batches = useGraphStore.getState().currentDocument.nodes.filter(node => node.kind === 'content')
+assert.equal(batches.length, 1, 'one placeholder and connection before any output')
+const firstBatchId = batches[0].id
+assert.equal(useGraphStore.getState().currentDocument.edges.length, 1)
+assert.equal(document.querySelectorAll('[data-batch-progress]').length, 1)
+assert.ok(document.querySelector('[data-batch-progress]').textContent.includes('0 个结果 · 0/3 项完成 · 0:00'))
+assert.ok(document.querySelector('[data-batch-progress]').classList.contains('justify-center'))
+await act(async () => batchRequests[2].complete())
+assert.ok(document.querySelector('[data-batch-view] img').src.endsWith('batch-2.png'))
+assert.equal(document.querySelector('[aria-label="展开批次"]'), null, 'running batch cannot expand')
+await act(async () => batchRequests[0].complete())
+assert.equal(document.querySelectorAll('[data-batch-view] img').length, 1)
+await act(async () => batchRequests[1].fail())
+await act(async () => document.querySelector('[aria-label="展开批次"]').click())
+assert.equal(document.querySelector('[aria-label="解绑批次"]').disabled, false)
+assert.equal(document.querySelectorAll('[data-batch-cell]').length, 2)
+assert.ok([...document.querySelectorAll('[data-batch-cell]')].every(cell => cell.textContent === ''), 'no image captions')
+await act(async () => document.querySelector('[aria-label="收起批次"]').click())
+assert.equal(document.querySelectorAll('[data-batch-view] img').length, 1)
+assert.ok(document.querySelector('[data-batch-view] img').src.endsWith('batch-2.png'), 'earlier task completing later does not steal current preview')
+await act(async () => document.querySelector('[aria-label="开始生成"]').click())
+assert.equal(useGraphStore.getState().currentDocument.nodes.filter(node => node.kind === 'content').length, 2)
+assert.equal(useGraphStore.getState().currentDocument.nodes.find(node => node.id === firstBatchId).payload.resources.length, 2)
+await act(async () => batchRequests[3].complete())
+await act(async () => document.querySelector('[aria-label="取消生成"]').click())
+const newBatch = useGraphStore.getState().currentDocument.nodes.filter(node => node.kind === 'content').find(node => node.id !== firstBatchId)
+assert.equal(newBatch.payload.resources.length, 1, 'cancel keeps completed outputs')
+await act(async () => document.querySelector('[data-batch-view="' + firstBatchId + '"] [aria-label="展开批次"]').click())
+await act(async () => document.querySelector('[data-batch-view="' + firstBatchId + '"] [aria-label="解绑批次"]').click())
+assert.equal(useGraphStore.getState().currentDocument.nodes.some(node => node.id === firstBatchId), false)
+await act(async () => useGraphStore.getState().undo())
+assert.ok(document.querySelector('[data-batch-view="' + firstBatchId + '"] [aria-label="收起批次"]'))
+await act(async () => document.querySelector('[aria-label="开始生成"]').click())
+await act(async () => batchRequests[6].complete())
+const resumeRunId = useGraphStore.getState().currentDocument.nodes.find(node => node.id === batchRequestNode.id).latestRunId
+const resumeResultId = useRuntimeStore.getState().runs[resumeRunId].resultNodeId
+await act(async () => extraRoot.render(null))
+assert.equal(useRuntimeStore.getState().runs[resumeRunId].status, 'waiting-for-user')
+const savedBatchDocument = JSON.parse(JSON.stringify(useGraphStore.getState().currentDocument))
+await act(async () => useGraphStore.getState().openDocument(savedBatchDocument))
+await act(async () => extraRoot.render(React.createElement(BatchHarness)))
+await act(async () => document.querySelector('[aria-label="继续生成"]').click())
+assert.equal(useRuntimeStore.getState().runs[resumeRunId].resultNodeId, resumeResultId)
+await act(async () => batchRequests[9].complete())
+await act(async () => batchRequests[10].complete())
+const resumedBatch = useGraphStore.getState().currentDocument.nodes.find(node => node.id === resumeResultId)
+assert.equal(resumedBatch.payload.resources.length, 3, 'resume appends remaining tasks without losing completed output')
+assert.equal(useGraphStore.getState().currentDocument.nodes.filter(node => node.generationBatch?.runId === resumeRunId).length, 1)
 await act(async () => extraRoot.unmount())
 const requestText = readFileSync(new URL('../src/canvas/contents/RequestContent.tsx', import.meta.url), 'utf8')
 const requestTree = ts.createSourceFile('RequestContent.tsx', requestText, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX)

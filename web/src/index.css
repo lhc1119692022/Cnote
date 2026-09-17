@@ -893,12 +893,27 @@
   background: var(--muted);
 }
 
+.media-resource-capsule.media-resource-action {
+  min-width: 104px;
+  min-height: 32px;
+  width: 100%;
+  white-space: nowrap;
+  justify-content: flex-start;
+  cursor: pointer;
+}
+
+.media-resource-capsule.media-resource-action:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
 .media-resource-rail {
   position: absolute;
   right: calc(100% + 16px);
   top: 50%;
   z-index: 12;
   display: flex;
+  min-width: 104px;
   max-width: 190px;
   flex-direction: column;
   gap: 8px;

@@ -8,6 +8,7 @@
   "repository": "https://github.com/lhc1119692022/Cnote",
   "main": "dist/main.js",
   "scripts": {
+    "test:data-directory": "npm run build && node scripts/verify-data-directory.mjs",
     "build": "tsc -p tsconfig.json",
     "build:web": "npm --prefix ../web run build:desktop",
     "build:all": "npm run build:web && npm run build",

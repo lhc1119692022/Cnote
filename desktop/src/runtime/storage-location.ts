@@ -1,103 +1,84 @@
 import { app } from 'electron'
-import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync, openSync, closeSync, unlinkSync } from 'node:fs'
 import path from 'node:path'
+import { randomUUID } from 'node:crypto'
+import { assertMigrationPaths, canonicalDirectory, migrateDataDirectory } from './data-directory'
 
-const STORAGE_CONFIG_DIRECTORY = 'Cnote'
-const STORAGE_CONFIG_FILE = 'storage-location.json'
-// Capture Electron's platform-specific default before any override is applied.
 const DEFAULT_USER_DATA_PATH = path.resolve(app.getPath('userData'))
-
+const portableRoot = process.env.PORTABLE_EXECUTABLE_DIR
+const PORTABLE_DATA_PATH = portableRoot ? path.join(portableRoot, 'CnoteData') : undefined
+interface LocationConfig { sessionDataPath: string; migrateFrom?: string; migrationId?: string }
 export interface StorageLocationInfo {
-  /** Directory used by Electron for cookies, cache, IndexedDB and session data. */
   currentPath: string
-  /** Default Electron user-data directory used when no custom location is configured. */
   defaultPath: string
-  /** Location selected for the next launch, when it differs from currentPath. */
   configuredPath?: string
   restartRequired: boolean
 }
-
 function configPath() {
-  return path.join(app.getPath('appData'), STORAGE_CONFIG_DIRECTORY, STORAGE_CONFIG_FILE)
+  return portableRoot ? path.join(portableRoot, 'cnote-storage-location.json') : path.join(app.getPath('appData'), 'Cnote', 'storage-location.json')
 }
-
-function normalizePath(value: string) {
-  return path.resolve(value)
+function readConfig(): LocationConfig | undefined {
+  if (!existsSync(configPath())) return undefined
+  const config = JSON.parse(readFileSync(configPath(), 'utf8')) as LocationConfig
+  if (!config.sessionDataPath || !path.isAbsolute(config.sessionDataPath)) throw new Error('数据目录配置损坏，已停止启动以保护原数据：' + configPath())
+  return config
 }
-
-function readConfiguredPath() {
-  try {
-    const raw = readFileSync(configPath(), 'utf8')
-    const parsed = JSON.parse(raw) as { sessionDataPath?: unknown }
-    if (typeof parsed.sessionDataPath !== 'string' || !path.isAbsolute(parsed.sessionDataPath)) return undefined
-    return normalizePath(parsed.sessionDataPath)
-  } catch {
-    return undefined
-  }
-}
-
-function writeConfiguredPath(sessionDataPath: string) {
+function writeConfig(config: LocationConfig) {
   const file = configPath()
-  const directory = path.dirname(file)
-  mkdirSync(directory, { recursive: true })
-  const temporary = `${file}.writing-${process.pid}-${Date.now()}`
-  writeFileSync(temporary, JSON.stringify({ sessionDataPath }, null, 2), 'utf8')
+  mkdirSync(path.dirname(file), { recursive: true })
+  const temporary = file + '.writing-' + randomUUID()
+  writeFileSync(temporary, JSON.stringify(config), 'utf8')
   renameSync(temporary, file)
 }
-
 function validateDirectory(value: string) {
-  const candidate = String(value || '').trim()
-  if (!candidate || !path.isAbsolute(candidate)) throw new Error('存储位置必须是绝对路径。')
-  const resolved = normalizePath(candidate)
-  mkdirSync(resolved, { recursive: true })
-  return resolved
+  const target = canonicalDirectory(value)
+  mkdirSync(target, { recursive: true })
+  const probe = path.join(target, '.cnote-write-probe-' + randomUUID())
+  closeSync(openSync(probe, 'wx'))
+  unlinkSync(probe)
+  return target
 }
-
-/** Apply the persisted app-data location before Electron creates sessions. */
 export function configureStorageLocation() {
-  const configured = readConfiguredPath()
-  if (!configured) return
-  try {
-    const target = validateDirectory(configured)
-    if (DEFAULT_USER_DATA_PATH !== target) {
-      // Keep the app journal/secrets and Chromium session data together.
-      app.setPath('userData', target)
-      app.setPath('sessionData', target)
+  const config = readConfig()
+  const target = config?.sessionDataPath || PORTABLE_DATA_PATH || DEFAULT_USER_DATA_PATH
+  if (config?.migrateFrom) {
+    const receipt = path.join(target, '.cnote-migration-complete')
+    const completed = existsSync(receipt) && readFileSync(receipt, 'utf8') === config.migrationId
+    if (!completed) {
+      migrateDataDirectory(config.migrateFrom, target)
+      writeFileSync(receipt, config.migrationId || '', 'utf8')
     }
-  } catch (error) {
-    // Keep the default path if a removable drive or stale directory is gone.
-    console.warn('Cnote custom storage location is unavailable:', error instanceof Error ? error.message : String(error))
+    writeConfig({ sessionDataPath: target })
   }
+  if (config && !existsSync(target)) throw new Error('指定的数据目录不存在：' + target)
+  const location = validateDirectory(target)
+  app.setPath('userData', location)
+  app.setPath('sessionData', location)
+  const temporary = path.join(location, 'temp')
+  mkdirSync(temporary, { recursive: true })
+  app.setPath('temp', temporary)
+  app.setAppLogsPath(path.join(location, 'logs'))
+  const crash = path.join(location, 'Crashpad')
+  mkdirSync(crash, { recursive: true })
+  app.setPath('crashDumps', crash)
 }
-
+export function needsStorageSetup() {
+  return !portableRoot && !readConfig() && !existsSync(path.join(app.getPath('userData'), 'Cnote', 'storage'))
+}
 export function getStorageLocationInfo(): StorageLocationInfo {
-  const defaultPath = DEFAULT_USER_DATA_PATH
-  const currentPath = normalizePath(app.getPath('userData'))
-  const configuredPath = readConfiguredPath()
-  return {
-    currentPath,
-    defaultPath,
-    ...(configuredPath ? { configuredPath } : {}),
-    restartRequired: configuredPath ? configuredPath !== currentPath : currentPath !== defaultPath,
-  }
+  const currentPath = path.resolve(app.getPath('userData'))
+  const configuredPath = readConfig()?.sessionDataPath
+  return { currentPath, defaultPath: PORTABLE_DATA_PATH || DEFAULT_USER_DATA_PATH, configuredPath, restartRequired: Boolean(configuredPath && configuredPath !== currentPath) }
 }
-
 export function setStorageLocation(value: string) {
-  const target = validateDirectory(value)
-  const defaultPath = DEFAULT_USER_DATA_PATH
-  if (target === defaultPath) {
-    resetStorageLocation()
-    return getStorageLocationInfo()
-  }
-  writeConfiguredPath(target)
+  const current = app.getPath('userData')
+  if (path.resolve(value) === path.resolve(current)) { writeConfig({ sessionDataPath: current }); return getStorageLocationInfo() }
+  const { to } = assertMigrationPaths(current, value)
+  validateDirectory(to)
+  writeConfig({ sessionDataPath: to, migrateFrom: current, migrationId: randomUUID() })
   return getStorageLocationInfo()
 }
-
 export function resetStorageLocation() {
-  try {
-    rmSync(configPath(), { force: true })
-  } catch (error) {
-    throw new Error(`无法恢复默认存储位置：${error instanceof Error ? error.message : String(error)}`)
-  }
+  writeConfig({ sessionDataPath: app.getPath('userData') })
   return getStorageLocationInfo()
 }
