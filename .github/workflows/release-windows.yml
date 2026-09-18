@@ -1,0 +1,72 @@
+name: Release Windows portable
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            web/package-lock.json
+            desktop/package-lock.json
+      - name: Check version
+        shell: pwsh
+        run: |
+          $version = (Get-Content desktop/package.json | ConvertFrom-Json).version
+          if ($env:GITHUB_REF_NAME -ne "v$version") { throw 'Tag and desktop version differ' }
+      - name: Install dependencies
+        run: |
+          npm ci --prefix web
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm ci --prefix desktop
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Verify
+        run: |
+          npm --prefix web run typecheck
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm --prefix web run lint
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm --prefix web run test:resource-library
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm --prefix desktop run test:runtime
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm --prefix desktop run test:data-directory
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Build portable executable
+        working-directory: desktop
+        run: npm run package:win:portable
+      - name: Create archive and checksum
+        shell: pwsh
+        run: |
+          $version = (Get-Content desktop/package.json | ConvertFrom-Json).version
+          $executables = @(Get-ChildItem desktop/release -Filter '*-portable-*.exe' -File)
+          if ($executables.Count -ne 1) { throw 'Expected exactly one portable executable' }
+          $bundle = New-Item -ItemType Directory -Path desktop/release/portable-bundle
+          Copy-Item -LiteralPath $executables[0].FullName -Destination $bundle.FullName
+          Copy-Item docs/portable-release.md (Join-Path $bundle.FullName 'README.md')
+          $zip = "desktop/release/Cnote-$version-win-portable-x64.zip"
+          Compress-Archive -Path "$($bundle.FullName)/*" -DestinationPath $zip
+          $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $zip).Hash.ToLowerInvariant()
+          "$hash  $(Split-Path $zip -Leaf)" | Set-Content -Encoding ascii "desktop/release/Cnote-$version-SHA256SUMS.txt"
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        shell: pwsh
+        run: |
+          $version = (Get-Content desktop/package.json | ConvertFrom-Json).version
+          gh release create "$env:GITHUB_REF_NAME" "desktop/release/Cnote-$version-win-portable-x64.zip" "desktop/release/Cnote-$version-SHA256SUMS.txt" --verify-tag --title "Cnote $version · Windows 免安装版" --notes-file docs/portable-release.md
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

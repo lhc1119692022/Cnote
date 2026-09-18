@@ -14,6 +14,10 @@ artifacts/
 .env
 .env.local
 .env.production
+.env.*
+!.env.example
+.dev.vars
+.dev.vars.*
 
 # Database
 *.db
@@ -51,3 +55,15 @@ tmp/
 
 # Private Cloudflare Worker scripts with embedded access secrets
 .private-workers/
+
+# Local desktop data, credentials and portable releases
+CnoteData/
+secrets.json
+secrets.json.*
+cnote-storage-location.json
+cnote-storage-location.json.*
+storage-location.json
+storage-location.json.*
+*.cnote.zip
+*.pem
+*.key
