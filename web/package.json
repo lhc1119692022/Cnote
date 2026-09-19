@@ -7,6 +7,9 @@
   "license": "MIT",
   "repository": "https://github.com/lhc1119692022/Cnote",
   "scripts": {
+    "test:canvas-optimization": "node scripts/verify-frame-task.mjs && node scripts/verify-canvas-optimization.mjs && node scripts/verify-upstream-contract.mjs && node scripts/verify-canvas-navigation.mjs && node scripts/verify-canvas-user-flow.mjs",
+    "test:canvas-release": "node scripts/verify-canvas-release.mjs && npm run typecheck && npm run lint && npm run build && npm run build:desktop && npm --prefix ../desktop run build",
+    "test:prompt-autosize": "node scripts/verify-prompt-autosize.mjs",
     "test:resource-library": "node scripts/verify-resource-library.mjs",
     "test:generation-batch": "node scripts/verify-generation-batch.mjs",
     "test:ai-streaming": "node scripts/verify-ai-streaming.mjs",
@@ -25,7 +28,7 @@
     "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
     "format": "prettier --write \"src/**/*.{ts,tsx,css}\"",
     "test:video-api:mock": "node scripts/verify-video-api-mock.mjs",
-    "test:media-policy": "node scripts/verify-media-policy.mjs",
+    "test:media-policy": "node scripts/verify-media-policy.mjs && node scripts/verify-media-upload-cache.mjs && node scripts/verify-media-storage-refresh.mjs && node scripts/verify-media-readiness.mjs",
     "test:canvas-navigation": "node scripts/verify-canvas-navigation.mjs",
     "test:runtime-persistence": "node scripts/verify-runtime-persistence.mjs",
     "test:capture-materializer": "node scripts/verify-capture-materializer.mjs",

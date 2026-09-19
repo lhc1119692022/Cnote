@@ -1,5 +1,6 @@
 import type {
   GenerationChannelPreset,
+  GenerationChannel,
   GenerationModel,
   GenerationVideoRequestContract,
 } from '@/stores/use-generation-store'
@@ -51,6 +52,53 @@ const KACANG_DOUBAO_CONTRACT: GenerationVideoRequestContract = {
 }
 
 const videoCapabilities = ['text-to-video', 'image-to-video', 'reference-to-video'] as const
+
+export const WAN_3_MODEL: GenerationModel = {
+  id: 'wan-3',
+  name: 'Wan 3',
+  capabilities: [...videoCapabilities, 'first-last-frame', 'video-reference', 'audio-reference', 'generate-audio'],
+  inputTypes: ['image', 'video', 'audio'],
+  maxImages: 10,
+  maxVideos: 5,
+  maxAudios: 5,
+  minDuration: 1,
+  maxDuration: 30,
+  defaultDuration: 5,
+  pollIntervalMs: 10000,
+  promptRequired: true,
+  resolutions: ['720p', '480p', '1080p', '360p', '2k', '4k', '768'],
+  allowCustomResolution: true,
+  aspectRatios: ['16:9', '21:9', '4:3', '1:1', '3:4', '9:16'],
+  allowsFirstFrameOnly: true,
+  allowsAudioOnlyReference: true,
+  videoRequestContract: {
+    createPath: '/v1/videos',
+    pollPath: '/v1/videos/{id}',
+    contentPath: '/v1/videos/{id}/content',
+    durationField: 'duration',
+    resolutionField: 'resolution',
+    aspectRatioField: 'aspect_ratio',
+    firstFrameField: 'input_reference',
+    lastFrameField: 'image_end',
+    imageReferencesField: 'image_urls',
+    videoReferencesField: 'video_urls',
+    audioReferencesField: 'audio_urls',
+    generateAudioField: 'generate_audio',
+  },
+}
+
+export function is808VideoChannel(channel: Pick<GenerationChannel, 'protocol' | 'baseURL' | 'presetId'>, protocol = channel.protocol) {
+  if (protocol === 'video-808relay') return true
+  if (protocol !== 'video-api') return false
+  if (channel.presetId === 'video-808relay') return true
+  try { return /^(api|va)[.]808relay[.]com$/i.test(new URL(channel.baseURL).hostname) } catch { return false }
+}
+
+export function resolve808WanModel(channel: Pick<GenerationChannel, 'protocol' | 'baseURL' | 'presetId'>, modelId: string, protocol = channel.protocol) {
+  return is808VideoChannel(channel, protocol) && /(?:^|[^a-z0-9])wan[-_. ]?3(?![0-9])/i.test(modelId)
+    ? { ...WAN_3_MODEL, id: modelId, name: modelId }
+    : undefined
+}
 
 function create808Model(input: Omit<GenerationModel, 'capabilities'> & { capabilities?: GenerationModel['capabilities'] }): GenerationModel {
   return {
@@ -104,17 +152,7 @@ export const VIDEO_808_MODELS: GenerationModel[] = [
     resolutions: ['480p', '720p', '1080p'],
     aspectRatios: ['21:9', '16:9', '4:3', '1:1', '3:4', '9:16'],
   }),
-  create808Model({
-    id: 'wan-3',
-    name: 'Wan 3',
-    maxImages: 10,
-    maxVideos: 5,
-    maxAudios: 5,
-    minDuration: 2,
-    maxDuration: 30,
-    resolutions: ['480p', '720p', '1080p'],
-    aspectRatios: ['16:9', '9:16'],
-  }),
+  WAN_3_MODEL,
   {
     ...create808Model({
       id: 'gemini-omni-1.1',

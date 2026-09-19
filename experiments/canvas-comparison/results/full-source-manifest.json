@@ -1,0 +1,12 @@
+{
+  "files": {
+    "main.cjs": "93fd417aa535a5743f8e5576372de1cd07ed0854f83978b9c42ac141207fc693",
+    "run.mjs": "471a57cea573570be34038d8af06c34b1901bceeedfe712af9d1f1a8078b6f9d",
+    "fixture.jsx": "e6729dd0d597d862835a9eedac50cb513628954405b20c41cad3e93ca7e51fe9",
+    "fixture.css": "365da3c515f789247445eee18e5fc00ad6ba6589071635f9dd9594126bbb0562",
+    "preload.cjs": "3dc5cb60e2567d068a5b280923fdb6da9df4977066c3af983ec72d7f0df8c97d",
+    "utility.cjs": "eb49a8d1d69f25a4132a9a8e501ce8843d00b7b1c612c311052486c7e3ec98f3",
+    "processor.cjs": "254951aed2cd9e7146d6e3b5fe6125284926a486b41445f97e8765f62fdc4e97",
+    "package-lock.json": "1b1fda55c8b083b776a78ee184303ce2d0a66246f25b37c16caf6e42cc8e02ef"
+  }
+}

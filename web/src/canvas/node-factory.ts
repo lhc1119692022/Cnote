@@ -18,6 +18,7 @@ import {
 } from '@/lib/flow/node-dimensions'
 import type { ContentNodeData, Source } from '@/types/flow'
 import { useGraphStore } from '@/stores/graph-store'
+import { currentCanvasViewport } from '@/stores/canvas-viewport-store'
 
 export type AddableKind = Exclude<NodeKind, 'group'>
 
@@ -108,7 +109,7 @@ export function createAddableNode(kind: AddableKind, position: Point): NodeSpec 
 }
 
 export function addNodeAtViewportCenter(kind: AddableKind, container: Size, inset = { left: 0, right: 0 }): NodeSpec {
-  const view = useGraphStore.getState().view
+  const view = currentCanvasViewport()
   const size = defaultSizeFor(kind)
   const node = createAddableNode(kind, viewportCenterPosition(container, view, size, inset))
   useGraphStore.getState().addNode(node)
@@ -116,7 +117,7 @@ export function addNodeAtViewportCenter(kind: AddableKind, container: Size, inse
 }
 
 export function addNodeAtClient(kind: AddableKind, clientX: number, clientY: number, container: HTMLElement | null): NodeSpec {
-  const view = useGraphStore.getState().view
+  const view = currentCanvasViewport()
   const size = defaultSizeFor(kind)
   const rect = container?.getBoundingClientRect()
   const world = screenToWorld({
@@ -175,7 +176,7 @@ export function contentDataToSpec(
 }
 
 export function addLibrarySource(item: Source, container: Size, inset = { left: 0, right: 0 }): ContentNodeSpec {
-  const view = useGraphStore.getState().view
+  const view = currentCanvasViewport()
   const size = defaultSizeFor('content')
   const node = contentDataToSpec(
     { ...item.nodeData, label: item.title, sourceId: undefined },

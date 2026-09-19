@@ -16,8 +16,11 @@ const moduleUrl = 'data:text/javascript;base64,' + Buffer.from(bundled.outputFil
 const { default: worker } = await import(moduleUrl)
 
 const entries = new Map()
+let writes = 0
 const bucket = {
+  async head(key) { return entries.has(key) ? { key } : null },
   async put(key, value, options = {}) {
+    writes++
     const bytes = new Uint8Array(await new Response(value).arrayBuffer())
     entries.set(key, { bytes, options, uploaded: new Date('2026-01-01T00:00:00.000Z'), etag: `etag-${key}` })
   },
@@ -81,6 +84,7 @@ sameFile.append('file', new File([new TextEncoder().encode('media-contract')], '
 const deduplicated = await request('/upload', { method: 'POST', headers: accessHeaders, body: sameFile })
 assert.equal((await deduplicated.json()).key, uploadedPayload.key)
 assert.equal(entries.size, 1)
+assert.equal(writes, 1, 'identical content is not rewritten')
 
 const mediaPath = new URL(uploadedPayload.url).pathname
 const head = await request(mediaPath, { method: 'HEAD' })
@@ -108,7 +112,7 @@ assert.equal(objects.status, 200)
 const objectPayload = await objects.json()
 assert.equal(objectPayload.objects.length, 1)
 assert.equal(objectPayload.objects[0].key, uploadedPayload.key)
-assert.equal(objectPayload.objects[0].originalName, 'renamed.mp4')
+assert.equal(objectPayload.objects[0].originalName, 'reference.mp4')
 
 const deletedWithoutToken = await request(`/media/${encodeURIComponent(uploadedPayload.key)}`, { method: 'DELETE' })
 assert.equal(deletedWithoutToken.status, 401)

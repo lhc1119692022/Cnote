@@ -58,7 +58,13 @@ export function videoReferenceError(model: GenerationModel | undefined, config: 
   const allowedTypes = videoInputTypes(model, mode)
   if (mode === 'reference-to-video' && !config.references.length && model && model.capabilitySource !== 'inferred' && !model.capabilities.includes('text-to-video')) return '当前模型未配置纯文本生成能力，请添加参考素材'
   if (config.references.some((reference) => !allowedTypes.includes(reference.type))) return '当前模式或模型不支持这些素材类型，请切换模式或移除素材'
-  if (mode === 'first-last-frame' && (config.references.length !== 2 || !config.references.some((reference) => reference.role === 'first_frame') || !config.references.some((reference) => reference.role === 'last_frame'))) return '首尾帧模式需要一张首帧和一张尾帧'
+  if (mode === 'first-last-frame') {
+    const firstFrames = config.references.filter((reference) => reference.role === 'first_frame').length
+    const lastFrames = config.references.filter((reference) => reference.role === 'last_frame').length
+    if (model?.allowsFirstFrameOnly) {
+      if (firstFrames !== 1 || lastFrames > 1 || config.references.length !== firstFrames + lastFrames) return '首尾帧模式需要一张首帧，可选一张尾帧'
+    } else if (config.references.length !== 2 || firstFrames !== 1 || lastFrames !== 1) return '首尾帧模式需要一张首帧和一张尾帧'
+  }
   for (const [type, limit] of [['image', model?.maxImages], ['video', model?.maxVideos], ['audio', model?.maxAudios]] as const) {
     if (limit !== undefined && config.references.filter((reference) => reference.type === type).length > limit) return `${model?.name} 最多支持 ${limit} 个${{ image: '图片', video: '视频', audio: '音频' }[type]}参考素材`
   }

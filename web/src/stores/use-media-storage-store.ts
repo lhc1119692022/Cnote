@@ -260,7 +260,7 @@ export const useMediaStorageStore = create<MediaStorageState>()(
           headers: requestHeaders(current, settings.accessToken),
         }, { secretRefs: requestSecretRefs(current, settings.accessToken) })
         const usage = normalizeUsage(await parseJSON(response))
-        set({ usage })
+        if (get().baseURL === current.baseURL && get().getAccessToken() === tokenFor(current)) set({ usage })
         return usage
       },
       listObjects: async (options) => {
@@ -289,6 +289,7 @@ export const useMediaStorageStore = create<MediaStorageState>()(
           headers: requestHeaders(current, settings.accessToken),
         }, { secretRefs: requestSecretRefs(current, settings.accessToken) })
         await parseJSON(response)
+        notifyMediaStorageChanged()
       },
     }),
     {
@@ -326,4 +327,17 @@ export const MEDIA_STORAGE_DEFAULTS = {
   uploadPath: DEFAULT_UPLOAD_PATH,
   fieldName: DEFAULT_FIELD_NAME,
   responsePath: DEFAULT_RESPONSE_PATH,
+}
+
+export const MEDIA_STORAGE_CHANGED_EVENT = 'cnote-media-storage-changed'
+let refreshTimer: ReturnType<typeof setTimeout> | undefined
+
+export function notifyMediaStorageChanged() {
+  if (refreshTimer) clearTimeout(refreshTimer)
+  refreshTimer = setTimeout(() => {
+    refreshTimer = undefined
+    const storage = useMediaStorageStore.getState()
+    if (storage.baseURL) void storage.refreshUsage().catch(() => undefined)
+    if (typeof window !== 'undefined') window.dispatchEvent(new Event(MEDIA_STORAGE_CHANGED_EVENT))
+  }, 300)
 }

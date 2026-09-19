@@ -6,6 +6,7 @@
  * Web localforage). Entity write/delete finishes before the manifest is updated.
  */
 
+import { parseRequestDiagnostics } from '@/lib/generation/request-diagnostics'
 import type {
   AIMessage,
   AISession,
@@ -136,6 +137,7 @@ let persistQueued = false
 let persistScheduled = false
 let hydrateFailed = false
 const lastSerialized = new Map<string, string>()
+const savedAISessionReferences = new Map<string, object>()
 let persistedIds = createEmptyIdSets()
 
 function createEmptyIdSets(): PersistedIdSets {
@@ -526,6 +528,16 @@ function parseTask(value: unknown): GenerationTask | null {
     task.resultAssetIds = value.resultAssetIds.filter((id): id is string => typeof id === 'string')
   }
   if (typeof value.error === 'string') task.error = value.error
+  const requestDiagnostics = parseRequestDiagnostics(value.requestDiagnostics)
+  if (requestDiagnostics) task.requestDiagnostics = requestDiagnostics
+  if (typeof value.rawStatus === 'string') task.rawStatus = value.rawStatus.slice(0, 256)
+  if (isRecord(value.failureDetails)) {
+    const details: NonNullable<GenerationTask['failureDetails']> = {}
+    for (const field of ['code', 'type', 'requestId'] as const) {
+      if (typeof value.failureDetails[field] === 'string') details[field] = value.failureDetails[field].slice(0, 256)
+    }
+    if (Object.keys(details).length) task.failureDetails = details
+  }
   const submittedAt = asFiniteNumber(value.submittedAt)
   if (submittedAt !== undefined) task.submittedAt = submittedAt
   const completedAt = asFiniteNumber(value.completedAt)
@@ -729,13 +741,18 @@ async function persistSnapshot(state: RuntimeStoreState, strict = false): Promis
     for (const id of currentIds) {
       const entity = records[id]
       if (!entity) continue
+      const key = collection.key(id)
+      if (collection.stateKey === 'aiSessions' && savedAISessionReferences.get(key) === entity) continue
       const serialized = serializeCollectionEntity(collection, entity)
       if (!serialized) continue
-      const key = collection.key(id)
-      if (lastSerialized.get(key) === serialized) continue
+      if (lastSerialized.get(key) === serialized) {
+        if (collection.stateKey === 'aiSessions') savedAISessionReferences.set(key, entity)
+        continue
+      }
       try {
         await localForageStorage.setItem(key, serialized)
         lastSerialized.set(key, serialized)
+        if (collection.stateKey === 'aiSessions') savedAISessionReferences.set(key, entity)
         known.add(id)
       } catch (error) {
         console.warn(`Failed to persist ${key}`, error)
@@ -749,6 +766,7 @@ async function persistSnapshot(state: RuntimeStoreState, strict = false): Promis
       try {
         await localForageStorage.removeItem(key)
         lastSerialized.delete(key)
+        savedAISessionReferences.delete(key)
         known.delete(id)
       } catch (error) {
         console.warn(`Failed to remove ${key}`, error)
@@ -884,5 +902,6 @@ export async function resetRuntimePersistenceForTests(): Promise<void> {
   persistQueued = false
   persistScheduled = false
   lastSerialized.clear()
+  savedAISessionReferences.clear()
   persistedIds = createEmptyIdSets()
 }

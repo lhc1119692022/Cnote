@@ -362,6 +362,9 @@ function runFixture(id, status, extra = {}) {
       inputVersion: 'input-v1',
       remoteTaskId: `remote-${id}`,
       requestSnapshot: snapshotFixture(),
+      rawStatus: 'failed',
+      requestDiagnostics: { fields: ['model', 'duration', 'image_urls'], durationField: 'duration', duration: 5, resolution: '720p', aspectRatio: '9:16', references: [{ type: 'image', transport: 'inline', data: 'must-not-persist' }], apiKey: 'must-not-persist', prompt: 'must-not-persist' },
+      failureDetails: { code: 'generation_failed', type: 'upstream', requestId: 'trace-fixture', apiKey: 'must-not-persist', rawResponse: { secret: 'must-not-persist' } },
       recovery: {
         requestNodeId: 'request-1',
         variant: 'image',
@@ -414,6 +417,9 @@ const recoveredTask = recovered['run-running'].tasks[0]
 assert.equal(recovered['run-running'].requestNodeId, 'request-1')
 assert.equal(recovered['run-running'].variant, 'image')
 assert.equal(recoveredTask.remoteTaskId, 'remote-run-running')
+assert.equal(recoveredTask.rawStatus, 'failed')
+assert.deepEqual(recoveredTask.requestDiagnostics, { fields: ['model', 'duration', 'image_urls'], durationField: 'duration', duration: 5, resolution: '720p', aspectRatio: '9:16', references: [{ type: 'image', transport: 'inline' }] })
+assert.deepEqual(recoveredTask.failureDetails, { code: 'generation_failed', type: 'upstream', requestId: 'trace-fixture' })
 assert.equal(recoveredTask.status, 'running')
 assert.equal(recoveredTask.channelId, 'ch-1')
 assert.equal(recoveredTask.model, 'gpt-image-2')
@@ -450,6 +456,9 @@ assert.equal(parse(runtimeRunKey('run-queued')).status, 'waiting-for-user')
 assert.equal(parse(runtimeRunKey('run-validating')).status, 'waiting-for-user')
 assert.equal(parse(runtimeRunKey('run-done')).status, 'completed')
 assert.equal(parse(runtimeRunKey('run-running')).tasks[0].remoteTaskId, 'remote-run-running')
+assert.equal(parse(runtimeRunKey('run-running')).tasks[0].rawStatus, 'failed')
+assert.deepEqual(parse(runtimeRunKey('run-running')).tasks[0].requestDiagnostics, recoveredTask.requestDiagnostics)
+assert.deepEqual(parse(runtimeRunKey('run-running')).tasks[0].failureDetails, { code: 'generation_failed', type: 'upstream', requestId: 'trace-fixture' })
 assert.equal(parse(runtimeRunKey('run-running')).tasks[0].requestSnapshot.apiKey, undefined)
 
 await resetAll()
@@ -614,4 +623,60 @@ assert.equal(parse(runtimeRunKey('run-keep')).tasks[0].model, 'gpt-image-2')
 assert.equal(parse(runtimeRunKey('run-keep')).tasks[0].remoteTaskId, 'remote-run-keep')
 assert.equal(parse(runtimeRunKey('run-keep')).tasks[0].requestSnapshot.config.prompt, 'a cat')
 
-console.log('verify-runtime-persistence: ok')
+await resetAll()
+await startRuntimePersistence()
+const originalStringify = JSON.stringify
+let encodedSessions = 0
+JSON.stringify = function (value, ...args) {
+  if (value?.id === 'cached-ai') encodedSessions++
+  return originalStringify(value, ...args)
+}
+try {
+  const initial = { id: 'cached-ai', nodeId: 'ai-node', title: 'cached', messages: [{ role: 'assistant', content: 'first', createdAt: 1 }], createdAt: 1, updatedAt: 1 }
+  useRuntimeStore.getState().putAISession(initial)
+  await flushRuntimePersistenceForTests()
+  const firstEncodes = encodedSessions
+  for (let index = 0; index < 5; index++) {
+    useRuntimeStore.getState().createSession(`unrelated-${index}`)
+    await flushRuntimePersistenceForTests()
+  }
+  assert.equal(encodedSessions, firstEncodes, 'unchanged AI sessions are not encoded during unrelated writes')
+  const next = { ...initial, title: 'next', updatedAt: 2 }
+  failKey = runtimeAiSessionKey(initial.id)
+  failOnce = true
+  useRuntimeStore.getState().putAISession(next)
+  await flushRuntimePersistenceForTests()
+  await flushRuntimePersistence()
+  assert.equal(parse(failKey).title, 'next', 'failed write is retried without marking its reference saved')
+  useRuntimeStore.getState().removeAISession(initial.id)
+  await flushRuntimePersistenceForTests()
+  assert.equal(storage.has(failKey), false)
+  useRuntimeStore.getState().putAISession(next)
+  await flushRuntimePersistenceForTests()
+  assert.equal(parse(failKey).title, 'next', 'same reference can be persisted after deletion')
+  const setItem = localForageStorage.setItem
+  let releaseWrite
+  let enteredWrite
+  const entered = new Promise(resolveEntered => { enteredWrite = resolveEntered })
+  const gate = new Promise(resolveGate => { releaseWrite = resolveGate })
+  localForageStorage.setItem = async (key, value) => {
+    if (key === failKey) { enteredWrite(); await gate }
+    return setItem(key, value)
+  }
+  try {
+    useRuntimeStore.getState().putAISession({ ...next, title: 'in-flight', updatedAt: 3 })
+    await entered
+    useRuntimeStore.getState().putAISession({ ...next, title: 'latest', updatedAt: 4 })
+    releaseWrite()
+    await flushRuntimePersistenceForTests()
+    assert.equal(parse(failKey).title, 'latest', 'updates arriving during a save are not lost')
+  } finally {
+    releaseWrite?.()
+    localForageStorage.setItem = setItem
+  }
+} finally {
+  JSON.stringify = originalStringify
+  await resetRuntimePersistenceForTests()
+}
+
+console.log('verify-runtime-persistence: ok (including reference cache, retry, delete/recreate and concurrent update)')

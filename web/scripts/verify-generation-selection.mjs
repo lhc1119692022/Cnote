@@ -53,6 +53,23 @@ mocks.set('@/lib/desktop-secrets', { deleteDesktopSecret: async () => {}, syncDe
 
 const { runGenerationBatch } = load('lib/generation/batch.ts')
 const { generationChannelSupportsVariant } = load('stores/use-generation-store.ts')
+{
+  const { useGenerationStore, generationVideoRequestContractForModel } = load('stores/use-generation-store.ts')
+  const { WAN_3_MODEL } = load('lib/generation/video-catalog.ts')
+  const stale = { id: 'wan-3.0', capabilities: ['generate-audio'], maxImages: 10, resolutions: ['1080p'], videoRequestContract: { durationField: 'seconds', imageReferencesField: 'reference_images' } }
+  const legacy = { id: 'wan-legacy', providerId: 'video', protocol: 'video-808relay', modelIds: ['wan-3.0'], modelCatalog: [stale], videoRequestContract: stale.videoRequestContract }
+  useGenerationStore.setState({ channels: [legacy] })
+  assert.equal(useGenerationStore.getState().getModels('wan-legacy')[0].maxImages, 10)
+  assert.ok(useGenerationStore.getState().getModels('wan-legacy')[0].resolutions.includes('1080p'))
+  assert.deepEqual(generationVideoRequestContractForModel(legacy, stale), WAN_3_MODEL.videoRequestContract)
+  assert.equal(generationVideoRequestContractForModel({ ...legacy, protocol: 'video-kacang' }, stale).durationField, 'seconds', 'other providers retain their own contracts')
+  const { resolve808WanModel } = load('lib/generation/video-catalog.ts')
+  assert.equal(resolve808WanModel({ ...legacy, protocol: 'video-kacang', baseURL: 'https://api.808relay.com' }, 'wan-3.0'), undefined)
+  assert.equal(resolve808WanModel({ ...legacy, protocol: 'video-api', baseURL: 'https://other.test' }, 'wan-3.0'), undefined)
+  assert.equal(resolve808WanModel({ ...legacy, protocol: 'video-api', baseURL: 'https://va.808relay.com' }, 'provider/wan-3.0-custom').id, 'provider/wan-3.0-custom')
+  assert.equal(resolve808WanModel(legacy, 'wan-30'), undefined)
+  useGenerationStore.setState({ channels: [] })
+}
 const {
   generationRequestContextFromSnapshot,
   generationRunStatusFromTasks,

@@ -133,6 +133,7 @@ export default {
       if (!authorized(request, env)) return json(request, { error: 'Unauthorized' }, 401)
       const result = await env.MEDIA_BUCKET.list({
         limit: listLimit(url),
+        include: ['customMetadata'],
         ...(url.searchParams.get('cursor') ? { cursor: url.searchParams.get('cursor') || undefined } : {}),
       })
       return json(request, {
@@ -188,6 +189,8 @@ export default {
         return json(request, { error: 'Checksum mismatch' }, 400)
       }
       const key = mediaKey(checksum)
+      const existing = await env.MEDIA_BUCKET.head(key)
+      if (existing) return json(request, { url: publicURL(request, env, key), key, checksum, reused: true })
       await env.MEDIA_BUCKET.put(key, entry.stream(), {
         httpMetadata: {
           contentType: entry.type || 'application/octet-stream',

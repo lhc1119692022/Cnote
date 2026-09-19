@@ -1,5 +1,5 @@
 import { STICKY_PALETTE, STICKY_COLOR_ORDER } from '@/canvas/sticky-palette'
-import { useEffect, useLayoutEffect, useRef, useState, type ChangeEvent, type KeyboardEvent, type PointerEvent, type ReactNode } from 'react'
+import { memo, useEffect, useLayoutEffect, useRef, useState, type ChangeEvent, type KeyboardEvent, type PointerEvent, type ReactNode } from 'react'
 import { ClipboardCopy, Copy, Download, Globe, Layers3, Link2Off, Pin, RefreshCw, Scissors, Settings2, Sparkles, Star, StickyNote, Trash2 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import type { ContentNodeSpec, NodeSpec } from '@/domain'
@@ -11,7 +11,8 @@ import { useGraphStore } from '@/stores/graph-store'
 import { useSourceStore } from '@/stores/use-source-store'
 import { documentToLegacyFlow } from '@/canvas/document-legacy'
 import { importContentIntoNode } from '@/canvas/content-import-adapter'
-import { useCanvas } from './CanvasProvider'
+import { useCanvasInteraction } from './CanvasProvider'
+import { useCanvasViewportStore } from '@/stores/canvas-viewport-store'
 import { nodeToolbarHorizontalPlacement, nodeToolbarPlacement, nodeToolbarScaleStyle, selectionToolbarTop } from '@/canvas/toolbar-placement'
 import { canvasOverlayInsets } from '@/canvas/overlay-insets'
 import { useUiStore } from '@/stores/ui-store'
@@ -187,8 +188,15 @@ async function downloadContentMedia(node: ContentNodeSpec): Promise<void> {
   })
 }
 
-export function NodeHoverToolbar({ node, selected }: { node: NodeSpec; selected: boolean }) {
-  const { containerSize, hoveredNodeId, setHoveredNode, resizing, draggingNodeIds, worldToScreen, viewport, nodes, selection } = useCanvas()
+const HIDDEN_VIEWPORT = { x: 0, y: 0, zoom: 1 }
+const EMPTY_NODES: NodeSpec[] = []
+
+export const NodeHoverToolbar = memo(function NodeHoverToolbar({ node, selected }: { node: NodeSpec; selected: boolean }) {
+  const { containerSize, hoveredNodeId, setHoveredNode, resizing, draggingNodeIds, worldToScreen, selection } = useCanvasInteraction()
+  const [editing, setEditing] = useState(false)
+  const visible = node.kind === 'group' ? selected : (selected || hoveredNodeId === node.id)
+  const viewport = useCanvasViewportStore(state => visible || editing ? state.view : HIDDEN_VIEWPORT)
+  const nodes = useGraphStore(state => visible || editing ? state.currentDocument?.nodes ?? EMPTY_NODES : EMPTY_NODES)
   const updateNode = useGraphStore((state) => state.updateNode)
   const duplicateNode = useGraphStore((state) => state.duplicateNode)
   const deleteNode = useGraphStore((state) => state.deleteNode)
@@ -197,7 +205,6 @@ export function NodeHoverToolbar({ node, selected }: { node: NodeSpec; selected:
   const showExtensionPanel = useUiStore((state) => state.showExtensionPanel)
   const extensionWidth = useUiStore((state) => state.extensionWidth)
   const overlayInsets = canvasOverlayInsets({ showNodePanel, showExtensionPanel, extensionWidth })
-  const visible = node.kind === 'group' ? selected : (selected || hoveredNodeId === node.id)
   const dragging = resizing?.nodeId === node.id || draggingNodeIds.includes(node.id)
   const nodeScreenStart = worldToScreen(node.position)
   const nodeScreenEnd = worldToScreen({
@@ -205,7 +212,6 @@ export function NodeHoverToolbar({ node, selected }: { node: NodeSpec; selected:
     y: node.position.y + node.size.height,
   })
   const settingsOpen = useUiStore((state) => state.nodeChrome[node.id]?.settings === true)
-  const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState(node.label)
   const [feedback, setFeedback] = useState<{ message: string; tone: 'info' | 'error' } | null>(null)
   const [busy, setBusy] = useState(false)
@@ -613,7 +619,7 @@ export function NodeHoverToolbar({ node, selected }: { node: NodeSpec; selected:
       </div>
     </div>
   )
-}
+})
 
 function ToolbarButton({
   label,

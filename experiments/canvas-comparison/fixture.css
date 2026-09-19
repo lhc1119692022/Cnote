@@ -1,0 +1,10 @@
+html, body, #root { width: 100%; height: 100%; margin: 0; overflow: hidden; font: 12px Arial, sans-serif; }
+.bench-scene { position: relative; width: 100%; height: 100%; overflow: hidden; background: #f8f8f7; color: #222; }
+.bench-world { position: absolute; left: 0; top: 0; transform-origin: 0 0; will-change: transform; }
+.bench-shell { position: absolute; width: 240px; height: 140px; border: 1px solid #c5c5c5; border-radius: 12px; overflow: hidden; background: white; box-sizing: border-box; }
+.bench-body { box-sizing: border-box; width: 240px; height: 140px; padding: 12px; overflow: auto; transform-origin: 0 0; }
+.bench-body p { margin: 2px 0; line-height: 1.3; }
+.bench-body input { width: 170px; height: 20px; border: 1px solid #aaa; }
+.bench-body [contenteditable] { border: 1px solid #ddd; height: 45px; overflow: auto; }
+.react-flow__node-bench { width: 240px; height: 140px; background: white; border: 1px solid #c5c5c5; border-radius: 12px; overflow: hidden; }
+.bench-noise { position: absolute; inset: 0; opacity: .04; pointer-events: none; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.8' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='.5'/%3E%3C/svg%3E"); mix-blend-mode: overlay; }

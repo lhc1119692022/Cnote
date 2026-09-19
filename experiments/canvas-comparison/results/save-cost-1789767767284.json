@@ -1,0 +1,115 @@
+{
+  "scope": "Production saveDocument queue/encoding with an in-memory storage sink, plus production commitHistory; not disk or IPC latency.",
+  "runtime": "v24.15.0",
+  "sources": {
+    "storage/graph-store.ts": "cc084a7192035693da4e5f9b928b7e7ae4be1154712212d1fb44a8ffd697fb5d",
+    "stores/graph-store.ts": "ebefe98cdbcb2f5e690454446a61f6681405b9eefcce16b50401f5b0b4e5eed5"
+  },
+  "rows": [
+    {
+      "count": 30,
+      "repeat": 0,
+      "serializedBytes": 1234678,
+      "saveMs": 1.2087000000000216,
+      "historyMs": 1.0968000000000302
+    },
+    {
+      "count": 30,
+      "repeat": 1,
+      "serializedBytes": 1234678,
+      "saveMs": 1.1912000000000376,
+      "historyMs": 2.8399
+    },
+    {
+      "count": 30,
+      "repeat": 2,
+      "serializedBytes": 1234678,
+      "saveMs": 1.3120000000000118,
+      "historyMs": 0.9990999999999985
+    },
+    {
+      "count": 30,
+      "repeat": 3,
+      "serializedBytes": 1234678,
+      "saveMs": 1.1521000000000186,
+      "historyMs": 1.1301000000000272
+    },
+    {
+      "count": 30,
+      "repeat": 4,
+      "serializedBytes": 1234678,
+      "saveMs": 1.1557000000000244,
+      "historyMs": 0.7426999999999566
+    },
+    {
+      "count": 100,
+      "repeat": 0,
+      "serializedBytes": 4115249,
+      "saveMs": 2.861699999999985,
+      "historyMs": 3.739500000000021
+    },
+    {
+      "count": 100,
+      "repeat": 1,
+      "serializedBytes": 4115249,
+      "saveMs": 2.9803999999999746,
+      "historyMs": 8.123400000000004
+    },
+    {
+      "count": 100,
+      "repeat": 2,
+      "serializedBytes": 4115249,
+      "saveMs": 3.0621999999999616,
+      "historyMs": 2.4074000000000524
+    },
+    {
+      "count": 100,
+      "repeat": 3,
+      "serializedBytes": 4115249,
+      "saveMs": 2.903500000000008,
+      "historyMs": 2.3374000000000024
+    },
+    {
+      "count": 100,
+      "repeat": 4,
+      "serializedBytes": 4115249,
+      "saveMs": 3.101799999999969,
+      "historyMs": 3.3706999999999994
+    },
+    {
+      "count": 300,
+      "repeat": 0,
+      "serializedBytes": 12345849,
+      "saveMs": 10.40809999999999,
+      "historyMs": 18.881100000000004
+    },
+    {
+      "count": 300,
+      "repeat": 1,
+      "serializedBytes": 12345849,
+      "saveMs": 9.881600000000049,
+      "historyMs": 8.421199999999999
+    },
+    {
+      "count": 300,
+      "repeat": 2,
+      "serializedBytes": 12345849,
+      "saveMs": 9.666299999999978,
+      "historyMs": 8.288299999999936
+    },
+    {
+      "count": 300,
+      "repeat": 3,
+      "serializedBytes": 12345849,
+      "saveMs": 10.088100000000054,
+      "historyMs": 8.753199999999993
+    },
+    {
+      "count": 300,
+      "repeat": 4,
+      "serializedBytes": 12345849,
+      "saveMs": 10.226099999999974,
+      "historyMs": 8.501600000000053
+    }
+  ]
+}

@@ -1,0 +1,578 @@
+{
+  "scope": "Deterministic camera-pattern comparison, not runtime rendering or a reconstruction of the original animation library",
+  "assumptions": {
+    "framesPerSecond": 240,
+    "durationSeconds": 2,
+    "targetZoom": 1.2,
+    "springMass": 1,
+    "centerDurationMs": 400,
+    "followDelayMs": 400,
+    "followDurationMs": 680,
+    "retargetAtMs": 150,
+    "manualInterruptAtMs": 200,
+    "easing": "cubic-out chosen for fixed-duration stages because the source excerpt does not specify easing"
+  },
+  "results": [
+    {
+      "variant": "instant",
+      "distance": 100,
+      "retarget": false,
+      "interrupt": false,
+      "settledMs": 4.166666666666667,
+      "overshootPx": 0,
+      "velocityJumpAtRetarget": 0,
+      "cancelPassed": true,
+      "final": {
+        "center": 100,
+        "zoom": 1.2
+      }
+    },
+    {
+      "variant": "ease220",
+      "distance": 100,
+      "retarget": false,
+      "interrupt": false,
+      "settledMs": 216.66666666666669,
+      "overshootPx": 0,
+      "velocityJumpAtRetarget": 0,
+      "cancelPassed": true,
+      "final": {
+        "center": 100,
+        "zoom": 1.2
+      }
+    },
+    {
+      "variant": "spring-critical",
+      "distance": 100,
+      "retarget": false,
+      "interrupt": false,
+      "settledMs": 608.3333333333333,
+      "overshootPx": 0,
+      "velocityJumpAtRetarget": 0,
+      "cancelPassed": true,
+      "final": {
+        "center": 99.99999999725219,
+        "zoom": 1.1999999999807651
+      }
+    },
+    {
+      "variant": "spring-250-25",
+      "distance": 100,
+      "retarget": false,
+      "interrupt": false,
+      "settledMs": 558.3333333333334,
+      "overshootPx": 1.259968907758605,
+      "velocityJumpAtRetarget": 0,
+      "cancelPassed": true,
+      "final": {
+        "center": 99.99999999961534,
+        "zoom": 1.1999999999973072
+      }
+    },
+    {
+      "variant": "center-then-zoom",
+      "distance": 100,
+      "retarget": false,
+      "interrupt": false,
+      "settledMs": 1045.8333333333335,
+      "overshootPx": 0,
+      "velocityJumpAtRetarget": 0,
+      "cancelPassed": true,
+      "final": {
+        "center": 100,
+        "zoom": 1.2
+      }
+    },
+    {
+      "variant": "instant",
+      "distance": 100,
+      "retarget": false,
+      "interrupt": true,
+      "settledMs": null,
+      "overshootPx": 17,
+      "velocityJumpAtRetarget": 0,
+      "cancelPassed": true,
+      "final": {
+        "center": 117,
+        "zoom": 1.2
+      }
+    },
+    {
+      "variant": "ease220",
+      "distance": 100,
+      "retarget": false,
+      "interrupt": true,
+      "settledMs": null,
+      "overshootPx": 16.867449242772082,
+      "velocityJumpAtRetarget": 0,
+      "cancelPassed": true,
+      "final": {
+        "center": 116.86744924277208,
+        "zoom": 1.1990721446994046
+      }
+    },
+    {
+      "variant": "spring-critical",
+      "distance": 100,
+      "retarget": false,
+      "interrupt": true,
+      "settledMs": null,
+      "overshootPx": 0,
+      "velocityJumpAtRetarget": 0,
+      "cancelPassed": true,
+      "final": {
+        "center": 99.71958076956433,
+        "zoom": 1.07903706538695
+      }
+    },
+    {
+      "variant": "spring-250-25",
+      "distance": 100,
+      "retarget": false,
+      "interrupt": true,
+      "settledMs": null,
+      "overshootPx": 10.24835453768965,
+      "velocityJumpAtRetarget": 0,
+      "cancelPassed": true,
+      "final": {
+        "center": 110.24835453768965,
+        "zoom": 1.1527384817638273
+      }
+    },
+    {
+      "variant": "center-then-zoom",
+      "distance": 100,
+      "retarget": false,
+      "interrupt": true,
+      "settledMs": null,
+      "overshootPx": 3.7023609302661953,
+      "velocityJumpAtRetarget": 0,
+      "cancelPassed": true,
+      "final": {
+        "center": 103.7023609302662,
+        "zoom": 0.5
+      }
+    },
+    {
+      "variant": "instant",
+      "distance": 100,
+      "retarget": true,
+      "interrupt": false,
+      "settledMs": 4.166666666666679,
+      "overshootPx": null,
+      "velocityJumpAtRetarget": 0,
+      "cancelPassed": true,
+      "final": {
+        "center": 50,
+        "zoom": 1
+      }
+    },
+    {
+      "variant": "ease220",
+      "distance": 100,
+      "retarget": true,
+      "interrupt": false,
+      "settledMs": 208.33333333333334,
+      "overshootPx": null,
+      "velocityJumpAtRetarget": 793.4196604237354,
+      "cancelPassed": true,
+      "final": {
+        "center": 50,
+        "zoom": 1
+      }
+    },
+    {
+      "variant": "spring-critical",
+      "distance": 100,
+      "retarget": true,
+      "interrupt": false,
+      "settledMs": 445.8333333333333,
+      "overshootPx": null,
+      "velocityJumpAtRetarget": 0,
+      "cancelPassed": true,
+      "final": {
+        "center": 50.00000000629727,
+        "zoom": 1.0000000000169458
+      }
+    },
+    {
+      "variant": "spring-250-25",
+      "distance": 100,
+      "retarget": true,
+      "interrupt": false,
+      "settledMs": 433.33333333333337,
+      "overshootPx": null,
+      "velocityJumpAtRetarget": 0,
+      "cancelPassed": true,
+      "final": {
+        "center": 49.999999998461206,
+        "zoom": 0.9999999999926908
+      }
+    },
+    {
+      "variant": "center-then-zoom",
+      "distance": 100,
+      "retarget": true,
+      "interrupt": false,
+      "settledMs": 1037.5,
+      "overshootPx": null,
+      "velocityJumpAtRetarget": 490.39289686414514,
+      "cancelPassed": true,
+      "final": {
+        "center": 50,
+        "zoom": 1
+      }
+    },
+    {
+      "variant": "instant",
+      "distance": 100,
+      "retarget": true,
+      "interrupt": true,
+      "settledMs": null,
+      "overshootPx": null,
+      "velocityJumpAtRetarget": 0,
+      "cancelPassed": true,
+      "final": {
+        "center": 67,
+        "zoom": 1
+      }
+    },
+    {
+      "variant": "ease220",
+      "distance": 100,
+      "retarget": true,
+      "interrupt": true,
+      "settledMs": null,
+      "overshootPx": null,
+      "velocityJumpAtRetarget": 793.4196604237354,
+      "cancelPassed": true,
+      "final": {
+        "center": 89.9072903902078,
+        "zoom": 1.0859261195370102
+      }
+    },
+    {
+      "variant": "spring-critical",
+      "distance": 100,
+      "retarget": true,
+      "interrupt": true,
+      "settledMs": null,
+      "overshootPx": null,
+      "velocityJumpAtRetarget": 0,
+      "cancelPassed": true,
+      "final": {
+        "center": 89.37192080484668,
+        "zoom": 1.0376464255280797
+      }
+    },
+    {
+      "variant": "spring-250-25",
+      "distance": 100,
+      "retarget": true,
+      "interrupt": true,
+      "settledMs": null,
+      "overshootPx": null,
+      "velocityJumpAtRetarget": 0,
+      "cancelPassed": true,
+      "final": {
+        "center": 98.99429851000825,
+        "zoom": 1.107722257653102
+      }
+    },
+    {
+      "variant": "center-then-zoom",
+      "distance": 100,
+      "retarget": true,
+      "interrupt": true,
+      "settledMs": null,
+      "overshootPx": null,
+      "velocityJumpAtRetarget": 490.39289686414514,
+      "cancelPassed": true,
+      "final": {
+        "center": 83.89852763092546,
+        "zoom": 0.5
+      }
+    },
+    {
+      "variant": "instant",
+      "distance": 2000,
+      "retarget": false,
+      "interrupt": false,
+      "settledMs": 4.166666666666667,
+      "overshootPx": 0,
+      "velocityJumpAtRetarget": 0,
+      "cancelPassed": true,
+      "final": {
+        "center": 2000,
+        "zoom": 1.2
+      }
+    },
+    {
+      "variant": "ease220",
+      "distance": 2000,
+      "retarget": false,
+      "interrupt": false,
+      "settledMs": 220.83333333333331,
+      "overshootPx": 0,
+      "velocityJumpAtRetarget": 0,
+      "cancelPassed": true,
+      "final": {
+        "center": 2000,
+        "zoom": 1.2
+      }
+    },
+    {
+      "variant": "spring-critical",
+      "distance": 2000,
+      "retarget": false,
+      "interrupt": false,
+      "settledMs": 745.8333333333334,
+      "overshootPx": 0,
+      "velocityJumpAtRetarget": 0,
+      "cancelPassed": true,
+      "final": {
+        "center": 1999.999999945044,
+        "zoom": 1.1999999999807651
+      }
+    },
+    {
+      "variant": "spring-250-25",
+      "distance": 2000,
+      "retarget": false,
+      "interrupt": false,
+      "settledMs": 625,
+      "overshootPx": 25.199378155172553,
+      "velocityJumpAtRetarget": 0,
+      "cancelPassed": true,
+      "final": {
+        "center": 1999.9999999923064,
+        "zoom": 1.1999999999973072
+      }
+    },
+    {
+      "variant": "center-then-zoom",
+      "distance": 2000,
+      "retarget": false,
+      "interrupt": false,
+      "settledMs": 1045.8333333333335,
+      "overshootPx": 0,
+      "velocityJumpAtRetarget": 0,
+      "cancelPassed": true,
+      "final": {
+        "center": 2000,
+        "zoom": 1.2
+      }
+    },
+    {
+      "variant": "instant",
+      "distance": 2000,
+      "retarget": false,
+      "interrupt": true,
+      "settledMs": null,
+      "overshootPx": 17,
+      "velocityJumpAtRetarget": 0,
+      "cancelPassed": true,
+      "final": {
+        "center": 2017,
+        "zoom": 1.2
+      }
+    },
+    {
+      "variant": "ease220",
+      "distance": 2000,
+      "retarget": false,
+      "interrupt": true,
+      "settledMs": null,
+      "overshootPx": 14.348984855441586,
+      "velocityJumpAtRetarget": 0,
+      "cancelPassed": true,
+      "final": {
+        "center": 2014.3489848554416,
+        "zoom": 1.1990721446994046
+      }
+    },
+    {
+      "variant": "spring-critical",
+      "distance": 2000,
+      "retarget": false,
+      "interrupt": true,
+      "settledMs": null,
+      "overshootPx": 0,
+      "velocityJumpAtRetarget": 0,
+      "cancelPassed": true,
+      "final": {
+        "center": 1671.3916153912865,
+        "zoom": 1.07903706538695
+      }
+    },
+    {
+      "variant": "spring-250-25",
+      "distance": 2000,
+      "retarget": false,
+      "interrupt": true,
+      "settledMs": null,
+      "overshootPx": 0,
+      "velocityJumpAtRetarget": 0,
+      "cancelPassed": true,
+      "final": {
+        "center": 1881.9670907537932,
+        "zoom": 1.1527384817638273
+      }
+    },
+    {
+      "variant": "center-then-zoom",
+      "distance": 2000,
+      "retarget": false,
+      "interrupt": true,
+      "settledMs": null,
+      "overshootPx": 0,
+      "velocityJumpAtRetarget": 0,
+      "cancelPassed": true,
+      "final": {
+        "center": 1751.047218605324,
+        "zoom": 0.5
+      }
+    },
+    {
+      "variant": "instant",
+      "distance": 2000,
+      "retarget": true,
+      "interrupt": false,
+      "settledMs": 4.166666666666679,
+      "overshootPx": null,
+      "velocityJumpAtRetarget": 0,
+      "cancelPassed": true,
+      "final": {
+        "center": 1000,
+        "zoom": 1
+      }
+    },
+    {
+      "variant": "ease220",
+      "distance": 2000,
+      "retarget": true,
+      "interrupt": false,
+      "settledMs": 220.83333333333334,
+      "overshootPx": null,
+      "velocityJumpAtRetarget": 15868.393208474763,
+      "cancelPassed": true,
+      "final": {
+        "center": 1000,
+        "zoom": 1
+      }
+    },
+    {
+      "variant": "spring-critical",
+      "distance": 2000,
+      "retarget": true,
+      "interrupt": false,
+      "settledMs": 662.5,
+      "overshootPx": null,
+      "velocityJumpAtRetarget": 0,
+      "cancelPassed": true,
+      "final": {
+        "center": 1000.0000001259453,
+        "zoom": 1.0000000000169458
+      }
+    },
+    {
+      "variant": "spring-250-25",
+      "distance": 2000,
+      "retarget": true,
+      "interrupt": false,
+      "settledMs": 616.6666666666667,
+      "overshootPx": null,
+      "velocityJumpAtRetarget": 0,
+      "cancelPassed": true,
+      "final": {
+        "center": 999.9999999692243,
+        "zoom": 0.9999999999926908
+      }
+    },
+    {
+      "variant": "center-then-zoom",
+      "distance": 2000,
+      "retarget": true,
+      "interrupt": false,
+      "settledMs": 1037.5,
+      "overshootPx": null,
+      "velocityJumpAtRetarget": 9807.857937282903,
+      "cancelPassed": true,
+      "final": {
+        "center": 1000,
+        "zoom": 1
+      }
+    },
+    {
+      "variant": "instant",
+      "distance": 2000,
+      "retarget": true,
+      "interrupt": true,
+      "settledMs": null,
+      "overshootPx": null,
+      "velocityJumpAtRetarget": 0,
+      "cancelPassed": true,
+      "final": {
+        "center": 1017,
+        "zoom": 1
+      }
+    },
+    {
+      "variant": "ease220",
+      "distance": 2000,
+      "retarget": true,
+      "interrupt": true,
+      "settledMs": null,
+      "overshootPx": null,
+      "velocityJumpAtRetarget": 15868.393208474763,
+      "cancelPassed": true,
+      "final": {
+        "center": 1475.1458078041562,
+        "zoom": 1.0859261195370102
+      }
+    },
+    {
+      "variant": "spring-critical",
+      "distance": 2000,
+      "retarget": true,
+      "interrupt": true,
+      "settledMs": null,
+      "overshootPx": null,
+      "velocityJumpAtRetarget": 0,
+      "cancelPassed": true,
+      "final": {
+        "center": 1464.4384160969335,
+        "zoom": 1.0376464255280797
+      }
+    },
+    {
+      "variant": "spring-250-25",
+      "distance": 2000,
+      "retarget": true,
+      "interrupt": true,
+      "settledMs": null,
+      "overshootPx": null,
+      "velocityJumpAtRetarget": 0,
+      "cancelPassed": true,
+      "final": {
+        "center": 1656.885970200165,
+        "zoom": 1.107722257653102
+      }
+    },
+    {
+      "variant": "center-then-zoom",
+      "distance": 2000,
+      "retarget": true,
+      "interrupt": true,
+      "settledMs": null,
+      "overshootPx": null,
+      "velocityJumpAtRetarget": 9807.857937282903,
+      "cancelPassed": true,
+      "final": {
+        "center": 1354.970552618509,
+        "zoom": 0.5
+      }
+    }
+  ],
+  "correct": true
+}

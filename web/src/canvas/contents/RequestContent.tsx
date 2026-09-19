@@ -1,4 +1,5 @@
 import { GenerationActionButton } from '@/canvas/components/GenerationActionButton'
+import { usePromptAutosize } from '@/canvas/use-prompt-autosize'
 /**
  * 生成节点内容：只在 CanvasViewport 内容抬升层渲染。
  * 根节点填满父盒（w-full h-full），不做 scale/transform 定位。
@@ -14,7 +15,6 @@ import {
   ChevronDown,
   ChevronUp,
   Image as ImageIcon,
-  Link2,
   LoaderCircle,
   Mic,
   Pause,
@@ -61,6 +61,7 @@ import type {
 } from '@/domain'
 import { runGenerationBatch } from '@/lib/generation/batch'
 import { runGenerationTask, type GenerationRequestContext } from '@/lib/generation/client'
+import { mediaRequestSummary } from '@/lib/generation/request-diagnostics'
 import {
   generationRequestContextFromSnapshot,
   generationRunStatusFromTasks,
@@ -88,6 +89,10 @@ import { AssetManager } from '@/runtime'
 import { loadAssetUrl } from '@/storage/asset-store'
 import { flushRuntimePersistence } from '@/storage/runtime-persistence'
 import { useGraphStore } from '@/stores/graph-store'
+import { currentCanvasViewport } from '@/stores/canvas-viewport-store'
+import { useUpstreamRuntime } from '@/canvas/use-upstream-runtime'
+import { UpstreamInputChips } from '@/canvas/components/UpstreamInputChips'
+import { collectUpstreamInputs } from '@/lib/flow/upstream-inputs'
 import { useUiStore } from '@/stores/ui-store'
 import { canvasOverlayInsets } from '@/canvas/overlay-insets'
 import { bindNodeMenus } from '@/canvas/node-menu-placement'
@@ -238,7 +243,7 @@ function modelConfigUpdates(
 ): Partial<GenerationConfig> {
   if (!config || !model) return {}
   const updates: Partial<GenerationConfig> = {}
-  if (model.resolutions?.length && (!config.resolution || !model.resolutions.includes(config.resolution))) {
+  if (model.resolutions?.length && (!config.resolution || (!model.allowCustomResolution && !model.resolutions.includes(config.resolution)))) {
     updates.resolution = model.resolutions[0]
   }
   if (model.aspectRatios?.length && (!config.aspectRatio || !model.aspectRatios.includes(config.aspectRatio))) {
@@ -343,6 +348,14 @@ function recoveryMetadataForTask(
   }
 }
 
+function generationFailureDetails(raw: unknown): GenerationTask['failureDetails'] {
+  if (!raw || typeof raw !== 'object') return undefined
+  const body = raw as Record<string, any>
+  const error = body.error || body.data?.error || body.task?.error || body.data?.task?.error
+  const text = (value: unknown) => typeof value === 'string' ? value.slice(0, 256) : undefined
+  return { code: text(error?.code), type: text(error?.type), requestId: text(body.request_id || body.requestId) }
+}
+
 function toDomainTask(
   taskId: string,
   legacy: GenerationTaskState,
@@ -357,6 +370,9 @@ function toDomainTask(
     model: legacy.model ?? fallback.model,
     resultAssetIds,
     error: legacy.error,
+    ...(legacy.requestDiagnostics ? { requestDiagnostics: legacy.requestDiagnostics } : {}),
+    rawStatus: legacy.rawStatus,
+    failureDetails: legacy.status === 'failed' ? generationFailureDetails(legacy.rawResponse) : undefined,
     submittedAt: legacy.submittedAt,
     completedAt: legacy.completedAt,
   }
@@ -581,6 +597,7 @@ export const RequestContent = memo(function RequestContent({ node }: { node: Req
   const variantConfig = generationVariant ? node[generationVariant] : null
 
   const [prompt, setPrompt] = useState(variantConfig?.prompt ?? '')
+  usePromptAutosize(promptRef, prompt, generationVariant)
   const [isRunning, setIsRunning] = useState(false)
   const [requestError, setRequestError] = useState<string | null>(null)
   const [activeRunId, setActiveRunId] = useState<string | null>(null)
@@ -601,7 +618,9 @@ export const RequestContent = memo(function RequestContent({ node }: { node: Req
     () => collectUpstreamNodes(node.id, documentNodes, documentEdges),
     [documentEdges, documentNodes, node.id],
   )
-  const upstreamText = useMemo(() => collectUpstreamText(upstreamNodes), [upstreamNodes])
+  const upstreamRuntime = useUpstreamRuntime(upstreamNodes)
+  const upstreamInputs = useMemo(() => collectUpstreamInputs(node.id, upstreamNodes, documentEdges || [], upstreamRuntime), [node.id, upstreamNodes, documentEdges, upstreamRuntime])
+  const upstreamText = useMemo(() => collectUpstreamText(upstreamNodes, upstreamRuntime), [upstreamNodes, upstreamRuntime])
   const localReferences = useMemo(
     () => (generationVariant ? localReferencesFromAssetIds(generationVariant, variantConfig?.referenceAssetIds, assets) : []),
     [assets, generationVariant, variantConfig?.referenceAssetIds],
@@ -781,7 +800,7 @@ export const RequestContent = memo(function RequestContent({ node }: { node: Req
     if (!rootRef.current) return
     return bindNodeMenus(rootRef.current, () => {
       const insets = canvasOverlayInsets(useUiStore.getState())
-      return { zoom: useGraphStore.getState().view.zoom, leftInset: insets.left, rightInset: insets.right }
+      return { zoom: currentCanvasViewport().zoom, leftInset: insets.left, rightInset: insets.right }
     })
   }, [])
 
@@ -1603,11 +1622,6 @@ export const RequestContent = memo(function RequestContent({ node }: { node: Req
             title={`${reference.upstreamNodeId ? '上游引用 · ' : ''}${reference.label || TYPE_LABELS[type]}：拖动调整顺序`}
           >
             <LocalReferencePreview reference={reference} />
-            {reference.upstreamNodeId && (
-              <span className="absolute left-0 top-0 rounded bg-card/90 p-0.5" title="上游引用：移除不会删除源文件" aria-label="上游引用">
-                <Link2 className="h-3 w-3 text-muted-foreground" />
-              </span>
-            )}
             {frameRole && <span className="pointer-events-none absolute bottom-0 left-0 rounded bg-card/90 px-1 text-[9px]">{slotLabel}</span>}
             {generationVariant === 'video' && videoMode === 'first-last-frame' && type === 'image' && (
               <button
@@ -1771,7 +1785,7 @@ export const RequestContent = memo(function RequestContent({ node }: { node: Req
                 options={availableResolutions.map((resolution) => ({
                   value: resolution,
                   label: formatResolutionLabel(resolution),
-                  disabled: Boolean(selectedModel?.resolutions && !selectedModel.resolutions.includes(resolution)),
+                  disabled: Boolean(!selectedModel?.allowCustomResolution && selectedModel?.resolutions && !selectedModel.resolutions.includes(resolution)),
                 }))}
                 onChange={(value) => updateVariant({ resolution: value })}
                 ariaLabel="分辨率"
@@ -1964,7 +1978,7 @@ export const RequestContent = memo(function RequestContent({ node }: { node: Req
             )}
           </div>
 
-          <div className="min-h-0 flex-1 overflow-auto px-3 py-1" onPointerDown={stopNodeGesture} onWheel={stopNodeGesture}>
+          <div className="min-h-[56px] flex-1 overflow-auto px-3 py-1" onPointerDown={stopNodeGesture} onWheel={stopNodeGesture}>
             {isRunning && (
               <div className="mb-2 flex items-center gap-2 px-1 text-xs text-muted-foreground">
                 <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
@@ -1977,6 +1991,12 @@ export const RequestContent = memo(function RequestContent({ node }: { node: Req
                 <Pause className="h-3.5 w-3.5" aria-hidden />
                 <span>已暂停</span>
               </div>
+            )}
+            {generationVariant === 'video' && activeTask?.requestDiagnostics && (
+              <p role="status" className="mb-2 px-1 text-[11px] leading-5 text-muted-foreground" title="已准备的实际请求素材；客户端检查不保证模型服务能够读取。保留期按已配置的 R2 14 天规则估算，不代表任务永久锁定文件。">
+                {mediaRequestSummary(activeTask.requestDiagnostics)}
+                {!!activeTask.requestDiagnostics.unknownRetentionCount && <span> · {activeTask.requestDiagnostics.unknownRetentionCount} 个地址保留期未知</span>}
+              </p>
             )}
             {requestError && (
               <div role="alert" className="mb-2 rounded-xl border border-destructive/25 bg-destructive/5 px-3 py-2 text-xs leading-5 text-destructive">
@@ -1995,7 +2015,8 @@ export const RequestContent = memo(function RequestContent({ node }: { node: Req
             )}
           </div>
 
-          <div className="relative shrink-0 p-2 pt-1">
+          <div className="relative flex min-h-0 shrink flex-col p-2 pt-1">
+            <UpstreamInputChips inputs={upstreamInputs} targetLabel={node.label} />
             {generationVariant === 'video' && mentionContext && mentionCandidates.length > 0 && (
               <div ref={mentionMenuRef}>
                 <PromptMentionMenu
@@ -2007,7 +2028,7 @@ export const RequestContent = memo(function RequestContent({ node }: { node: Req
                 />
               </div>
             )}
-            <div className="flex flex-col gap-2 rounded-2xl border border-border bg-card p-2 focus-within:border-foreground/30 focus-within:ring-1 focus-within:ring-foreground/10">
+            <div className="flex min-h-0 flex-auto flex-col gap-2 rounded-2xl border border-border bg-card p-2 focus-within:border-foreground/30 focus-within:ring-1 focus-within:ring-foreground/10">
               <textarea
                 ref={promptRef}
                 aria-label="输入提示词"
@@ -2018,7 +2039,7 @@ export const RequestContent = memo(function RequestContent({ node }: { node: Req
                 disabled={isRunning || node.disabled}
                 value={prompt}
                 placeholder={generationVariant === 'video' ? VIDEO_MODE_PLACEHOLDERS[videoMode] : '描述要生成的图片'}
-                className="min-h-[40px] flex-1 resize-none bg-transparent px-2 py-1 text-xs leading-5 text-foreground outline-none disabled:opacity-60"
+                className="min-h-[48px] flex-auto resize-none overflow-y-auto overscroll-contain bg-transparent px-2 py-1 text-xs leading-5 text-foreground outline-none disabled:opacity-60"
                 onPointerDown={stopNodeGesture}
                 onWheel={stopNodeGesture}
                 onChange={(event) => {
@@ -2034,7 +2055,7 @@ export const RequestContent = memo(function RequestContent({ node }: { node: Req
                 onClick={handlePromptCaretChange}
                 onBlur={persistPrompt}
               />
-              <div className="flex items-end gap-2">
+              <div className="flex shrink-0 items-end gap-2">
                 {generationControls}
                 <GenerationActionButton
                   running={isRunning}

@@ -54,6 +54,7 @@ const mocks = {
   '@/canvas/node-factory': { addNodeAtClient: kind => addedKinds.push(kind), addLibrarySource() {} },
   '@/canvas/clipboard-import': { importDroppedFile: async () => {} },
 }
+mocks['@/canvas/components/CanvasProvider'].useCanvasInteraction = mocks['@/canvas/components/CanvasProvider'].useCanvas
 dom.window.HTMLElement.prototype.scrollIntoView = () => {}
 
 function load(relative) {
@@ -186,7 +187,7 @@ for (const value of ['识别上游图片', '{{node:image-input}} 识别此图片
 await act(async () => useGraphStore.getState().setSelection([ai.id]))
 await act(async () => { composer.textContent = 'Streaming cancellation'; composer.dispatchEvent(new dom.window.Event('input', { bubbles: true })) })
 await act(async () => inline.querySelector('[aria-label="发送消息"]').click())
-await act(async () => { pushResponse('## Partial'); await new Promise(resolve => setTimeout(resolve, 0)) })
+await act(async () => { pushResponse('## Partial'); await new Promise(resolve => setTimeout(resolve, 60)) })
 for (const view of [inline, document.querySelector('[data-extension-panel]')]) {
   assert.ok([...view.querySelectorAll('h2')].some(heading => heading.textContent === 'Partial'), 'partial Markdown visible before stream finishes')
 }
@@ -515,9 +516,10 @@ assert.ok(!requestText.includes('aria-label="生成变体"'))
 assert.ok(!requestText.includes('mb-1.5 h-3.5 w-3.5 shrink-0 text-muted-foreground'))
 const providerText = readFileSync(new URL('../src/canvas/components/CanvasProvider.tsx', import.meta.url), 'utf8')
 assert.ok(providerText.includes('onDoubleClick='))
-assert.ok(providerText.includes('radial-gradient(circle,'))
-assert.ok(providerText.includes("backgroundSize: '24px 24px'"))
-assert.ok(providerText.includes("backgroundPosition: '0px 0px'"))
+const { canvasDotPattern } = load('canvas/background.ts')
+assert.equal(canvasDotPattern({ x: 0, y: 0, zoom: 1 }).backgroundSize, '24px 24px')
+assert.equal(canvasDotPattern({ x: 24, y: -24, zoom: 1 }).backgroundPosition, '0px 0px')
+assert.ok(providerText.includes('<CanvasBackground />'))
 const providerTree = ts.createSourceFile('CanvasProvider.tsx', providerText, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX)
 let doubleClickSource
 function findDoubleClick(node) { if (ts.isJsxAttribute(node) && node.name.getText(providerTree) === 'onDoubleClick') doubleClickSource = node.initializer.expression.getText(providerTree); ts.forEachChild(node, findDoubleClick) }

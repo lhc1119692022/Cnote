@@ -25,7 +25,7 @@ import {
 } from 'lucide-react'
 import { chooseContentCategory, importContentIntoNode } from '@/canvas/content-import-adapter'
 import { RichTextEditor } from '@/components/ui/rich-text-editor'
-import { useCanvas } from '@/canvas/components/CanvasProvider'
+import { useCanvasInteraction } from '@/canvas/components/CanvasProvider'
 import type { ContentCategory, ContentNodeSpec, ContentSourceRef, GenerationRun, NodeSpec } from '@/domain'
 import { CONTENT_FILE_ACCEPT, CONTENT_FILE_ACCEPT_BY_CATEGORY, getContentFileAccept } from '@/lib/content-import'
 import { CONTENT_NODE_MIN_SIZE } from '@/lib/flow/node-dimensions'
@@ -786,7 +786,7 @@ function BatchProgress({ run, resultCount }: { run?: GenerationRun; resultCount:
 }
 
 export const ContentContent = memo(function ContentContent({ node }: ContentContentProps) {
-  const { hoveredNodeId, selection, containerRef, screenToWorld, hitTestNode } = useCanvas()
+  const { hoveredNodeId, selection, containerRef, screenToWorld, hitTestNode } = useCanvasInteraction()
   const resourceDrag = useMediaResourceDrag(node.id, index => selectMediaResource(node.id, index), (index, point, target) => {
     const canvas = containerRef?.current
     if (!canvas || !target || !canvas.contains(target) || target.closest('[data-canvas-chrome], [data-content-node], [data-node-id], [data-media-preview], button, input, textarea, select, [contenteditable]')) return

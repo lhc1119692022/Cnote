@@ -31,7 +31,7 @@ import { MAX_BROWSER_STORAGE_BYTES } from '@/lib/resource-storage'
 import { listDocuments } from '@/storage'
 import { useAIStore, type APIChannel, type APIChannelInput } from '@/stores/use-ai-store'
 import { useGenerationStore } from '@/stores/use-generation-store'
-import { MEDIA_STORAGE_DEFAULTS, useMediaStorageStore, type MediaStorageObject } from '@/stores/use-media-storage-store'
+import { MEDIA_STORAGE_DEFAULTS, MEDIA_STORAGE_CHANGED_EVENT, useMediaStorageStore, type MediaStorageObject } from '@/stores/use-media-storage-store'
 import { useSourceStore } from '@/stores/use-source-store'
 import { useTemplateStore } from '@/stores/use-template-store'
 import { deleteDesktopSecret, syncDesktopSecret } from '@/lib/desktop-secrets'
@@ -131,6 +131,10 @@ export function APIKeysManager() {
   const [mediaObjects, setMediaObjects] = useState<MediaStorageObject[]>([])
   const [mediaObjectsCursor, setMediaObjectsCursor] = useState<string | undefined>()
   const [mediaDeletingKey, setMediaDeletingKey] = useState<string | null>(null)
+  const [mediaAutoError, setMediaAutoError] = useState('')
+  const mediaObjectsRequestRef = useRef(0)
+  const mediaObjectCountRef = useRef(50)
+  mediaObjectCountRef.current = Math.max(50, mediaObjects.length)
   const importInputRef = useRef<HTMLInputElement>(null)
   const modelRequestRef = useRef<Promise<string[]> | null>(null)
   const protocolMenuRef = useRef<HTMLDivElement>(null)
@@ -204,12 +208,75 @@ export function APIKeysManager() {
   }, [activeTab, refreshStorageOverview])
 
   useEffect(() => {
-    setMediaBaseURL(mediaStorage.baseURL)
-    setMediaUploadPath(mediaStorage.uploadPath || MEDIA_STORAGE_DEFAULTS.uploadPath)
-    setMediaFieldName(mediaStorage.fieldName || MEDIA_STORAGE_DEFAULTS.fieldName)
-    setMediaResponsePath(mediaStorage.responsePath || MEDIA_STORAGE_DEFAULTS.responsePath)
-    setMediaAccessToken(mediaStorage.getAccessToken())
-  }, [mediaStorage])
+    const storage = useMediaStorageStore.getState()
+    setMediaBaseURL(storage.baseURL)
+    setMediaUploadPath(storage.uploadPath || MEDIA_STORAGE_DEFAULTS.uploadPath)
+    setMediaFieldName(storage.fieldName || MEDIA_STORAGE_DEFAULTS.fieldName)
+    setMediaResponsePath(storage.responsePath || MEDIA_STORAGE_DEFAULTS.responsePath)
+    setMediaAccessToken(storage.getAccessToken())
+  }, [mediaStorage.baseURL, mediaStorage.uploadPath, mediaStorage.fieldName, mediaStorage.responsePath, mediaStorage.accessToken, mediaStorage.encryptedAccessToken, mediaStorage.getAccessToken])
+
+  useEffect(() => {
+    if (activeTab !== 'storage' || !mediaStorage.baseURL || !mediaStorage.enabled) return
+    let disposed = false
+    let running = false
+    let refreshAgain = false
+    let lastRefreshedAt = 0
+    let lastFocusAttemptAt = 0
+    let dirty = false
+    const refresh = async (includeUsage = true) => {
+      if (disposed || document.visibilityState === 'hidden') return
+      if (running) { refreshAgain = true; return }
+      running = true
+      const requestId = ++mediaObjectsRequestRef.current
+      try {
+        const storage = useMediaStorageStore.getState()
+        const objects: MediaStorageObject[] = []
+        let cursor: string | undefined
+        const load = async () => {
+          do {
+            const page = await storage.listObjects({ limit: 50, cursor })
+            objects.push(...page.objects)
+            cursor = page.cursor
+          } while (!disposed && cursor && objects.length < mediaObjectCountRef.current)
+        }
+        const outcomes = await Promise.allSettled([includeUsage ? storage.refreshUsage() : Promise.resolve(), load()])
+        if (disposed) return
+        if (outcomes[1].status === 'fulfilled' && requestId === mediaObjectsRequestRef.current) {
+          setMediaObjects(Array.from(new Map(objects.map((object) => [object.key, object])).values()))
+          setMediaObjectsCursor(cursor)
+        }
+        const failure = outcomes.find((outcome) => outcome.status === 'rejected')
+        if (!failure) lastRefreshedAt = Date.now()
+        setMediaAutoError(failure?.status === 'rejected' ? '自动刷新失败：' + String(failure.reason?.message || failure.reason) : '')
+      } finally {
+        running = false
+        if (refreshAgain && !disposed) { refreshAgain = false; void refresh() }
+      }
+    }
+    const onVisible = () => {
+      if (disposed || running || document.visibilityState === 'hidden') return
+      const now = Date.now()
+      if (!dirty && now - Math.max(lastRefreshedAt, lastFocusAttemptAt, useMediaStorageStore.getState().usage?.fetchedAt || 0) < 5 * 60 * 1000) return
+      dirty = false
+      lastFocusAttemptAt = now
+      void refresh()
+    }
+    const onChanged = () => {
+      if (document.visibilityState === 'hidden') { dirty = true; return }
+      void refresh(false)
+    }
+    void refresh()
+    window.addEventListener('focus', onVisible)
+    document.addEventListener('visibilitychange', onVisible)
+    window.addEventListener(MEDIA_STORAGE_CHANGED_EVENT, onChanged)
+    return () => {
+      disposed = true
+      window.removeEventListener('focus', onVisible)
+      document.removeEventListener('visibilitychange', onVisible)
+      window.removeEventListener(MEDIA_STORAGE_CHANGED_EVENT, onChanged)
+    }
+  }, [activeTab, mediaStorage.baseURL, mediaStorage.enabled, mediaStorage.accessToken, mediaStorage.encryptedAccessToken])
 
   useEffect(() => {
     if (mediaStorage.baseURL) return
@@ -296,13 +363,15 @@ export function APIKeysManager() {
   }
 
   const loadMediaObjects = async (cursor?: string) => {
+    const requestId = ++mediaObjectsRequestRef.current
     try {
       const result = await mediaStorage.listObjects({
         limit: 50,
         cursor,
         draft: { baseURL: mediaBaseURL, accessToken: mediaAccessToken },
       })
-      setMediaObjects((current) => cursor ? [...current, ...result.objects] : result.objects)
+      if (requestId !== mediaObjectsRequestRef.current) return
+      setMediaObjects((current) => Array.from(new Map((cursor ? [...current, ...result.objects] : result.objects).map((object) => [object.key, object])).values()))
       setMediaObjectsCursor(result.cursor)
     } catch (error) {
       setMediaMessage(error instanceof Error ? error.message : '无法读取远端对象')
@@ -314,6 +383,7 @@ export function APIKeysManager() {
     setMediaDeletingKey(object.key)
     try {
       await mediaStorage.deleteObject(object.key, { baseURL: mediaBaseURL, accessToken: mediaAccessToken })
+      mediaObjectsRequestRef.current++
       setMediaObjects((current) => current.filter((item) => item.key !== object.key))
       await mediaStorage.refreshUsage({ baseURL: mediaBaseURL, accessToken: mediaAccessToken }).catch(() => undefined)
       setMediaMessage('远端对象已删除')
@@ -746,10 +816,11 @@ export function APIKeysManager() {
                 </div>
                 {mediaMessage && <p className={`mt-3 text-[12px] leading-5 ${mediaMessage.startsWith('连接成功') || mediaMessage.includes('已更新') ? 'text-emerald-600 dark:text-emerald-400' : 'text-muted-foreground'}`}>{mediaMessage}</p>}
 
+                {mediaAutoError && <p role="status" className="mt-2 text-[11px] text-destructive">{mediaAutoError}</p>}
                 {mediaStorage.usage && <div className="mt-5 grid gap-3 sm:grid-cols-2"><div className="rounded-lg bg-muted/50 px-4 py-3"><p className="text-[11px] text-muted-foreground">远端对象</p><p className="mt-1.5 text-lg font-medium">{mediaStorage.usage.objectCount}</p></div><div className="rounded-lg bg-muted/50 px-4 py-3"><p className="text-[11px] text-muted-foreground">远端占用</p><p className="mt-1.5 text-lg font-medium">{formatBytes(mediaStorage.usage.totalBytes)}</p></div></div>}
 
                 <div className="mt-5 flex flex-wrap items-center justify-between gap-2 border-t border-border pt-4"><div><h3 className="text-[12px] font-medium">远端对象</h3><p className="mt-1 text-[11px] text-muted-foreground">只删除你确认不再被任何 Flow 或任务使用的对象。</p></div><Button variant="outline" size="sm" className="gap-1.5" disabled={!mediaBaseURL.trim()} onClick={() => void loadMediaObjects()}><RefreshCw className="h-3.5 w-3.5" />查看对象</Button></div>
-                {mediaObjects.length > 0 && <div className="mt-3 space-y-2">{mediaObjects.map((object) => <article key={object.key} className="flex items-center justify-between gap-3 rounded-lg border border-border bg-background px-3 py-2.5"><div className="min-w-0"><p className="truncate text-[12px] font-medium">{object.originalName || object.key}</p><p className="mt-1 truncate text-[10px] text-muted-foreground">{formatBytes(object.size)}{object.uploaded ? ` · ${new Date(object.uploaded).toLocaleString()}` : ''}</p></div><Button variant="outline" size="icon-sm" aria-label={`删除远端对象 ${object.originalName || object.key}`} disabled={mediaDeletingKey === object.key} onClick={() => void deleteMediaObject(object)}><Trash2 className="h-3.5 w-3.5 text-destructive" /></Button></article>)}{mediaObjectsCursor && <Button variant="secondary" size="sm" className="mt-2 w-full" onClick={() => void loadMediaObjects(mediaObjectsCursor)}>加载更多</Button>}</div>}
+                {mediaObjects.length > 0 && <div className="mt-3 space-y-2">{mediaObjects.map((object) => <article key={object.key} title={object.key} className="flex items-center justify-between gap-3 rounded-lg border border-border bg-background px-3 py-2.5"><div className="min-w-0"><p className="truncate text-[12px] font-medium">{object.originalName || object.key}</p><p className="mt-1 truncate text-[10px] text-muted-foreground">{formatBytes(object.size)}{object.uploaded ? ` · ${new Date(object.uploaded).toLocaleString()}` : ''}</p></div><Button variant="outline" size="icon-sm" aria-label={`删除远端对象 ${object.originalName || object.key}`} disabled={mediaDeletingKey === object.key} onClick={() => void deleteMediaObject(object)}><Trash2 className="h-3.5 w-3.5 text-destructive" /></Button></article>)}{mediaObjectsCursor && <Button variant="secondary" size="sm" className="mt-2 w-full" onClick={() => void loadMediaObjects(mediaObjectsCursor)}>加载更多</Button>}</div>}
 
               </div>
 

@@ -33,4 +33,4 @@
 
 ## 素材地址
 
-Kacang 视频预设的文档合同标记为 `requiresPublicHttps`。因此设置页不会为该预设提供内联 Data URL 选项；本地素材应通过自定义媒体存储转换为公网 HTTPS 地址。已经是公网 HTTPS 的上游素材可直接引用，不需要再次上传。读取地址必须是媒体 Worker 源站上的完整 HTTP 200 文件；R2 公共开发域名在 Range 请求下会返回 206，Kacang 无法使用。
+Kacang 视频预设的文档合同标记为 `requiresPublicHttps`。所有视频渠道现在统一使用自定义媒体存储，不再提供内联提交选项；本地素材先转换为公网 HTTPS 地址。已经是公网 HTTPS 的上游素材可直接引用，不需要再次上传。读取地址必须是媒体 Worker 源站上的完整 HTTP 200 文件；R2 公共开发域名在 Range 请求下会返回 206，Kacang 无法使用。

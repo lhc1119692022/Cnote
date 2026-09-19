@@ -17,6 +17,7 @@ import {
   GRAPH_AUTOSAVE_DELAY_MS,
   cancelScheduledGraphPersist,
   createDocument,
+  currentGraphSource,
   deleteDocument,
   flushGraphPersist,
   hydrateRuntimeStore,
@@ -30,11 +31,6 @@ import {
 import { canvasOverlayInsets } from '@/canvas/overlay-insets'
 import { useGraphStore } from '@/stores/graph-store'
 import { useUiStore } from '@/stores/ui-store'
-
-function currentGraphSource() {
-  const { currentDocument, view } = useGraphStore.getState()
-  return { doc: currentDocument, view }
-}
 
 /** 量画布容器，给屏幕中心 → 世界坐标换算用。 */
 function useContainerSize(ref: RefObject<HTMLElement | null>): Size {
@@ -218,8 +214,8 @@ export function CanvasEditorPage() {
     void boot()
     return () => {
       cancelled = true
-      const { currentDocument: doc, view: currentView } = useGraphStore.getState()
-      void flushGraphPersist(() => ({ doc, view: currentView }))
+      const source = currentGraphSource()
+      void flushGraphPersist(() => source)
     }
   }, [flowId, navigate, openLoaded])
 
@@ -234,8 +230,8 @@ export function CanvasEditorPage() {
 
   useEffect(() => {
     const flushOpenGraph = () => {
-      const { currentDocument: doc, view: currentView } = useGraphStore.getState()
-      void flushGraphPersist(() => ({ doc, view: currentView }))
+      const source = currentGraphSource()
+      void flushGraphPersist(() => source)
     }
     const onVisibility = () => {
       if (document.visibilityState === 'hidden') flushOpenGraph()

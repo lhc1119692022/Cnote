@@ -671,7 +671,7 @@ assert.equal(wheelDeltaToPixels(Number.NaN, 0, 800), 0)
         const overlayInsets = canvasOverlayInsets({ showNodePanel, showExtensionPanel, extensionWidth: 368 })
         const nodes = [stickyNode('left', -200, 100, 540, 430), stickyNode('right', 231, 12, 540, 430)]
         let fitted
-        const run = vm.runInNewContext(compiled, { nodes, containerSize: { width, height: 920 }, overlayInsets, CANVAS_CONTROLS_OCCUPIED_WIDTH, fitBounds, unionRect, nodeRect, setViewport: value => { fitted = value } })
+        const run = vm.runInNewContext(compiled, { nodes, containerSize: { width, height: 920 }, overlayInsets, CANVAS_CONTROLS_OCCUPIED_WIDTH, fitBounds, unionRect, nodeRect, navigateToViewport: value => { fitted = value } })
         run()
         for (const node of nodes) {
           const origin = worldToScreen(node.position, fitted)
@@ -865,10 +865,10 @@ function stickyNode(id, x, y, width = 100, height = 80, extra = {}) {
   almostEqual(world1.height, 600 + overscan * 2, 'visibleWorld zoom1 h')
 
   const world2 = visibleWorldRect({ x: 100, y: 50, zoom: 2 }, { width: 400, height: 300 })
-  almostEqual(world2.x, (0 - 100) / 2 - overscan, 'visibleWorld zoom2 x')
-  almostEqual(world2.y, (0 - 50) / 2 - overscan, 'visibleWorld zoom2 y')
-  almostEqual(world2.width, 400 / 2 + overscan * 2, 'visibleWorld zoom2 w')
-  almostEqual(world2.height, 300 / 2 + overscan * 2, 'visibleWorld zoom2 h')
+  almostEqual(world2.x, (0 - 100 - overscan) / 2, 'visibleWorld zoom2 x')
+  almostEqual(world2.y, (0 - 50 - overscan) / 2, 'visibleWorld zoom2 y')
+  almostEqual(world2.width, (400 + overscan * 2) / 2, 'visibleWorld zoom2 w')
+  almostEqual(world2.height, (300 + overscan * 2) / 2, 'visibleWorld zoom2 h')
 
   const visible = visibleWorldRect({ x: 0, y: 0, zoom: 1 }, { width: 400, height: 300 }, 240)
   const inside = stickyNode('in', 10, 10)
@@ -1154,7 +1154,7 @@ function stickyNode(id, x, y, width = 100, height = 80, extra = {}) {
   const nodesRef = { current: originalNodes }
   const noop = () => {}
   const compiled = ts.transpileModule('const handler = ' + handler, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText
-  emitRef.current = new Function('useGraphStore', 'useUiStore', 'duplicateDragRef', 'dragOriginRef', 'nodesRef', 'movableDragIds', 'setDraggingNodeIds', 'setMarquee', 'viewportRef', 'emitRef', compiled + '; return handler')(useGraphStore, { getState: () => ({ setViewportMoving: noop, setSelectedEdgeId: noop }) }, duplicateDragRef, dragOriginRef, nodesRef, movableDragIds, noop, noop, { current: { zoom: 1 } }, emitRef)
+  emitRef.current = new Function('useGraphStore', 'useUiStore', 'duplicateDragRef', 'dragOriginRef', 'nodesRef', 'movableDragIds', 'setDraggingNodeIds', 'setMarquee', 'viewportRef', 'emitRef', 'moveFrame', 'panOriginRef', compiled + '; return handler')(useGraphStore, { getState: () => ({ setViewportMoving: noop, setSelectedEdgeId: noop }) }, duplicateDragRef, dragOriginRef, nodesRef, movableDragIds, noop, noop, { current: { zoom: 1 } }, emitRef, { cancel: noop }, { current: null })
   const emit = (type, x = 0, y = 0) => emitRef.current({ type, nodeId: 'first', deltaWorld: { x, y } })
   emit('node-drag-start')
   emit('node-drag-end', 1)
@@ -1210,10 +1210,14 @@ function stickyNode(id, x, y, width = 100, height = 80, extra = {}) {
   ]) {
     const calls = []
     const panClickRef = { current: false }
-    const handler = new Function('restoreHostFocus', 'panClickRef', 'spacePressed', 'interaction', 'resizeRef', 'pointerDown', 'getPointerInput', compiled + '; return handler')(() => {}, panClickRef, scenario.space, { getMode: () => scenario.mode }, { current: scenario.resize }, () => calls.push('pan'), () => ({}))
+    let interrupted = 0
+    let committed = 0
+    const handler = new Function('restoreHostFocus', 'panClickRef', 'spacePressed', 'interaction', 'resizeRef', 'pointerDown', 'getPointerInput', 'cancelMotion', 'finishViewport', compiled + '; return handler')(() => {}, panClickRef, scenario.space, { getMode: () => scenario.mode }, { current: scenario.resize }, () => calls.push('pan'), () => ({}), () => { interrupted++ }, () => { committed++ })
     handler({ button: scenario.button, pointerId: 7, target: { closest: () => scenario.chrome }, preventDefault: () => calls.push('prevent'), stopPropagation: () => calls.push('stop'), currentTarget: { setPointerCapture: (id) => { assert.equal(id, 7); calls.push('capture') } } })
     assert.deepEqual(calls, scenario.expected ? ['prevent', 'stop', 'capture', 'pan'] : [], JSON.stringify(scenario))
     assert.equal(panClickRef.current, scenario.expected)
+    assert.equal(interrupted, 1)
+    assert.equal(committed, 1)
   }
   assert.match(source.text, /onPointerDownCapture={onPointerDownCapture}/)
   assert.match(source.text, /onClickCapture=/)
@@ -1245,7 +1249,7 @@ function stickyNode(id, x, y, width = 100, height = 80, extra = {}) {
     const resizeRef = { current: { nodeId: node.id, origin: { ...node.size } } }
     let resizing = true
     let moving = true
-    const handler = new Function('useGraphStore', 'useUiStore', 'resizeRef', 'setResizing', compiled + '; return handler')(useGraphStore, { getState: () => ({ setViewportMoving: (value) => { moving = value } }) }, resizeRef, (value) => { resizing = value })
+    const handler = new Function('useGraphStore', 'useUiStore', 'resizeRef', 'setResizing', 'moveFrame', compiled + '; return handler')(useGraphStore, { getState: () => ({ setViewportMoving: (value) => { moving = value } }) }, resizeRef, (value) => { resizing = value }, { flush() {}, cancel() {} })
     handler(scenario.commit)
     assert.equal(resizeRef.current, null)
     assert.equal(resizing, null)
@@ -1891,26 +1895,19 @@ function stickyNode(id, x, y, width = 100, height = 80, extra = {}) {
   assert.equal(stored.state, 'empty')
   assert.equal(history, 4, 'each completed replacement is one undoable operation')
 
-  for (const [path, name, empty] of [
-    ['canvas/contents/AIContent.tsx', 'textFromUpstreamNode', 'Fallback label'],
-    ['canvas/contents/request-generation.ts', 'textFromNode', ''],
-  ]) {
-    const code = readFileSync(join(srcRoot, path), 'utf8')
-    const source = ts.createSourceFile(path, code, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX)
-    const declaration = source.statements.find((statement) => ts.isFunctionDeclaration(statement) && statement.name?.text === name)
-    const reader = vm.runInNewContext(ts.transpileModule(declaration.getText(source) + '\n' + name, {
-      compilerOptions: { target: ts.ScriptTarget.ES2022 },
-    }).outputText, { contentNodeText })
+  {
+    const { upstreamNodeInput } = loadFrom(withExt(join(srcRoot, 'lib/flow/upstream-inputs')))
+    const reader = node => upstreamNodeInput(node).text
     for (const [payload, expected] of [
       [{ kind: 'text', value: 'Parsed text' }, 'Parsed text'],
       [{ kind: 'document', plainText: 'Document body' }, 'Document body'],
       [{ kind: 'social', bodyText: 'Social body' }, 'Social body'],
       [{ kind: 'video', transcript: 'Transcript' }, 'Transcript'],
     ]) {
-      assert.equal(reader({ kind: 'content', label: 'Fallback label', payload }), expected, path + ' reads actual payload text')
+      assert.equal(reader({ kind: 'content', label: 'Fallback label', payload }), expected, 'shared collector reads actual payload text')
       assert.equal(reader({ kind: 'content', label: 'Fallback label', payload, content: 'Edited text' }), 'Edited text')
     }
-    assert.equal(reader({ kind: 'content', label: 'Fallback label', payload: { kind: 'image', resources: [] } }), empty)
+    assert.equal(reader({ kind: 'content', label: 'Fallback label', payload: { kind: 'image', resources: [] } }), '')
   }
 }
 

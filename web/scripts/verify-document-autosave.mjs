@@ -160,4 +160,28 @@ assert.equal(switched.doc.updatedAt, 13)
   assert.equal(legacyFlowToDocument(stale).nodes[0].document, undefined)
 }
 
-console.log('document autosave: PASS')
+{
+  const { useGraphStore } = load('stores/graph-store.ts')
+  const { stageCanvasViewport, useCanvasViewportStore } = load('stores/canvas-viewport-store.ts')
+  const { currentGraphSource } = load('storage/graph-session.ts')
+  resetGraphSessionForTests()
+  useGraphStore.getState().openDocument(doc)
+  const pendingView = { x: 125, y: -45, zoom: 1.4 }
+  stageCanvasViewport(pendingView)
+  assert.deepEqual(useCanvasViewportStore.getState().view, doc.viewport)
+  await flushGraphPersist(currentGraphSource)
+  const savedBeforeFrame = await loadDocument(doc.id)
+  assert.equal(savedBeforeFrame.ok, true)
+  assert.deepEqual(savedBeforeFrame.doc.viewport, pendingView)
+  const closingSource = currentGraphSource()
+  useGraphStore.getState().openDocument({ ...doc, id: 'next-flow' })
+  await flushGraphPersist(() => closingSource)
+  assert.deepEqual((await loadDocument(doc.id)).doc.viewport, pendingView)
+  assert.deepEqual(currentGraphSource().view, doc.viewport)
+  const page = readFileSync(resolve(sourceRoot, 'pages/CanvasEditorPage.tsx'), 'utf8')
+  assert.doesNotMatch(page, /function currentGraphSource\(/)
+  assert.match(page, /currentGraphSource,[\s\S]+from '@\/storage'/)
+  assert.equal((page.match(/const source = currentGraphSource\(\)/g) || []).length, 2)
+}
+
+console.log('document autosave: PASS (including pending-frame save and route-close snapshot)')

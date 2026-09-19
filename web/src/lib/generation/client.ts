@@ -1,12 +1,17 @@
 import { generationAdapterForConfig, generationAdapterForModel, generationMediaUploadSecretName, generationProtocolForChannel, generationSecretName, generationVideoRequestContractForModel, isVideoGenerationProtocol, type GenerationChannel, type GenerationModel } from '@/stores/use-generation-store'
-import { MEDIA_STORAGE_DEFAULTS, useMediaStorageStore } from '@/stores/use-media-storage-store'
+import { MEDIA_STORAGE_DEFAULTS, useMediaStorageStore, notifyMediaStorageChanged } from '@/stores/use-media-storage-store'
+import { reuseMediaUpload } from './media-upload-cache'
+import { inspectMediaUrl, MediaReadinessError } from './media-readiness'
+import { safeGenerationError } from './safe-error'
 import type { GenerationReference, GenerationTaskState, GenerationVariantConfig } from '@/types/flow'
 import { normalizeGenerationReferences } from '@/lib/generation/defaults'
 import { normalizeVideoModeConfig, videoReferenceError } from './video-mode'
 import { loadLocalResourceBlob, loadLocalResourceUrl, storeLocalResource } from '@/lib/resource-storage'
 import { desktopFetch } from '@/lib/desktop-fetch'
-import { resolveMediaTransport, assertInlineRequestSize, assertMediaLifetime, assertAnonymousCompleteFileUrl, signedMediaExpiry, MAX_INLINE_REQUEST_BYTES } from './media-policy'
+import { resolveMediaTransport, assertGenerationRequestSize, assertMediaLifetime, assertAnonymousCompleteFileUrl, signedMediaExpiry } from './media-policy'
 import { ensureDesktopSecret, syncDesktopSecret } from '@/lib/desktop-secrets'
+import { is808VideoChannel, resolve808WanModel } from './video-catalog'
+import { parseRequestDiagnostics, type GenerationRequestDiagnostics } from './request-diagnostics'
 
 export interface GenerationRequestContext {
   channel: GenerationChannel
@@ -16,6 +21,7 @@ export interface GenerationRequestContext {
 }
 
 export interface GenerationTaskResponse {
+  requestDiagnostics?: GenerationRequestDiagnostics
   taskId: string
   resultUrls?: string[]
   resultResourceIds?: string[]
@@ -33,7 +39,7 @@ export interface GenerationPollResponse {
 
 export class GenerationStageError extends Error {
   constructor(public readonly stage: 'validation' | 'preparation' | 'creation' | 'polling' | 'download', message: string, public readonly cause?: unknown) {
-    super(`${stage}: ${message}`)
+    super(`${stage}: ${safeGenerationError(message)}`)
     this.name = 'GenerationStageError'
   }
 }
@@ -126,7 +132,7 @@ function validateVideoConfig(model: GenerationModel, config: GenerationVariantCo
   if (!inferredVideoModel && model.allowedDurations?.length && !model.allowedDurations.includes(seconds)) throw new Error(`${model.name} 时长只能为 ${model.allowedDurations.join(' 或 ')} 秒`)
   if (!inferredVideoModel && (model.minDuration && seconds < model.minDuration || model.maxDuration && seconds > model.maxDuration)) throw new Error(`${model.name} 时长必须为 ${model.minDuration}-${model.maxDuration} 秒`)
   const resolution = videoResolutionForModel(config.resolution, model)
-  if (!inferredVideoModel && model.resolutions?.length && !model.resolutions.some((item) => normalizeVideoResolution(item).toLowerCase() === normalizeVideoResolution(resolution).toLowerCase())) throw new Error(`${model.name} 不支持 ${resolution}`)
+  if (!inferredVideoModel && !model.allowCustomResolution && model.resolutions?.length && !model.resolutions.some((item) => normalizeVideoResolution(item).toLowerCase() === normalizeVideoResolution(resolution).toLowerCase())) throw new Error(`${model.name} 不支持 ${resolution}`)
   if (!inferredVideoModel && model.aspectRatios?.length && config.aspectRatio && !model.aspectRatios.includes(config.aspectRatio)) throw new Error(`${model.name} 不支持 ${config.aspectRatio} 画幅`)
   const images = config.references.filter((reference) => reference.type === 'image')
   const videos = config.references.filter((reference) => reference.type === 'video')
@@ -224,21 +230,17 @@ async function referenceBlob(reference: GenerationReference) {
   return { blob, fileName: reference.fileName || `${reference.id}.${blob.type.split('/')[1] || 'bin'}` }
 }
 
+function isProviderMediaUrl(value: string, channel: GenerationChannel, adapterId?: string) {
+  const protocol = generationAdapterForConfig(channel, adapterId)?.protocol || channel.protocol
+  return isHttpsUrl(value) || (is808VideoChannel(channel, protocol) && value.toLowerCase().startsWith('http://'))
+}
+
 function isHttpsUrl(value: string) {
   return /^https:\/\//i.test(value)
 }
 
 function isRemoteMediaURL(value: string) {
   return /^https?:\/\//i.test(value)
-}
-
-async function blobToDataURL(blob: Blob) {
-  const bytes = new Uint8Array(await blob.arrayBuffer())
-  let binary = ''
-  for (let offset = 0; offset < bytes.length; offset += 32768) {
-    binary += String.fromCharCode(...bytes.subarray(offset, offset + 32768))
-  }
-  return 'data:' + (blob.type || 'application/octet-stream') + ';base64,' + btoa(binary)
 }
 
 function valueAtPath(payload: unknown, path: string) {
@@ -271,7 +273,9 @@ interface MediaUploadEndpoint {
 function mediaUploadSettings(channel: GenerationChannel, adapterId?: string) {
   const adapter = generationAdapterForConfig(channel, adapterId)
   return {
-    transport: adapter?.mediaTransport ?? channel.mediaTransport,
+    transport: is808VideoChannel(channel, adapter?.protocol || channel.protocol)
+      ? channel.mediaTransport ?? adapter?.mediaTransport
+      : adapter?.mediaTransport ?? channel.mediaTransport,
     fieldName: adapter?.mediaUploadField || channel.mediaUploadField || MEDIA_STORAGE_DEFAULTS.fieldName,
     responsePath: adapter?.mediaUploadResponsePath || channel.mediaUploadResponsePath || MEDIA_STORAGE_DEFAULTS.responsePath,
   }
@@ -281,8 +285,7 @@ function mediaUploadEndpoint(channel: GenerationChannel, adapterId?: string): Me
   const settings = mediaUploadSettings(channel, adapterId)
   const mediaStorage = useMediaStorageStore.getState()
   const customConfigured = Boolean(mediaStorage.baseURL || channel.mediaUploadURL)
-  const transport = resolveMediaTransport(settings.transport, customConfigured)
-  if (transport === 'inline') throw new Error('内联素材直接进入请求体，不使用上传接口')
+  resolveMediaTransport(settings.transport, customConfigured)
   const endpoint = mediaStorage.baseURL
     ? mediaStorage.getUploadEndpoint()
     : String(channel.mediaUploadURL || '').trim()
@@ -322,44 +325,76 @@ async function uploadReference(channel: GenerationChannel, reference: Generation
   const endpoint = mediaUploadEndpoint(channel, adapterId)
   await assertMediaUploadSecretReady(endpoint)
   const { blob, fileName } = await referenceBlob(reference)
-  const form = new FormData()
-  form.append(endpoint.fieldName, blob, fileName)
-  form.append('purpose', 'generation')
-  if (reference.resourceId?.startsWith('sha256-')) form.append('checksum', reference.resourceId.slice('sha256-'.length))
-  const response = await desktopFetch(endpoint.endpoint, {
-    method: 'POST',
-    headers: mediaUploadHeaders(endpoint),
-    body: form,
-    signal,
-  }, { secretRefs: mediaUploadSecretRefs(endpoint) })
-  const payload = await parseResponse(response)
-  const url = uploadedReferenceUrl(payload, endpoint.responsePath)
-  if (!url || !isHttpsUrl(url)) throw new Error(`上传参考文件“${reference.label || reference.id}”后没有得到公网 HTTPS 地址`)
-  assertMediaLifetime(signedMediaExpiry(url))
-  return url
+  return reuseMediaUpload(JSON.stringify(endpoint), blob, async (checksum) => {
+    const form = new FormData()
+    form.append(endpoint.fieldName, blob, fileName)
+    form.append('purpose', 'generation')
+    form.append('checksum', checksum)
+    const response = await desktopFetch(endpoint.endpoint, {
+      method: 'POST',
+      headers: mediaUploadHeaders(endpoint),
+      body: form,
+      signal,
+    }, { secretRefs: mediaUploadSecretRefs(endpoint) })
+    const payload = await parseResponse(response)
+    const url = uploadedReferenceUrl(payload, endpoint.responsePath)
+    if (!url || !isProviderMediaUrl(url, channel, adapterId)) throw new Error(`上传参考文件“${reference.label || reference.id}”后没有得到可用公网媒体地址`)
+    assertMediaLifetime(signedMediaExpiry(url))
+    notifyMediaStorageChanged()
+    return url
+  }, signal)
 }
 
 /** Performs a small multipart upload without submitting a generation task. */
 export async function testGenerationMediaUpload(channel: GenerationChannel, adapterId?: string, signal?: AbortSignal): Promise<{ url?: string; message?: string }> {
   const settings = mediaUploadSettings(channel, adapterId)
-  const transport = resolveMediaTransport(settings.transport, Boolean(useMediaStorageStore.getState().baseURL || channel.mediaUploadURL))
-  if (transport === 'inline') return { message: '已选择 Data URL；无需上传接口。此检查不代表供应商已接受生成请求。' }
+  resolveMediaTransport(settings.transport, Boolean(useMediaStorageStore.getState().baseURL || channel.mediaUploadURL))
   const endpoint = mediaUploadEndpoint(channel, adapterId)
   await assertMediaUploadSecretReady(endpoint)
   const form = new FormData()
   const testBlob = new Blob(['cnote upload test'], { type: 'application/octet-stream' })
-  form.append(endpoint.fieldName, testBlob, 'cnote-upload-test.bin')
-  form.append('purpose', 'generation-test')
-  const response = await desktopFetch(endpoint.endpoint, {
-    method: 'POST',
-    headers: mediaUploadHeaders(endpoint),
-    body: form,
-    signal,
-  }, { secretRefs: mediaUploadSecretRefs(endpoint) })
-  const payload = await parseResponse(response)
-  const url = uploadedReferenceUrl(payload, endpoint.responsePath)
-  if (!url || !isHttpsUrl(url)) throw new Error('上传接口响应中没有可匿名访问的公网 HTTPS 地址')
+  const url = await reuseMediaUpload(JSON.stringify(endpoint), testBlob, async (checksum) => {
+    form.append(endpoint.fieldName, testBlob, 'cnote-upload-test.bin')
+    form.append('checksum', checksum)
+    form.append('purpose', 'generation-test')
+    const response = await desktopFetch(endpoint.endpoint, {
+      method: 'POST',
+      headers: mediaUploadHeaders(endpoint),
+      body: form,
+      signal,
+    }, { secretRefs: mediaUploadSecretRefs(endpoint) })
+    const payload = await parseResponse(response)
+    const url = uploadedReferenceUrl(payload, endpoint.responsePath)
+    if (!url || !isProviderMediaUrl(url, channel, adapterId)) throw new Error('上传接口响应中没有可匿名访问的公网媒体地址')
+    notifyMediaStorageChanged()
+    return url
+  }, signal)
   return { url }
+}
+
+async function prepareManagedReference(channel: GenerationChannel, reference: GenerationReference, signal?: AbortSignal, adapterId?: string) {
+  const storage = useMediaStorageStore.getState()
+  if (!storage.baseURL && !channel.mediaUploadURL) return referenceURL(reference)
+  const endpoint = mediaUploadEndpoint(channel, adapterId)
+  const url = new URL(referenceURL(reference))
+  const service = new URL(endpoint.endpoint)
+  if (url.origin !== service.origin || !url.pathname.startsWith('/media/')) return url.href
+  await assertMediaUploadSecretReady(endpoint)
+  const key = decodeURIComponent(url.pathname.slice('/media/'.length))
+  const response = await desktopFetch(new URL('/prepare', service).href, {
+    method: 'POST', headers: { ...mediaUploadHeaders(endpoint), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ key }), signal,
+  }, { secretRefs: mediaUploadSecretRefs(endpoint), timeoutMs: 120000 })
+  if (response.status === 404) {
+    const body = await response.json().catch(() => ({}))
+    if (body?.error === 'Media not found') throw new MediaReadinessError('远端素材已删除', true)
+    throw new Error('当前媒体 Worker 不支持保留期准备，请先部署升级版 Worker')
+  }
+  const payload = await parseResponse(response)
+  const preparedUrl = uploadedReferenceUrl(payload, endpoint.responsePath)
+  if (!preparedUrl || !isProviderMediaUrl(preparedUrl, channel, adapterId) || new URL(preparedUrl).origin !== service.origin) throw new Error('媒体准备接口未返回同源公网地址')
+  if (payload.renewed) notifyMediaStorageChanged()
+  return preparedUrl
 }
 
 async function prepareReferenceConfig(context: GenerationRequestContext, signal?: AbortSignal) {
@@ -370,35 +405,32 @@ async function prepareReferenceConfig(context: GenerationRequestContext, signal?
   // Image protocols receive local files directly in their request body. They
   // must never be routed through a video-style public URL conversion step.
   if (variant === 'image') return orderedConfig
-  references.forEach((reference) => assertMediaLifetime(reference.expiresAt ?? signedMediaExpiry(referenceURL(reference))))
-  const needsRemote = references.some((reference) => !isHttpsUrl(referenceURL(reference)))
-  if (!needsRemote) return orderedConfig
-  const transport = resolveMediaTransport(adapter?.mediaTransport ?? channel.mediaTransport, Boolean(useMediaStorageStore.getState().baseURL || channel.mediaUploadURL))
-  if (transport === 'inline') {
-    let inlineBytes = 0
-    const prepared = await Promise.all(references.map(async (reference) => {
-      if (isHttpsUrl(referenceURL(reference))) return reference
-      const { blob } = await referenceBlob(reference)
-      inlineBytes += 4 * Math.ceil(blob.size / 3)
-      if (inlineBytes > MAX_INLINE_REQUEST_BYTES) throw new Error('素材 Base64 编码后超过 128 MiB，请减少素材或改用公网 HTTPS 地址')
-      const url = await blobToDataURL(blob)
-      return { ...reference, url, previewUrl: reference.previewUrl || url, status: 'ready' as const }
-    }))
-    return { ...orderedConfig, references: normalizeGenerationReferences(prepared) }
-  }
-
+  const is808 = is808VideoChannel(channel, adapter?.protocol || channel.protocol)
+  const readable = (url: string) => isHttpsUrl(url) || (is808 && url.toLowerCase().startsWith('http://'))
   const uploadAdapterId = config.adapterId || adapter?.id
-  const uploads = new Map<string, Promise<string>>()
   const prepared = await Promise.all(references.map(async (reference) => {
-    if (isHttpsUrl(referenceURL(reference))) return reference
-    const uploadKey = reference.resourceId || referenceURL(reference) || reference.id
-    let upload = uploads.get(uploadKey)
-    if (!upload) {
-      upload = uploadReference(channel, reference, signal, uploadAdapterId)
-      uploads.set(uploadKey, upload)
+    try {
+      let url = referenceURL(reference)
+      if (readable(url)) {
+        try {
+          url = await prepareManagedReference(channel, reference, signal, uploadAdapterId)
+          const inspected = await inspectMediaUrl(url, reference.type, signal)
+          return { ...reference, url, expiresAt: inspected.expiresAt, status: 'ready' as const }
+        } catch (error) {
+          if (!(error instanceof MediaReadinessError) || !error.recoverable || !reference.resourceId) throw error
+          const local = await loadLocalResourceBlob(reference.resourceId)
+          if (!local) throw new Error('远端素材失效，且没有可用本地副本，请重新添加素材')
+          reference = { ...reference, url: undefined, previewUrl: undefined }
+        }
+      }
+      resolveMediaTransport(mediaUploadSettings(channel, uploadAdapterId).transport, Boolean(useMediaStorageStore.getState().baseURL || channel.mediaUploadURL))
+      url = await uploadReference(channel, reference, signal, uploadAdapterId)
+      const inspected = await inspectMediaUrl(url, reference.type, signal)
+      return { ...reference, source: 'uploaded' as const, expiresAt: inspected.expiresAt, url, previewUrl: reference.previewUrl || url, status: 'ready' as const }
+    } catch (error) {
+      signal?.throwIfAborted()
+      throw new Error('参考素材“' + (reference.label || reference.fileName || reference.id) + '”：' + (error instanceof Error ? error.message : String(error)))
     }
-    const url = await upload
-    return { ...reference, source: 'uploaded' as const, expiresAt: signedMediaExpiry(url), url, previewUrl: reference.previewUrl || url, status: 'ready' as const }
   }))
   return { ...orderedConfig, references: normalizeGenerationReferences(prepared) }
 }
@@ -495,7 +527,12 @@ async function parseResponse(response: Response) {
   try { body = text ? JSON.parse(text) : undefined } catch { body = text }
   if (!response.ok || response.status === 206) {
     const message = body?.error?.message || body?.error || body?.message || `HTTP ${response.status}`
-    throw new GenerationHttpError(response.status, explainReferenceFetchError(String(message), response.status))
+    const code = body?.error?.code || body?.code
+    const type = body?.error?.type
+    const requestId = body?.request_id || body?.requestId || response.headers.get('x-request-id') || response.headers.get('request-id')
+    const taskId = taskIdFrom(body)
+    const details = ['HTTP ' + response.status, code, type, requestId, taskId].filter(value => typeof value === 'string' || typeof value === 'number').join('；')
+    throw new GenerationHttpError(response.status, safeGenerationError(explainReferenceFetchError(String(message), response.status) + '（' + details + '）'))
   }
   return body
 }
@@ -506,11 +543,13 @@ function diagnosticResponse(value: unknown, status: GenerationTaskState['status'
     const record = value as Record<string, unknown>
     return { status: record.status || record.state, requestId: record.requestId || record.request_id, resultCount: Array.isArray(record.data) ? record.data.length : undefined }
   }
-  try {
-    const text = JSON.stringify(value)
-    return text.length > 16000 ? `${text.slice(0, 16000)}…` : value
-  } catch {
-    return String(value).slice(0, 16000)
+  if (!value || typeof value !== 'object') return undefined
+  const record = value as Record<string, any>
+  const error = record.error || record.data?.error || record.task?.error || record.data?.task?.error
+  return {
+    status: safeGenerationError(record.status || record.state || status),
+    request_id: typeof (record.request_id || record.requestId) === 'string' ? safeGenerationError(record.request_id || record.requestId) : undefined,
+    error: { message: safeGenerationError(error?.message || (typeof error === 'string' ? error : '生成服务返回失败')), code: typeof error?.code === 'string' ? safeGenerationError(error.code) : undefined, type: typeof error?.type === 'string' ? safeGenerationError(error.type) : undefined },
   }
 }
 
@@ -614,7 +653,11 @@ function progressFrom(body: any) {
 function errorFrom(body: any) {
   const status = typeof rawStatusFrom(body) === 'string' && rawStatusFrom(body).toLowerCase().startsWith('failed') ? rawStatusFrom(body).slice(rawStatusFrom(body).indexOf(':') + 1).trim() : undefined
   const message = String(body?.error?.message || body?.error_message || body?.error || body?.message || body?.data?.error?.message || body?.data?.error_message || body?.data?.error || body?.task?.error?.message || body?.task?.error || body?.data?.task?.error?.message || body?.data?.task?.error || status || '生成服务返回失败')
-  return explainReferenceFetchError(message)
+  const code = body?.error?.code || body?.data?.error?.code || body?.task?.error?.code || body?.data?.task?.error?.code
+  const taskId = taskIdFrom(body)
+  const requestId = body?.request_id || body?.requestId || body?.data?.request_id
+  const details = [typeof code === 'string' ? code : undefined, taskId, requestId].filter(value => typeof value === 'string')
+  return safeGenerationError(explainReferenceFetchError(message) + (details.length ? '（' + details.join('；') + '）' : ''))
 }
 
 function httpStatusFrom(error: unknown): number | undefined {
@@ -664,22 +707,27 @@ function contentPath(context: GenerationRequestContext, taskId: string) {
   return `/v1/${variant === 'image' ? 'images' : 'videos'}/${encodeURIComponent(taskId)}/content`
 }
 
-function ensureProviderReadableReferences(references: GenerationReference[], requiresPublicHttps = false) {
+function ensureProviderReadableReferences(references: GenerationReference[], requiresPublicHttps = false, allowHttp = false) {
   const invalid = references.find((reference) => {
     const value = referenceURL(reference)
-    return requiresPublicHttps ? !/^https:\/\//i.test(value) : !/^https:\/\//i.test(value) && !/^data:/i.test(value)
+    if (!requiresPublicHttps && allowHttp && value.toLowerCase().startsWith('http://')) return false
+    return !/^https:\/\//i.test(value)
   })
   if (invalid) {
     throw new Error(requiresPublicHttps
       ? `参考文件“${invalid.label || invalid.fileName || invalid.id}”必须是公网 HTTPS 地址`
-      : `参考文件“${invalid.label || invalid.fileName || invalid.id}”尚未转换为公网 HTTPS 地址或内联 Data URL`)
+      : `参考文件“${invalid.label || invalid.fileName || invalid.id}”尚未上传到自定义媒体存储`)
   }
   if (requiresPublicHttps) references.forEach((reference) => assertAnonymousCompleteFileUrl(referenceURL(reference)))
 }
 
-export async function submitGenerationTask(context: GenerationRequestContext, signal?: AbortSignal): Promise<GenerationTaskResponse> {
+export async function submitGenerationTask(context: GenerationRequestContext, signal?: AbortSignal, onPrepared?: (diagnostics: GenerationRequestDiagnostics) => void): Promise<GenerationTaskResponse> {
+  const selectedProtocol = protocolFor(context.channel, context.config.adapterId, context.model.id)
+  const documented = context.variant === 'video' ? resolve808WanModel(context.channel, context.model.id, selectedProtocol) : undefined
+  if (documented) context = { ...context, model: documented }
   const { model, variant } = context
   const initialConfig = variant === 'video' ? normalizeVideoModeConfig(context.config, model) : context.config
+  if (documented && (!initialConfig.aspectRatio || initialConfig.aspectRatio === 'auto')) initialConfig.aspectRatio = '16:9'
   let videoResolution: string | undefined
   if (variant === 'video') {
     try { videoResolution = validateVideoConfig(model, initialConfig) } catch (error) { throw new GenerationStageError('validation', error instanceof Error ? error.message : String(error), error) }
@@ -694,7 +742,7 @@ export async function submitGenerationTask(context: GenerationRequestContext, si
     throw new GenerationStageError('preparation', error instanceof Error ? error.message : String(error), error)
   }
   const protocol = protocolFor(channel)
-  if (variant === 'video') { try { ensureProviderReadableReferences(config.references, videoContract?.requiresPublicHttps) } catch (error) { throw new GenerationStageError('validation', error instanceof Error ? error.message : String(error), error) } }
+  if (variant === 'video') { try { ensureProviderReadableReferences(config.references, videoContract?.requiresPublicHttps, is808VideoChannel(channel, protocol)) } catch (error) { throw new GenerationStageError('validation', error instanceof Error ? error.message : String(error), error) } }
 
   let body: Record<string, unknown> | undefined
   let requestURL = ''
@@ -754,6 +802,15 @@ export async function submitGenerationTask(context: GenerationRequestContext, si
     const images = config.references.filter((reference) => reference.type === 'image' && !['first_frame', 'last_frame'].includes(reference.role || '')).map(referenceURL)
     const videos = config.references.filter((reference) => reference.type === 'video').map(referenceURL)
     const audios = config.references.filter((reference) => reference.type === 'audio').map(referenceURL)
+    for (const [count, field, label] of [
+      [images.length, videoContract?.imageReferencesField, '参考图片'],
+      [videos.length, videoContract?.videoReferencesField, '参考视频'],
+      [audios.length, videoContract?.audioReferencesField, '参考音频'],
+      [firstFrame ? 1 : 0, videoContract?.firstFrameField, '首帧'],
+      [lastFrame ? 1 : 0, videoContract?.lastFrameField, '尾帧'],
+    ] as const) {
+      if (count && !field) throw new GenerationStageError('validation', label + '没有配置请求字段，已停止提交，未丢弃素材')
+    }
     const generateAudioField = generateAudioFieldName(model, videoContract)
     body = {
       model: model.id,
@@ -770,18 +827,38 @@ export async function submitGenerationTask(context: GenerationRequestContext, si
     }
     requestURL = joinVersionedEndpoint(baseURL, videoContract?.createPath || '/v1/videos')
     requestBody = JSON.stringify(body)
-    try { assertInlineRequestSize(requestBody) } catch (error) {
+    try { assertGenerationRequestSize(requestBody) } catch (error) {
       throw new GenerationStageError('validation', error instanceof Error ? error.message : String(error), error)
     }
   } else {
     throw new Error('当前生成渠道未配置受支持的图片或视频协议')
   }
-  const response = await desktopFetch(requestURL, {
+  const durationField = videoContract?.durationField || 'seconds'
+  const requestDiagnostics = variant === 'video' && body ? parseRequestDiagnostics({
+    fields: Object.keys(body),
+    unknownRetentionCount: config.references.filter(reference => reference.expiresAt === undefined).length,
+    durationField,
+    duration: body[durationField],
+    resolution: body[videoContract?.resolutionField || 'resolution'],
+    aspectRatio: body[videoContract?.aspectRatioField || 'aspect_ratio'],
+    references: config.references.map(reference => {
+      const url = referenceURL(reference).toLowerCase()
+      return { type: reference.type, transport: url.startsWith('data:') ? 'inline' : url.startsWith('https:') ? 'https' : url.startsWith('http:') ? 'http' : 'other' }
+    }),
+  }) : undefined
+  if (requestDiagnostics) onPrepared?.(requestDiagnostics)
+  let response: Response
+  try {
+    response = await desktopFetch(requestURL, {
     method: 'POST',
     headers,
     body: requestBody,
     signal,
   }, { secretRefs: authSecretRefs(channel, config.adapterId) })
+  } catch (error) {
+    signal?.throwIfAborted()
+    throw new GenerationStageError('creation', '创建请求网络异常，是否受理未知；未自动重发。' + safeGenerationError(error instanceof Error ? error.message : error), error)
+  }
   let parsed: any
   try { parsed = await parseResponse(response) } catch (error) { throw new GenerationStageError('creation', error instanceof Error ? error.message : String(error), error) }
   const inlineResults = await materializeInlineResults(parsed, variant)
@@ -791,7 +868,7 @@ export async function submitGenerationTask(context: GenerationRequestContext, si
   const taskId = taskIdFrom(parsed)
   if (!taskId && immediateResultUrls.length) return { taskId: `completed-${crypto.randomUUID()}`, resultUrls: immediateResultUrls, resultResourceIds: immediateResults.map((result) => result.resourceId), resultMimeTypes: immediateResults.map((result) => result.mimeType), resultFileNames: immediateResults.map((result) => result.fileName), preparedConfig: config, raw: parsed }
   if (!taskId) throw new Error('生成服务没有返回 task_id')
-  return { taskId, resultUrls: immediateResultUrls, resultResourceIds: immediateResults.map((result) => result.resourceId), resultMimeTypes: immediateResults.map((result) => result.mimeType), resultFileNames: immediateResults.map((result) => result.fileName), preparedConfig: config, raw: parsed }
+  return { taskId, requestDiagnostics, resultUrls: immediateResultUrls, resultResourceIds: immediateResults.map((result) => result.resourceId), resultMimeTypes: immediateResults.map((result) => result.mimeType), resultFileNames: immediateResults.map((result) => result.fileName), preparedConfig: config, raw: parsed }
 }
 
 export async function pollGenerationTask(context: GenerationRequestContext, taskId: string, signal?: AbortSignal): Promise<GenerationPollResponse> {
@@ -866,6 +943,7 @@ export async function pollGenerationTask(context: GenerationRequestContext, task
 }
 
 /** Best-effort remote cancellation. Providers without a cancel contract are still stopped locally. */
+
 export async function cancelGenerationTask(context: GenerationRequestContext, taskId: string, signal?: AbortSignal) {
   const channel: GenerationChannel = { ...context.channel, protocol: protocolFor(context.channel, context.config.adapterId, context.model.id) }
   const baseURL = normalizeBaseURL(channel.baseURL)
@@ -919,6 +997,7 @@ export async function runGenerationTask(
   const submittedAt = options.submittedAt || Date.now()
   const timeoutAt = submittedAt + options.timeoutMs
   let taskId = options.taskId
+  let requestDiagnostics: GenerationRequestDiagnostics | undefined
 
   if (!taskId) {
     options.onTaskUpdate?.({
@@ -930,12 +1009,17 @@ export async function runGenerationTask(
       timeoutAt,
       elapsedMs: 0,
     })
-    const submitted = await submitGenerationTask(context, options.signal)
+    const submitted = await submitGenerationTask(context, options.signal, (diagnostics) => {
+      requestDiagnostics = diagnostics
+      options.onTaskUpdate?.({ status: 'validating', rawStatus: 'media_prepared', requestDiagnostics: diagnostics, model: context.model.id, channelId: context.channel.id, submittedAt, timeoutAt })
+    })
+    requestDiagnostics = submitted.requestDiagnostics
     options.onConfigPrepared?.(submitted.preparedConfig || context.config)
     taskId = submitted.taskId
     await options.onRemoteTaskId?.(taskId)
     if (submitted.resultUrls?.length) {
       const completed: GenerationTaskState = {
+        requestDiagnostics,
         taskId,
         provider: context.channel.providerId,
         channelId: context.channel.id,
@@ -955,6 +1039,7 @@ export async function runGenerationTask(
     }
     options.onTaskUpdate?.({
       taskId,
+      requestDiagnostics,
       provider: context.channel.providerId,
       channelId: context.channel.id,
       model: context.model.id,
@@ -995,7 +1080,7 @@ export async function runGenerationTask(
         await waitForPoll(Math.min(interval * Math.min(transientPollFailures, 3), 30_000), options.signal)
         continue
       }
-      const next: GenerationTaskState = { ...polled.task, taskId, submittedAt, elapsedMs: Date.now() - submittedAt, timeoutAt }
+      const next: GenerationTaskState = { ...polled.task, requestDiagnostics, taskId, submittedAt, elapsedMs: Date.now() - submittedAt, timeoutAt }
       options.onTaskUpdate?.(next)
       if (next.status === 'completed' || next.status === 'failed' || next.status === 'unknown') return next
       await waitForPoll(interval, options.signal)

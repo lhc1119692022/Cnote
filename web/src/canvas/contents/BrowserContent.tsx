@@ -27,6 +27,7 @@ import {
 } from 'lucide-react'
 import type { BrowserNodeSpec, BrowserSession, NodeSpec } from '@/domain'
 import { useGraphStore } from '@/stores/graph-store'
+import { useCanvasViewportStore } from '@/stores/canvas-viewport-store'
 import { useRuntimeStore } from '@/stores/runtime-store'
 import {
   BrowserSessionManager,
@@ -127,7 +128,7 @@ function errorMessage(error: unknown, fallback: string): string {
 
 export const BrowserContent = memo(function BrowserContent({ node }: { node: BrowserNodeSpec }) {
   const isDesktop = isDesktopRuntime()
-  const canvasZoom = useGraphStore((state) => state.view.zoom)
+  const canvasZoom = useCanvasViewportStore((state) => state.view.zoom)
 
   const sessionId = node.sessionId
   const tabId = node.activeTarget

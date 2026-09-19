@@ -66,7 +66,7 @@ export function GenerationChannelsManager({ embedded = false, openNewRequest = 0
   const [modelFetchMessage, setModelFetchMessage] = useState('')
   const [supportsImage, setSupportsImage] = useState(true)
   const [supportsVideo, setSupportsVideo] = useState(false)
-  const [mediaTransport, setMediaTransport] = useState<GenerationMediaTransport>()
+  const [mediaTransport, setMediaTransport] = useState<GenerationMediaTransport>('custom')
   const [mediaTestState, setMediaTestState] = useState<'idle' | 'testing' | 'success' | 'error'>('idle')
   const [mediaTestMessage, setMediaTestMessage] = useState('')
   const [showProtocolMenu, setShowProtocolMenu] = useState(false)
@@ -115,7 +115,7 @@ export function GenerationChannelsManager({ embedded = false, openNewRequest = 0
     setModelFetchMessage('')
     setSupportsImage(true)
     setSupportsVideo(false)
-    setMediaTransport(undefined)
+    setMediaTransport('custom')
     setMediaTestState('idle')
     setMediaTestMessage('')
     setShowProtocolMenu(false)
@@ -152,7 +152,7 @@ export function GenerationChannelsManager({ embedded = false, openNewRequest = 0
     setSupportsImage(generationChannelSupportsVariant(channel, 'image'))
     setSupportsVideo(generationChannelSupportsVariant(channel, 'video'))
     const storedMediaTransport = normalizeMediaTransport(channel.adapters?.find((adapter) => adapter.protocol === nextProtocol)?.mediaTransport ?? channel.mediaTransport)
-    setMediaTransport(channelPresets.find((preset) => preset.id === channel.presetId)?.videoRequestContract?.requiresPublicHttps && storedMediaTransport === 'inline' ? undefined : storedMediaTransport)
+    setMediaTransport(storedMediaTransport || 'custom')
     setMediaTestState('idle')
     setMediaTestMessage('')
     setShowProtocolMenu(false)
@@ -164,7 +164,7 @@ export function GenerationChannelsManager({ embedded = false, openNewRequest = 0
     setPresetId(matchingPreset?.id || '')
     setProtocol(nextProtocol)
     setBaseURL('')
-    setMediaTransport(undefined)
+    setMediaTransport('custom')
     const knownModels = isVideoGenerationProtocol(nextProtocol)
       ? modelsForGenerationProtocol(nextProtocol).map((model) => model.id)
       : []
@@ -397,23 +397,16 @@ export function GenerationChannelsManager({ embedded = false, openNewRequest = 0
 
           <div className="mt-4 flex items-center gap-3 text-[13px] text-muted-foreground"><span className="shrink-0 font-medium text-foreground">渠道支持</span><div className="flex min-w-0 flex-1 gap-2"><button type="button" aria-pressed={supportsImage} onClick={() => setSupportsImage((value) => !value)} className={`flex min-w-0 flex-1 items-center justify-center gap-2 rounded-lg border px-3 py-2.5 text-[12px] transition-colors ${supportsImage ? 'border-primary bg-primary/10 font-medium text-primary' : 'border-border bg-background text-muted-foreground hover:bg-muted'}`}><ImageIcon className="h-4 w-4 shrink-0" />图片生成</button><button type="button" aria-pressed={supportsVideo} onClick={() => setSupportsVideo((value) => !value)} className={`flex min-w-0 flex-1 items-center justify-center gap-2 rounded-lg border px-3 py-2.5 text-[12px] transition-colors ${supportsVideo ? 'border-primary bg-primary/10 font-medium text-primary' : 'border-border bg-background text-muted-foreground hover:bg-muted'}`}><Video className="h-4 w-4 shrink-0" />视频生成</button></div></div>
 
-          {supportsVideo && <div className="mt-4 grid gap-3">
-            <label className="block text-[13px] text-muted-foreground">
-              <span className="mb-2 block font-medium">本地素材传输方式</span>
-              <select aria-label="本地素材传输方式" required value={mediaTransport || ''} onChange={(event) => { setMediaTransport(normalizeMediaTransport(event.target.value)); setMediaTestState('idle'); setMediaTestMessage('') }} className="h-10 w-full rounded-lg border border-border bg-background px-3 text-foreground outline-none focus:border-primary focus:ring-2 focus:ring-ring/20">
-                <option value="" disabled>请选择（必选）</option>
-                {!requiresPublicHttps && <option value="inline">内联 Data URL</option>}
+          {supportsVideo && <div className="mt-4">
+            <div className="flex items-center gap-2 sm:gap-3">
+              <label htmlFor="generation-media-transport" className="shrink-0 text-[13px] font-medium text-muted-foreground">本地素材传输方式</label>
+              <select id="generation-media-transport" aria-label="本地素材传输方式" value="custom" onChange={() => setMediaTransport('custom')} className="h-9 min-w-0 flex-1 rounded-lg border border-border bg-background px-2 text-[12px] text-foreground outline-none focus:border-primary focus:ring-2 focus:ring-ring/20">
                 <option value="custom">自定义媒体存储</option>
               </select>
-            </label>
-            <div role="status" className="text-[11px] leading-relaxed text-muted-foreground">{transportStatus.message}</div>
-            {requiresPublicHttps && <div role="status" className="text-[11px] leading-relaxed text-muted-foreground">当前预设的文档接口要求参考素材使用公网 HTTPS；本地素材请使用自定义媒体存储上传。</div>}
-            <div className="text-[11px] leading-relaxed text-muted-foreground">已有 HTTPS 素材随请求直接引用，不走上传。</div>
-            {transportStatus.canTestUpload && <div className="flex min-w-0 flex-wrap items-center gap-2">
-              <Button type="button" variant="outline" size="sm" className="gap-1.5" onClick={() => void handleTestMediaUpload()} disabled={mediaTestState === 'testing'}><Check className="h-3.5 w-3.5" />验证上传</Button>
-              <span className="text-[11px] text-muted-foreground">仅验证上传接口，不提交生成任务。</span>
-            </div>}
-            {mediaTestMessage && <span className={`min-w-0 break-words text-[11px] ${mediaTestState === 'success' ? 'text-emerald-700' : mediaTestState === 'error' ? 'text-destructive' : 'text-muted-foreground'}`} title={mediaTestMessage}>{mediaTestMessage}</span>}
+              <Button type="button" variant="outline" size="sm" className="shrink-0 gap-1.5" title={transportStatus.canTestUpload ? '仅验证媒体存储，不提交模型生成任务' : transportStatus.message} onClick={() => void handleTestMediaUpload()} disabled={!transportStatus.canTestUpload || mediaTestState === 'testing'}><Check className="h-3.5 w-3.5" />{mediaTestState === 'testing' ? '验证中' : '验证上传'}</Button>
+            </div>
+            {!transportStatus.canTestUpload && <p role="status" className="mt-2 text-[11px] text-muted-foreground">{transportStatus.message}</p>}
+            {mediaTestMessage && <p role="status" className={`mt-2 min-w-0 break-words text-[11px] ${mediaTestState === 'success' ? 'text-emerald-700' : mediaTestState === 'error' ? 'text-destructive' : 'text-muted-foreground'}`} title={mediaTestMessage}>{mediaTestMessage}</p>}
           </div>}
 
           <div className="mt-4 text-[13px] text-muted-foreground"><span className="mb-2 flex items-center gap-1.5 font-medium"><KeyRound className="h-3.5 w-3.5" />API Key {editingChannelId && <span className="font-normal">（留空则保持不变）</span>}</span><input type="password" value={apiKey} onChange={(event) => setAPIKey(event.target.value)} placeholder={editingChannelId ? '留空保持现有密钥' : '输入 API Key'} className="h-10 w-full rounded-lg border border-border bg-background px-3 text-foreground outline-none focus:border-primary focus:ring-2 focus:ring-ring/20" /></div>

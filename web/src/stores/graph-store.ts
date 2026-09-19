@@ -44,6 +44,7 @@ export interface GraphStoreActions {
   addConnectedNode: (sourceId: string, node: NodeSpec) => void
   splitMediaNode: (id: string) => boolean
   updateNode: (id: string, patch: Partial<NodeSpec>) => void
+  updateNodes: (patches: ReadonlyMap<string, Partial<NodeSpec>>) => void
   finishNodeDrag: (ids: string[]) => void
   deleteNode: (id: string) => void
   duplicateNode: (id: string) => void
@@ -112,6 +113,8 @@ export const useGraphStore = create<GraphStore>((set, get) => ({
   },
 
   setViewport: (view) => {
+    const current = get().view
+    if (current.x === view.x && current.y === view.y && current.zoom === view.zoom) return
     set({ view })
   },
 
@@ -184,12 +187,24 @@ export const useGraphStore = create<GraphStore>((set, get) => ({
 
   // Intentionally no commitHistory(): the canvas commits once per gesture.
   updateNode: (id, patch) => {
+    get().updateNodes(new Map([[id, patch]]))
+  },
+
+  updateNodes: (patches) => {
     set((state) => {
       const doc = state.currentDocument
       if (!doc) return state
       let changed = false
       const nodes = doc.nodes.map((node) => {
-        if (node.id !== id) return node
+        const patch = patches.get(node.id)
+        if (!patch) return node
+        const differs = Object.entries(patch).some(([key, value]) => {
+          if (key === 'id') return false
+          if (key === 'position') return value?.x !== node.position.x || value?.y !== node.position.y
+          if (key === 'size') return value?.width !== node.size.width || value?.height !== node.size.height
+          return value !== node[key as keyof NodeSpec]
+        })
+        if (!differs) return node
         changed = true
         return { ...node, ...patch, id: node.id } as NodeSpec
       })
@@ -198,7 +213,7 @@ export const useGraphStore = create<GraphStore>((set, get) => ({
         currentDocument: {
           ...doc,
           nodes,
-          updatedAt: Date.now(),
+          updatedAt: Math.max(Date.now(), doc.updatedAt + 1),
         },
       }
     })

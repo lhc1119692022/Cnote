@@ -6,7 +6,7 @@ import { decryptAPIKey, encryptAPIKey } from '@/lib/secure-storage'
 import { deleteDesktopSecret, syncDesktopSecretInBackground } from '@/lib/desktop-secrets'
 import { normalizeMediaTransport } from '@/lib/generation/media-policy'
 import type { GenerationCapability } from '@/types/flow'
-import { GENERATION_CHANNEL_PRESETS, VIDEO_808_DEFAULT_BASE_URL, VIDEO_MODEL_CATALOG } from '@/lib/generation/video-catalog'
+import { is808VideoChannel, resolve808WanModel, GENERATION_CHANNEL_PRESETS, VIDEO_808_DEFAULT_BASE_URL, VIDEO_MODEL_CATALOG } from '@/lib/generation/video-catalog'
 export { GENERATION_CHANNEL_PRESETS } from '@/lib/generation/video-catalog'
 
 export type GenerationProviderId = 'openai' | 'google' | 'video' | 'custom'
@@ -73,6 +73,8 @@ export interface GenerationModel {
   promptRequired?: boolean
   promptlessWithReferences?: boolean
   allowsAudioOnlyReference?: boolean
+  allowsFirstFrameOnly?: boolean
+  allowCustomResolution?: boolean
   videoRequestContract?: Partial<GenerationVideoRequestContract>
 }
 
@@ -322,6 +324,8 @@ export function modelsForGenerationProtocol(protocol: GenerationProtocolId) {
 
 export function generationVideoRequestContractForModel(channel: GenerationChannel, model?: GenerationModel, adapterId?: string) {
   const adapter = generationAdapterForConfig(channel, adapterId)
+  const wan = resolve808WanModel(channel, model?.id || '', adapter?.protocol || generationProtocolForChannel(channel))
+  if (wan) return wan.videoRequestContract
   const preset = generationPresetForId(channel.presetId)
   const contract = model?.videoRequestContract || adapter?.videoRequestContract || channel.videoRequestContract || preset?.videoRequestContract
   if (contract) return contract
@@ -421,7 +425,9 @@ function normalizeChannel(channel: GenerationChannel): GenerationChannel {
   const modelIds = channel.modelIds || catalog.map((model) => model.id)
   const modelCatalog = channel.modelCatalog?.length ? channel.modelCatalog : preset?.models?.length ? preset.models : catalog
   const selectedAdapter = configuredAdapters.find((adapter) => adapter.protocol === protocol) || configuredAdapters[0]
-  const mediaTransport = normalizeMediaTransport(selectedAdapter?.mediaTransport ?? channel.mediaTransport)
+  const mediaTransport = normalizeMediaTransport(is808VideoChannel(channel, protocol)
+    ? channel.mediaTransport ?? selectedAdapter?.mediaTransport
+    : selectedAdapter?.mediaTransport ?? channel.mediaTransport)
   const videoRequestContract = channel.videoRequestContract || selectedAdapter?.videoRequestContract || preset?.videoRequestContract
   const normalizedBaseURL = channel.baseURL.trim().replace(/\/$/, '')
   const baseURL = channel.presetId === 'video-808relay' && /^https:\/\/va\.808relay\.com(?:\/v1)?$/i.test(normalizedBaseURL)
@@ -585,7 +591,7 @@ export const useGenerationStore = create<GenerationState>()(
         const catalogs = [...(channel.modelCatalog || []), ...adapters.flatMap((adapter) => modelsForGenerationProtocol(adapter.protocol))]
         return (channel.modelIds || []).map((id) => {
           const owner = adapters.find((adapter) => (channel.modelCatalog || modelsForGenerationProtocol(adapter.protocol)).some((model) => model.id === id))
-          const catalogModel = catalogs.find((model) => model.id === id)
+          const catalogModel = resolve808WanModel(channel, id, owner?.protocol || adapters[0]?.protocol || generationProtocolForChannel(channel)) || catalogs.find((model) => model.id === id)
           return catalogModel
             ? { ...catalogModel, id, adapterId: owner?.id }
             : {

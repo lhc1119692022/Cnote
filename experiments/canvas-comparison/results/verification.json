@@ -1,0 +1,15 @@
+{
+  "measuredCases": 670,
+  "conditions": 134,
+  "repetitionsPerCondition": 5,
+  "sourceHashesMatch": true,
+  "positionsAndGraphWriteCounts": true,
+  "editingPassed": 8,
+  "guestPassed": 12,
+  "guestFailures": [],
+  "motionPassed": 40,
+  "cancellationAndCreditChecks": true,
+  "httpAuthChecks": true,
+  "remainingJobs": 0,
+  "timestamp": "2026-09-18T19:29:29.705Z"
+}

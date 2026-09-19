@@ -26,9 +26,13 @@ import {
 } from 'lucide-react'
 import { createPortal } from 'react-dom'
 import { nanoid } from 'nanoid'
+import { useShallow } from 'zustand/react/shallow'
+import { createDisplayBuffer } from '@/lib/frame-task'
+import { currentCanvasViewport } from '@/stores/canvas-viewport-store'
 import { resolveAIContextEntries } from '@/lib/flow/ai-context'
 import { RichTextEditor } from '@/components/ui/rich-text-editor'
-import { contentNodeText } from '@/domain/content-text'
+import { collectUpstreamInputs, directUpstreamNodes, type UpstreamRuntime } from '@/lib/flow/upstream-inputs'
+import { useUpstreamRuntime } from '@/canvas/use-upstream-runtime'
 import type {
   AIMessage,
   AINodeSpec,
@@ -83,21 +87,28 @@ const EMPTY_MESSAGES: AIMessage[] = []
 const sendingAINodeIds = new Set<string>()
 const activeAIControllers = new Map<string, AbortController>()
 const sendingListeners = new Set<() => void>()
+let sendingSnapshot: readonly string[] = []
 function subscribeSending(listener: () => void) {
   sendingListeners.add(listener)
   return () => { sendingListeners.delete(listener) }
 }
 function setNodeSending(nodeId: string, sending: boolean) {
+  if (sendingAINodeIds.has(nodeId) === sending) return
   if (sending) sendingAINodeIds.add(nodeId)
   else sendingAINodeIds.delete(nodeId)
+  sendingSnapshot = [...sendingAINodeIds]
   sendingListeners.forEach((listener) => listener())
+}
+
+export function useSendingAINodeIds() {
+  return useSyncExternalStore(subscribeSending, () => sendingSnapshot, () => sendingSnapshot)
 }
 
 export function isAINodeSendInflight(nodeId: string) {
   return sendingAINodeIds.has(nodeId)
 }
 
-type UpstreamEntry = AIContextEntry & { color: string }
+type UpstreamEntry = AIContextEntry & { color: string; edgeIds: string[]; availability: string }
 
 function categoryColor(category?: ContentCategory | null): string {
   if (category === 'video') return 'bg-red-500'
@@ -267,41 +278,17 @@ function ensureActiveSession(fields: Pick<AINodeSpec, 'id' | 'activeSessionId'>)
   return session.id
 }
 
-function textFromUpstreamNode(node: NodeSpec): string {
-  switch (node.kind) {
-    case 'content':
-      return contentNodeText(node) ?? node.label
-    case 'browser':
-      return (node.latestCaptureId ? useRuntimeStore.getState().captures[node.latestCaptureId]?.text : undefined) || node.url
-    case 'sticky':
-      return node.content
-    case 'ai':
-      return (node.activeSessionId ? useRuntimeStore.getState().aiSessions[node.activeSessionId]?.messages.filter(message => message.role === 'assistant').slice(-1)[0]?.content : undefined) || node.label
-    case 'request':
-    case 'group':
-      return node.label
-  }
-}
-
 function collectUpstreamEntries(
   nodeId: string,
   nodes: NodeSpec[] | undefined,
   edges: { source: string; target: string }[] | undefined,
+  runtime: UpstreamRuntime = useRuntimeStore.getState(),
 ): UpstreamEntry[] {
   if (!nodes || !edges) return []
-  const sourceIds = [...new Set(edges.filter((edge) => edge.target === nodeId).map((edge) => edge.source))]
-  const entries: UpstreamEntry[] = []
-  for (const sourceId of sourceIds) {
-    const source = nodes.find((item) => item.id === sourceId)
-    if (!source) continue
-    entries.push({
-      nodeId: source.id,
-      label: source.label || '上游节点',
-      text: textFromUpstreamNode(source).trim(),
-      color: upstreamColor(source),
-    })
-  }
-  return entries
+  return collectUpstreamInputs(nodeId, nodes, edges, runtime).map(entry => ({
+    ...entry,
+    color: upstreamColor(entry.node),
+  }))
 }
 
 function toChatContent(parts: ReturnType<typeof compileAiPromptParts>): ChatMessage['content'] {
@@ -322,7 +309,8 @@ function closeMenu(target: EventTarget | null): void {
 
 export const AIContent = memo(function AIContent({ node, presentation = 'node' }: { node: AINodeSpec; presentation?: 'node' | 'panel' }) {
   const showSettings = useUiStore((state) => state.nodeChrome[node.id]?.settings === true)
-  const sessions = useRuntimeStore((state) => state.aiSessions)
+  const sessions = useRuntimeStore(useShallow((state) => Object.values(state.aiSessions)
+    .filter((item) => item.nodeId === node.id || item.id === node.activeSessionId)))
   const [renamingSessionId, setRenamingSessionId] = useState<string | null>(null)
   const [sessionTitle, setSessionTitle] = useState('')
   const [toolbarHost, setToolbarHost] = useState<HTMLElement | null>(null)
@@ -338,11 +326,12 @@ export const AIContent = memo(function AIContent({ node, presentation = 'node' }
   )
   const messages = session?.messages ?? EMPTY_MESSAGES
 
-  const documentEdges = useGraphStore((state) => state.currentDocument?.edges)
-  const documentNodes = useGraphStore((state) => state.currentDocument?.nodes)
+  const documentEdges = useGraphStore(useShallow((state) => state.currentDocument?.edges.filter(edge => edge.target === node.id) ?? []))
+  const documentNodes = useGraphStore(useShallow((state) => directUpstreamNodes(node.id, state.currentDocument?.nodes, state.currentDocument?.edges).map(entry => entry.node)))
+  const upstreamRuntime = useUpstreamRuntime(documentNodes)
   const upstreamEntries = useMemo(
-    () => collectUpstreamEntries(node.id, documentNodes, documentEdges),
-    [documentEdges, documentNodes, node.id],
+    () => collectUpstreamEntries(node.id, documentNodes, documentEdges, upstreamRuntime),
+    [documentEdges, documentNodes, node.id, upstreamRuntime],
   )
   const lastUserMessageIndex = useMemo(
     () => messages.reduce((lastIndex, message, index) => (message.role === 'user' ? index : lastIndex), -1),
@@ -376,7 +365,7 @@ export const AIContent = memo(function AIContent({ node, presentation = 'node' }
     if (!rootRef.current) return
     return bindNodeMenus(rootRef.current, () => {
       const insets = canvasOverlayInsets(useUiStore.getState())
-      return presentation === 'panel' ? { zoom: 1, leftInset: 0, rightInset: 0 } : { zoom: useGraphStore.getState().view.zoom, leftInset: insets.left, rightInset: insets.right }
+      return presentation === 'panel' ? { zoom: 1, leftInset: 0, rightInset: 0 } : { zoom: currentCanvasViewport().zoom, leftInset: insets.left, rightInset: insets.right }
     })
   }, [presentation])
 
@@ -775,13 +764,23 @@ export const AIContent = memo(function AIContent({ node, presentation = 'node' }
       let response = ''
       const replyIndex = history.length
       const createdAt = Date.now()
-      for await (const delta of client.completeStream(request, controller.signal)) {
-        if (controller.signal.aborted) break
-        response += delta
+      const display = createDisplayBuffer((text) => {
+        response += text
         const session = useRuntimeStore.getState().aiSessions[sessionId]
-        if (!session) { controller.abort(); break }
+        if (!session) { controller.abort(); return }
         const reply: AIMessage = { role: 'assistant', content: response, channelId: requestOption.channelId, model: requestOption.model, createdAt }
         useRuntimeStore.getState().putAISession({ ...session, messages: [...session.messages.slice(0, replyIndex), reply], updatedAt: Date.now() })
+      })
+      controller.signal.addEventListener('abort', display.flush)
+      try {
+        for await (const delta of client.completeStream(request, controller.signal)) {
+          if (controller.signal.aborted) break
+          if (!useRuntimeStore.getState().aiSessions[sessionId]) { controller.abort(); break }
+          display.append(delta)
+        }
+      } finally {
+        display.flush()
+        controller.signal.removeEventListener('abort', display.flush)
       }
       if (!response.trim() && !controller.signal.aborted) throw new Error('模型返回了空响应')
       const currentSession = useRuntimeStore.getState().aiSessions[sessionId]
@@ -924,7 +923,7 @@ export const AIContent = memo(function AIContent({ node, presentation = 'node' }
               draggable
               role="listitem"
               className="ai-source-variable"
-              title={`拖入输入框引用${entry.label}`}
+              title={`${entry.label} → ${node.label} · ${entry.availability === 'url-only' ? '仅 URL，未抓取正文' : entry.availability === 'empty' ? '暂无输出' : '拖入输入框引用'}`}
               aria-label={`插入变量 ${entry.label}`}
               onPointerDown={stopNodeGesture}
               onDragStart={(event) => {

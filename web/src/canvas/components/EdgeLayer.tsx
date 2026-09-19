@@ -5,48 +5,37 @@
  */
 
 import { createPortal } from 'react-dom'
-import { useEffect, type PointerEvent as ReactPointerEvent } from 'react'
+import { useEffect, useMemo, type PointerEvent as ReactPointerEvent } from 'react'
 import { Unplug } from 'lucide-react'
-import { cubicBezierPoint, edgePathPoints, nodeRect } from '@/canvas'
+import { cubicBezierPoint } from '@/canvas'
+import { createEdgePathCache } from '@/canvas/edge-path-cache'
 import { useGraphStore } from '@/stores/graph-store'
 import { useUiStore } from '@/stores/ui-store'
 import { useCanvas } from './CanvasProvider'
 
 export function EdgeLayer() {
-  const { nodes, edges, worldToScreen, containerRef } = useCanvas()
+  const { nodes, edges, viewport, worldToScreen, containerRef } = useCanvas()
   const selectedEdgeId = useUiStore((state) => state.selectedEdgeId)
   const isLocked = useGraphStore((state) => state.isLocked)
-  const nodeMap = new Map(nodes.map((node) => [node.id, node]))
+  const resolvePaths = useMemo(createEdgePathCache, [])
   useEffect(() => {
     if (!selectedEdgeId) return
     if (edges.some((edge) => edge.id === selectedEdgeId)) return
     useUiStore.getState().setSelectedEdgeId(null)
   }, [edges, selectedEdgeId])
 
-  const paths = edges.flatMap((edge) => {
-    const source = nodeMap.get(edge.source)
-    const target = nodeMap.get(edge.target)
-    if (!source || !target) return []
-    const pts = edgePathPoints(nodeRect(source), nodeRect(target))
-    const screen = {
-      source: worldToScreen(pts.source),
-      controlA: worldToScreen(pts.controlA),
-      controlB: worldToScreen(pts.controlB),
-      target: worldToScreen(pts.target),
-    }
-    const d = `M ${screen.source.x} ${screen.source.y} C ${screen.controlA.x} ${screen.controlA.y}, ${screen.controlB.x} ${screen.controlB.y}, ${screen.target.x} ${screen.target.y}`
-    return [{ id: edge.id, d, pts: screen }]
-  })
+  const paths = useMemo(() => resolvePaths(nodes, edges), [nodes, edges, resolvePaths])
+  const worldTransform = `translate(${viewport.x} ${viewport.y}) scale(${viewport.zoom})`
 
   const selectedPath = paths.find((path) => path.id === selectedEdgeId)
   const selectedMid = selectedPath
-    ? cubicBezierPoint(
+    ? worldToScreen(cubicBezierPoint(
         selectedPath.pts.source,
         selectedPath.pts.controlA,
         selectedPath.pts.controlB,
         selectedPath.pts.target,
         0.5,
-      )
+      ))
     : null
 
   const onEdgePointerDown = (event: ReactPointerEvent<SVGPathElement>, edgeId: string) => {
@@ -73,6 +62,7 @@ export function EdgeLayer() {
         overflow="visible"
         aria-hidden
       >
+        <g transform={worldTransform}>
         {paths.map((path) => {
           const selected = path.id === selectedEdgeId
           return (
@@ -87,6 +77,7 @@ export function EdgeLayer() {
             />
           )
         })}
+        </g>
       </svg>
       {/* 命中层：根默认 auto，仅含透明 stroke path（fill:none），空白不拦截 */}
       <svg
@@ -96,6 +87,7 @@ export function EdgeLayer() {
         overflow="visible"
         aria-hidden
       >
+        <g transform={worldTransform}>
         {paths.map((path) => (
           <path
             key={path.id}
@@ -108,6 +100,7 @@ export function EdgeLayer() {
             onPointerDown={(event) => onEdgePointerDown(event, path.id)}
           />
         ))}
+        </g>
       </svg>
       {selectedPath && selectedMid && containerRef.current
         ? createPortal(

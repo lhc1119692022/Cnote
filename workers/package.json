@@ -12,7 +12,7 @@
     "deploy:media": "wrangler deploy --config wrangler-media-upload.toml",
     "dev:proxy": "wrangler dev --config wrangler-proxy.toml",
     "deploy:proxy": "wrangler deploy --config wrangler-proxy.toml",
-    "test:media": "node scripts/verify-media-upload.mjs",
+    "test:media": "node scripts/verify-media-upload.mjs && node scripts/verify-custom-media.mjs",
     "test:contract": "npm run test:media && node scripts/verify-content-service.mjs && node scripts/verify-ai-proxy.mjs"
   },
   "devDependencies": {

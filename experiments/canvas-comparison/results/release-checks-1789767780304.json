@@ -1,0 +1,129 @@
+{
+  "recordedAt": "2026-09-18T21:42:47.640Z",
+  "rows": [
+    {
+      "script": "verify-frame-task",
+      "exitCode": 0,
+      "milliseconds": 292,
+      "stdout": "verify-frame-task: coalescing, final flush, cancel, hidden fallback, Unicode and concurrent buffers passed\n",
+      "stderr": ""
+    },
+    {
+      "script": "verify-canvas-optimization",
+      "exitCode": 0,
+      "milliseconds": 1571,
+      "stdout": "canvas optimization: real provider 30/100/300-node gestures, viewport commit, history/cancel, resize, document switch, reduced motion, grid, pin, presentation and edge cache passed\n",
+      "stderr": ""
+    },
+    {
+      "script": "verify-upstream-contract",
+      "exitCode": 0,
+      "milliseconds": 999,
+      "stdout": "upstream contract: ordering/filtering, preview/send snapshots, live text preview, empty/URL statuses and source navigation passed\n",
+      "stderr": ""
+    },
+    {
+      "script": "verify-canvas-navigation",
+      "exitCode": 0,
+      "milliseconds": 1121,
+      "stdout": "canvas navigation: PASS\n",
+      "stderr": ""
+    },
+    {
+      "script": "verify-canvas-user-flow",
+      "exitCode": 0,
+      "milliseconds": 1932,
+      "stdout": "User flow repairs: empty minimap centering, AI two-view chat/settings/sessions, text collection, generator identity, upstream image sends, Sticky palette, menu grouping, fixed grid, Markdown replies, unified generation action: PASS (mock provider; no native UI or network)\n",
+      "stderr": ""
+    },
+    {
+      "script": "verify-ai-streaming",
+      "exitCode": 0,
+      "milliseconds": 370,
+      "stdout": "Desktop streaming: early deltas, UTF-8 boundaries, four protocols, abort, DONE, errors, JSON fallback, owner isolation, reload cleanup and temporary secrets PASS (mock network only)\n",
+      "stderr": ""
+    },
+    {
+      "script": "verify-ai-upstream-transport",
+      "exitCode": 0,
+      "milliseconds": 354,
+      "stdout": "AI upstream and secure transport: model discovery, saved/unsaved keys, cleanup, concurrent requests, image/variable/asset selection, four multimodal protocols PASS (fixtures only)\n",
+      "stderr": ""
+    },
+    {
+      "script": "verify-generation-inputs",
+      "exitCode": 0,
+      "milliseconds": 1211,
+      "stdout": "generation inputs, video modes, audio parameter and production transport contracts: PASS\n",
+      "stderr": ""
+    },
+    {
+      "script": "verify-generation-selection",
+      "exitCode": 0,
+      "milliseconds": 960,
+      "stdout": "PASS: RequestContent generation entry points; image/video/body channel filtering; concurrent batch, ordering, partial failure, resume; waiting-for-user continue/abandon\n",
+      "stderr": ""
+    },
+    {
+      "script": "verify-prompt-mentions",
+      "exitCode": 0,
+      "milliseconds": 246,
+      "stdout": "prompt mentions: PASS\n",
+      "stderr": ""
+    },
+    {
+      "script": "verify-runtime-persistence",
+      "exitCode": 0,
+      "milliseconds": 309,
+      "stdout": "verify-runtime-persistence: ok (including reference cache, retry, delete/recreate and concurrent update)\n",
+      "stderr": "Failed to persist runtime:ai-session:cached-ai Error: forced persist failure\n    at Object.setItem (file:///D:/Git%20Project/Cnote/web/scripts/verify-runtime-persistence.mjs:65:15)\n    at persistSnapshot (eval at evaluate (file:///D:/Git%20Project/Cnote/web/scripts/verify-runtime-persistence.mjs:22:3), <anonymous>:800:64)\n    at eval (eval at evaluate (file:///D:/Git%20Project/Cnote/web/scripts/verify-runtime-persistence.mjs:22:3), <anonymous>:849:23)\n"
+    },
+    {
+      "script": "verify-document-autosave",
+      "exitCode": 0,
+      "milliseconds": 438,
+      "stdout": "document autosave: PASS\n",
+      "stderr": ""
+    },
+    {
+      "script": "verify-session-exit",
+      "exitCode": 0,
+      "milliseconds": 966,
+      "stdout": "session exit close/reopen: PASS\n",
+      "stderr": ""
+    },
+    {
+      "script": "verify-capture-materializer",
+      "exitCode": 0,
+      "milliseconds": 315,
+      "stdout": "verify-capture-materializer: ok\n",
+      "stderr": ""
+    },
+    {
+      "script": "verify-rich-text",
+      "exitCode": 0,
+      "milliseconds": 1329,
+      "stdout": "rich text: JSON persistence, import, formatting, two-view sync, selection, undo/redo, Chinese text, URL safety: PASS\n",
+      "stderr": ""
+    },
+    {
+      "script": "verify-schema",
+      "exitCode": 0,
+      "milliseconds": 249,
+      "stdout": "schema migration chain: PASS\n",
+      "stderr": ""
+    }
+  ],
+  "sources": {
+    "canvas/components/CanvasProvider.tsx": "8d960e2c8b9cbbc005b14a7b1a731eb738151be778e0f6c11b3d53482ad71989",
+    "canvas/components/CanvasViewport.tsx": "a8c5d96c020cfc8f722eeff6e09470288c5aa7c022e1f3d63573e33064461bf7",
+    "canvas/components/UpstreamInputChips.tsx": "a9f70ffa66c90ae3b930ae127b6228b22539ff4a25f323ca6a7985099d2179cf",
+    "canvas/contents/AIContent.tsx": "d6139fbfaa2b3f583f78ad79b5c58d7a9ca95588d06bc34541d504825ece71d0",
+    "canvas/contents/RequestContent.tsx": "0bdc6458a751cf2646eaeaadec8f1eadce03d109e79cdd937e5c6a49a6a5afad",
+    "lib/frame-task.ts": "be8b141517c059232048106ecb00a6e20a824eab0a9c27b912bbf0822e7ac870",
+    "lib/flow/upstream-inputs.ts": "da6f867fe3920382a0c6f366e28a8ecfa58c342086a5c4f477072cea5288cd98",
+    "storage/runtime-persistence.ts": "f05a6183e78b71cf101d669c98e97be73b9957274caa9fd5962ffb72a1da2b30",
+    "stores/canvas-viewport-store.ts": "0f282f01114a9a621a5f16900a7473a33fb65ce3f9d3a8a9f6b70a17a3334af5",
+    "stores/graph-store.ts": "ebefe98cdbcb2f5e690454446a61f6681405b9eefcce16b50401f5b0b4e5eed5"
+  }
+}

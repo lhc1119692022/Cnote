@@ -90,13 +90,21 @@ mocks.set('@/lib/resource-storage', {
 })
 mocks.set('@/lib/desktop-secrets', { ensureDesktopSecret: async () => true, syncDesktopSecret: async () => {} })
 const storageSettings = { baseURL: '', getUploadEndpoint: () => 'https://storage.test/upload', fieldName: 'file', responsePath: 'url', getAccessToken: () => '' }
-mocks.set('@/stores/use-media-storage-store', { MEDIA_STORAGE_DEFAULTS: { fieldName: 'file', responsePath: 'url' }, useMediaStorageStore: { getState: () => storageSettings } })
+mocks.set('./media-upload-cache', { reuseMediaUpload: async (_scope, _blob, upload) => upload('a'.repeat(64)) })
+mocks.set('@/stores/use-media-storage-store', { notifyMediaStorageChanged: () => {}, MEDIA_STORAGE_DEFAULTS: { fieldName: 'file', responsePath: 'url' }, useMediaStorageStore: { getState: () => storageSettings } })
 const requests = []
 let rejectUpload = false
+let pollFailure
+let creationFailure
+let mediaStatus = 200
 mocks.set('@/lib/desktop-fetch', { desktopFetch: async (url, options = {}) => {
+  if (options.method === 'HEAD') return new Response(null, { status: mediaStatus, headers: { 'content-type': 'application/octet-stream', 'content-length': '10' } })
+  if (url.endsWith('/prepare')) return Response.json({ url: 'https://storage.test/media/prepared', expiresAt: Date.now() + 14 * 86400000 })
   requests.push({ url, ...options })
+  if (pollFailure && options.method === 'GET' && url.endsWith('/v1/videos/task-wan-failed')) return Response.json(pollFailure)
   if (rejectUpload && !url.endsWith('/v1/videos')) return new Response('upload failed', { status: 500 })
   if (url.endsWith('/upload')) return Response.json({ url: 'https://cdn.test/uploaded.png' })
+  if (creationFailure && options.method === 'POST') return Response.json(creationFailure, { status: 400, headers: { 'x-request-id': 'request-create-123' } })
   assert.ok(url.endsWith('/v1/videos'), 'no unexpected network endpoint')
   return Response.json({ id: 'mock-task', status: 'queued' })
 } })
@@ -466,6 +474,109 @@ async function submit(config, transport, extra = {}) {
   return { result, body: JSON.parse(requests.find((request) => request.url.endsWith('/v1/videos')).body) }
 }
 const textRequest = await submit({ ...base, capability: 'text-to-video' })
+{
+  requests.length = 0
+  mediaStatus = 404
+  await assert.rejects(() => submitGenerationTask({ variant: 'video', model, channel, config: { ...base, references: [{ id: 'missing', type: 'image', source: 'url', url: 'https://cdn.test/missing.png' }] } }), /preparation:.*missing.*404/)
+  assert.equal(requests.length, 0, 'unrecoverable missing reference never submits generation')
+  mediaStatus = 403
+  await assert.rejects(() => submitGenerationTask({ variant: 'video', model, channel, config: { ...base, references: [{ id: 'denied', type: 'image', source: 'url', resourceId: 'sha256-fixture', url: 'https://cdn.test/denied.png' }] } }), /preparation:.*403/)
+  assert.equal(requests.length, 0, 'permission failure does not upload or generate even with local bytes')
+  mediaStatus = 200
+}
+
+{
+  creationFailure = { error: { code: 'unsupported_reference', message: 'reference videos support at most 0 URLs https://secret.test/path?token=secret' } }
+  let prepared
+  const reference = { id: 'video-test', type: 'video', source: 'url', url: 'https://cdn.test/video.mp4' }
+  await assert.rejects(() => submitGenerationTask({ variant: 'video', model, channel, config: { ...base, references: [reference] } }, undefined, diagnostics => { prepared = diagnostics }), /creation:.*HTTP 400.*unsupported_reference.*request-create-123/)
+  assert.equal(prepared.references.length, 1)
+  assert.equal(prepared.references[0].type, 'video')
+  assert.ok(!JSON.stringify(prepared).includes('cdn.test'))
+  creationFailure = undefined
+}
+
+{
+  const wan = models.find((entry) => entry.id === 'wan-3')
+  const staleModel = { ...model, id: 'wan-3.0', capabilitySource: 'inferred' }
+  const wanChannel = { ...channel, protocol: 'video-808relay', mediaTransport: 'inline' }
+  const runWan = (config, overrides = {}) => submitGenerationTask({ variant: 'video', model: staleModel, channel: wanChannel, config: { ...base, generateAudio: true, ...config }, ...overrides })
+  requests.length = 0
+  await runWan({ references: [] })
+  assert.deepEqual(JSON.parse(requests[0].body), { model: 'wan-3.0', duration: 5, resolution: '720p', aspect_ratio: base.aspectRatio, prompt: base.prompt, generate_audio: true })
+  requests.length = 0
+  const publicImage = { id: 'wan-image', type: 'image', source: 'url', url: 'https://public.r2.dev/image.png' }
+  await runWan({ references: [publicImage] })
+  assert.deepEqual(JSON.parse(requests[0].body).image_urls, [publicImage.url])
+  assert.equal(JSON.parse(requests[0].body).reference_images, undefined)
+  for (const invalid of [
+    { seconds: 31 },
+    { seconds: 1.5 },
+    { references: Array.from({ length: 11 }, (_, index) => ({ ...publicImage, id: String(index), url: 'https://cdn.test/' + index + '.png' })) },
+  ]) {
+    requests.length = 0
+    await assert.rejects(() => runWan(invalid))
+    assert.equal(requests.length, 0, 'invalid Wan inputs never reach the network')
+  }
+  requests.length = 0
+  await runWan({ resolution: '1080p', aspectRatio: 'auto' }, { model: { ...staleModel, id: 'wan-3.0-1080p' } })
+  assert.equal(JSON.parse(requests[0].body).model, 'wan-3.0-1080p')
+  assert.equal(JSON.parse(requests[0].body).resolution, '1080p')
+  assert.equal(JSON.parse(requests[0].body).aspect_ratio, '16:9')
+  for (const variant of ['wan-3', 'provider/wan-3.0-fast', 'WAN-3-custom']) {
+    requests.length = 0
+    await runWan({ seconds: 1, resolution: 'custom-tier', references: [publicImage, { ...publicImage, id: 'second' }, { ...publicImage, id: 'third' }] }, { model: { ...staleModel, id: variant } })
+    const body = JSON.parse(requests[0].body)
+    assert.equal(body.model, variant)
+    assert.equal(body.image_urls.length, 3)
+    assert.equal(body.duration, 1)
+    assert.equal(body.resolution, 'custom-tier')
+  }
+  requests.length = 0
+  await runWan({ references: [{ ...publicImage, url: 'http://cdn.test/ref.png' }] })
+  assert.deepEqual(JSON.parse(requests[0].body).image_urls, ['http://cdn.test/ref.png'])
+  requests.length = 0
+  await assert.rejects(() => runWan({ references: [{ ...publicImage, source: 'local', resourceId: 'sha256-fixture', url: undefined }] }), /自定义媒体存储/)
+  assert.equal(requests.length, 0, 'legacy inline mode cannot bypass storage')
+  requests.length = 0
+  await runWan({ capability: 'first-last-frame', references: [{ ...publicImage, role: 'first_frame' }] })
+  assert.equal(JSON.parse(requests[0].body).input_reference, publicImage.url)
+  assert.equal(JSON.parse(requests[0].body).image_end, undefined)
+  requests.length = 0
+  await runWan({ references: [{ id: 'audio', type: 'audio', source: 'url', url: 'https://cdn.test/audio.mp3' }] })
+  assert.deepEqual(JSON.parse(requests[0].body).audio_urls, ['https://cdn.test/audio.mp3'])
+  requests.length = 0
+  await runWan({ references: [{ ...publicImage, source: 'local', url: undefined, resourceId: 'sha256-fixture' }] }, { channel: { ...wanChannel, mediaTransport: 'custom', mediaUploadURL: 'https://storage.test/upload' } })
+  assert.deepEqual(requests.map(entry => entry.url), ['https://storage.test/upload', 'https://provider.test/v1/videos'])
+  assert.deepEqual(JSON.parse(requests[1].body).image_urls, ['https://cdn.test/uploaded.png'])
+  assert.equal(wan.maxImages, 10)
+  storageSettings.baseURL = 'https://storage.test'
+  const diagnosticResult = await runWan({ references: [{ ...publicImage, source: 'local', resourceId: 'sha256-fixture', url: undefined }] })
+  assert.equal(diagnosticResult.requestDiagnostics.durationField, 'duration')
+  assert.equal(diagnosticResult.requestDiagnostics.duration, 5)
+  assert.ok(diagnosticResult.requestDiagnostics.fields.includes('image_urls'))
+  assert.deepEqual(diagnosticResult.requestDiagnostics.references, [{ type: 'image', transport: 'https' }])
+  assert.ok(!JSON.stringify(diagnosticResult.requestDiagnostics).includes('Zml4dHVyZQ'))
+  assert.equal(diagnosticResult.requestDiagnostics.prompt, undefined)
+  const staleAdapter = [{ id: 'video-808relay', protocol: 'video-808relay', mediaTransport: 'custom' }]
+  requests.length = 0
+  storageSettings.baseURL = 'https://storage.test'
+  await runWan({ references: [{ ...publicImage, source: 'local', url: undefined, resourceId: 'sha256-fixture' }] }, { channel: { ...wanChannel, adapters: staleAdapter } })
+  assert.equal(requests.length, 2, 'old inline settings now upload before generation')
+  storageSettings.baseURL = ''
+  requests.length = 0
+  await runWan({ references: [{ ...publicImage, source: 'local', url: undefined, resourceId: 'sha256-fixture' }] }, { channel: { ...wanChannel, mediaTransport: 'custom', mediaUploadURL: 'https://storage.test/upload', adapters: [{ ...staleAdapter[0], mediaTransport: 'inline' }] } })
+  assert.equal(requests[0].url, 'https://storage.test/upload', '808 channel custom selection wins over stale inline adapter')
+  pollFailure = { id: 'task-wan-failed', status: 'failed', request_id: 'request-wan', error: { code: 'generation_failed', type: 'generation_failed', message: '生成失败' }, authorization: 'not-for-storage' }
+  const { pollGenerationTask } = load('lib/generation/client.ts')
+  const polled = await pollGenerationTask({ variant: 'video', model: wan, channel: wanChannel, config: base }, 'task-wan-failed')
+  assert.equal(polled.task.status, 'failed')
+  assert.match(polled.task.error, /generation_failed/)
+  assert.match(polled.task.error, /task-wan-failed/)
+  const { generationFailureDetails } = evaluate('export ' + declarations('canvas/contents/RequestContent.tsx', ['generationFailureDetails']))
+  assert.deepEqual(generationFailureDetails(polled.task.rawResponse), { code: 'generation_failed', type: 'generation_failed', requestId: 'request-wan' })
+  pollFailure = undefined
+}
 assert.equal(textRequest.body.input_reference, undefined)
 assert.equal(textRequest.body.reference_images, undefined)
 const imageRequest = await submit({ ...base, capability: 'image-to-video', references: [merged.references[0]] })
@@ -547,8 +658,8 @@ assert.equal(mentionSubmission.taskId, 'mock-task')
 
 const localCopy = { ...merged.references[0], id: 'local', upstreamNodeId: undefined, url: undefined, previewUrl: undefined, resourceId: 'sha256-local', source: 'local' }
 const localConfig = { ...base, references: [localCopy] }
-assert.match((await submit(localConfig, 'inline')).body.reference_images[0], /^data:image\/png;base64,/)
-assert.equal(requests.length, 1, 'inline never calls an upload endpoint')
+await assert.rejects(() => submit(localConfig, 'inline'), /自定义媒体存储/)
+assert.equal(requests.length, 0, 'missing storage blocks local media before generation')
 await submit(localConfig, 'custom', { mediaUploadURL: 'https://storage.test/upload' })
 assert.equal(requests[0].url, 'https://storage.test/upload')
 assert.deepEqual(requests.map((request) => request.method), ['POST', 'POST'])
@@ -560,42 +671,35 @@ assert.equal(requests[0].url, 'https://storage.test/upload', 'custom transport u
 assert.ok(requests[0].body instanceof FormData)
 assert.equal(requests[0].headers.Authorization, 'Bearer mock-storage-token', 'storage uses an independent credential')
 for (const legacyTransport of [undefined, 'auto', 'public-url', 'presign', 'multipart']) {
-  await assert.rejects(() => submit(localConfig, legacyTransport, { mediaUploadPath: '/presign' }), /preparation:.*选择本地素材传输方式/)
-  assert.equal(requests.length, 0, 'configured storage and endpoints never imply a delivery choice')
-}
-for (const retiredTransport of ['presign', 'multipart']) {
-  await assert.rejects(() => submit(localConfig, 'custom', { adapters: [{ id: 'video-api', protocol: 'video-api', mediaTransport: retiredTransport, mediaUploadPath: '/upload' }] }), /选择本地素材传输方式/)
-  assert.equal(requests.length, 0, 'retired adapter transports cannot fall back to the channel or custom storage')
+  await submit(localConfig, legacyTransport, { mediaUploadPath: '/presign' })
+  assert.equal(requests[0].url, 'https://storage.test/upload', 'retired transports use only configured custom storage')
 }
 storageSettings.baseURL = ''
 await assert.rejects(() => submit({ ...localConfig, capability: 'first-last-frame' }, 'custom', { mediaUploadURL: 'https://storage.test/upload' }), /validation/)
 assert.equal(requests.length, 0, 'invalid mode is rejected before uploading or creating a task')
 assert.equal((await submit({ ...base, capability: 'image-to-video', references: merged.references.slice(0, 2) })).body.reference_images.length, 2, 'legacy image mode merges into multimodal without a single-image constraint')
-const mixedInput = await submit({ ...base, references: [...localConfig.references, merged.references[1]] }, 'inline')
-assert.match(mixedInput.body.reference_images[0], /^data:/)
+const mixedInput = await submit({ ...base, references: [...localConfig.references, merged.references[1]] }, 'custom', { mediaUploadURL: 'https://storage.test/upload' })
+assert.equal(mixedInput.body.reference_images[0], 'https://cdn.test/uploaded.png')
 assert.equal(mixedInput.body.reference_images[1], 'https://cdn.test/last.png')
-assert.equal(requests.length, 1, 'existing HTTPS references are never fetched or uploaded')
+assert.equal(requests.length, 2, 'only the local reference uploads; existing HTTPS references are unchanged')
 rejectUpload = true
 await assert.rejects(() => submit(localConfig, 'custom', { mediaUploadURL: 'https://storage.test/upload' }), /preparation/)
 assert.equal(requests.length, 1, 'failed preparation never falls back or creates a task')
 rejectUpload = false
 requests.length = 0
-await testGenerationMediaUpload({ ...channel, mediaTransport: 'inline' })
-for (const retiredTransport of ['public-url', 'auto', 'presign', 'multipart']) {
-  await assert.rejects(() => testGenerationMediaUpload({ ...channel, mediaTransport: retiredTransport, mediaUploadPath: '/upload', mediaUploadURL: 'https://storage.test/upload' }), /选择本地素材传输方式/)
-}
-assert.equal(requests.length, 0, 'no-upload checks do not claim connectivity')
+await assert.rejects(() => testGenerationMediaUpload({ ...channel, mediaTransport: 'inline' }), /自定义媒体存储/)
+assert.equal(requests.length, 0, 'missing storage cannot claim connectivity')
 assert.equal(mediaTransportStatus(undefined).canTestUpload, false)
 assert.equal(mediaTransportStatus('presign').canTestUpload, false)
-assert.equal(mediaTransportStatus('multipart', true).canTestUpload, false)
+assert.equal(mediaTransportStatus('multipart', true).canTestUpload, true)
 assert.equal(mediaTransportStatus('custom', false).canTestUpload, false)
 assert.equal(mediaTransportStatus('custom', true).canTestUpload, true)
 await testGenerationMediaUpload({ ...channel, mediaTransport: 'custom', mediaUploadURL: 'https://storage.test/upload' })
 assert.equal(requests.length, 1, 'upload verification calls only custom storage, not a generation endpoint')
 assert.equal(requests[0].url, 'https://storage.test/upload')
 assert.ok(requests[0].body instanceof FormData)
-const normalizeChannel = evaluate('import { normalizeMediaTransport, generationProtocolForChannel, generationPresetForId, isVideoGenerationProtocol, modelsForGenerationProtocol, generationSecretName, generationMediaUploadSecretName, GENERATION_PROTOCOL_LABELS } from "bindings";\nexport ' + declarations('stores/use-generation-store.ts', ['normalizeChannel']), () => ({
-  ...generationStore, normalizeMediaTransport, generationPresetForId: () => undefined, isVideoGenerationProtocol: (value) => value === 'video-api', modelsForGenerationProtocol: () => models, GENERATION_PROTOCOL_LABELS: { 'video-api': '视频 API' },
+const normalizeChannel = evaluate('import { is808VideoChannel, normalizeMediaTransport, generationProtocolForChannel, generationPresetForId, isVideoGenerationProtocol, modelsForGenerationProtocol, generationSecretName, generationMediaUploadSecretName, GENERATION_PROTOCOL_LABELS } from "bindings";\nexport ' + declarations('stores/use-generation-store.ts', ['normalizeChannel']), () => ({
+  ...generationStore, is808VideoChannel: load('lib/generation/video-catalog.ts').is808VideoChannel, normalizeMediaTransport, generationPresetForId: () => undefined, isVideoGenerationProtocol: (value) => value === 'video-api', modelsForGenerationProtocol: () => models, GENERATION_PROTOCOL_LABELS: { 'video-api': '视频 API' },
 })).normalizeChannel
 for (const legacyTransport of [undefined, 'auto', 'public-url', 'presign', 'multipart']) {
   const normalized = normalizeChannel({ ...channel, supportsImage: false, supportsVideo: true, mediaTransport: legacyTransport, mediaUploadPath: '/presign' })
@@ -643,10 +747,6 @@ function textButton(label) { return [...document.querySelectorAll('button')].fin
 const deliverySelect = () => document.querySelector('select[aria-label="本地素材传输方式"]')
 const protocolSelect = () => document.querySelector('select[aria-label="上传协议"]')
 async function click(element) { assert.ok(element); await act(async () => element.click()) }
-async function changeSelect(element, value) {
-  assert.ok(element)
-  await act(async () => { element.value = value; element.dispatchEvent(new dom.window.Event('change', { bubbles: true })) })
-}
 async function openChannel(transport, extra = {}) {
   await act(async () => {
     useGenerationStore.setState({ channels: [{ ...channel, mediaTransport: transport, ...extra }] })
@@ -656,18 +756,16 @@ async function openChannel(transport, extra = {}) {
 }
 for (const legacyTransport of [undefined, 'auto', 'public-url', 'presign', 'multipart']) {
   await openChannel(legacyTransport, { mediaUploadPath: '/presign' })
-  assert.equal(deliverySelect().value, '', 'old choices require an explicit replacement even with an existing endpoint')
-  assert.deepEqual([...deliverySelect().options].map((option) => option.value), ['', 'inline', 'custom'])
+  assert.deepEqual([...deliverySelect().options].map(option => option.value), ['custom'], 'only custom storage appears in the compact selector')
   assert.equal(protocolSelect(), null)
   assert.doesNotMatch(document.querySelector('[role="dialog"]').textContent, /预签名|multipart|供应商上传/)
-  assert.equal(textButton('验证上传'), undefined)
+  assert.equal(textButton('验证上传').disabled, true)
   await click(textButton('保存'))
-  assert.match(messages.at(-1), /选择本地素材传输方式/)
+  assert.match(messages.at(-1), /本地存储/)
   assert.equal(savedChannels.length, 0)
   await click(textButton('取消'))
 }
 await openChannel(undefined)
-await changeSelect(deliverySelect(), 'custom')
 assert.equal(protocolSelect(), null)
 await click(textButton('保存'))
 assert.match(messages.at(-1), /本地存储/)
@@ -677,14 +775,14 @@ await click(textButton('保存'))
 assert.equal(savedChannels.at(-1).mediaTransport, 'custom')
 assert.equal(savedChannels.at(-1).adapters[0].mediaTransport, 'custom')
 await openChannel('inline')
-assert.equal(deliverySelect().value, 'inline')
+assert.equal(deliverySelect().value, 'custom')
 assert.equal(protocolSelect(), null)
-assert.equal(textButton('验证上传'), undefined)
+assert.ok(textButton('验证上传'))
 await click(textButton('保存'))
-assert.equal(savedChannels.at(-1).mediaTransport, 'inline')
+assert.equal(savedChannels.at(-1).mediaTransport, 'custom')
 await act(async () => mediaStore.setState({ baseURL: '' }))
 await openChannel('custom', { mediaUploadURL: 'https://legacy-storage.test/upload' })
-assert.match(document.body.textContent, /此渠道保留的自定义上传配置/)
+assert.doesNotMatch(document.querySelector('[role="dialog"]').textContent, /已有 HTTPS 素材随请求直接引用|仅验证上传接口/)
 assert.ok(textButton('验证上传'))
 await click(textButton('保存'))
 assert.equal(savedChannels.at(-1).mediaTransport, 'custom')

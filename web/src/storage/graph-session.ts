@@ -8,6 +8,7 @@
 
 import type { FlowDocument, Viewport } from '@/domain'
 import { useGraphStore } from '@/stores/graph-store'
+import { currentCanvasViewport } from '@/stores/canvas-viewport-store'
 import { appendDocumentIndex, saveDocument } from './graph-store'
 
 export const GRAPH_AUTOSAVE_DELAY_MS = 450
@@ -110,8 +111,8 @@ export function flushGraphPersist(getSource: () => GraphPersistSource) {
 }
 
 export function currentGraphSource(): GraphPersistSource {
-  const { currentDocument, view } = useGraphStore.getState()
-  return { doc: currentDocument, view }
+  const { currentDocument } = useGraphStore.getState()
+  return { doc: currentDocument, view: currentCanvasViewport() }
 }
 
 export function flushOpenGraphIfAny() {

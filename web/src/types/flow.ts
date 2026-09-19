@@ -353,6 +353,7 @@ export type GenerationTaskStatus =
   | 'unknown'
 
 export interface GenerationTaskState {
+  requestDiagnostics?: import('@/lib/generation/request-diagnostics').GenerationRequestDiagnostics
   children?: GenerationTaskState[]
   taskId?: string
   provider?: string

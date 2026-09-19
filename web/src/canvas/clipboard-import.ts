@@ -7,6 +7,7 @@ import { showMessage } from '@/lib/app-dialog'
 import { classifyContentUrl, type ContentImportInput } from '@/lib/content-import'
 import { CONTENT_NODE_DEFAULT_SIZE } from '@/lib/flow/node-dimensions'
 import { useGraphStore } from '@/stores/graph-store'
+import { currentCanvasViewport } from '@/stores/canvas-viewport-store'
 
 const CLIPBOARD_READ_TIMEOUT_MS = 2000
 
@@ -70,7 +71,7 @@ function positionAtClient(clientX?: number, clientY?: number, nodeSize: Size = C
     clientX ?? point.x,
     clientY ?? point.y,
     rect ?? { left: 0, top: 0, width: window.innerWidth, height: window.innerHeight },
-    useGraphStore.getState().view,
+    currentCanvasViewport(),
     nodeSize,
   )
 }

@@ -13,7 +13,7 @@ import { useUiStore } from '@/stores/ui-store'
 import { useCanvas } from './CanvasProvider'
 
 export function CanvasControls() {
-  const { viewport, nodes, containerSize, zoomAtCursor, setViewport } = useCanvas()
+  const { viewport, nodes, containerSize, zoomAtCursor, navigateToViewport } = useCanvas()
   const canUndo = useGraphStore((state) => state.canUndo())
   const canRedo = useGraphStore((state) => state.canRedo())
   const isLocked = useGraphStore((state) => state.isLocked)
@@ -29,13 +29,13 @@ export function CanvasControls() {
   const handleFit = () => {
     if (containerSize.width <= 0 || containerSize.height <= 0) return
     if (nodes.length === 0) {
-      setViewport({ x: 0, y: 0, zoom: 1 })
+      navigateToViewport({ x: 0, y: 0, zoom: 1 })
       return
     }
     const first = nodes[0]
     if (!first) return
     const bounds = nodes.reduce((acc, node) => unionRect(acc, nodeRect(node)), nodeRect(first))
-    setViewport(fitBounds(bounds, containerSize, {
+    navigateToViewport(fitBounds(bounds, containerSize, {
       left: overlayInsets.left + CANVAS_CONTROLS_OCCUPIED_WIDTH + 40,
       right: overlayInsets.right + 40,
       top: 40,

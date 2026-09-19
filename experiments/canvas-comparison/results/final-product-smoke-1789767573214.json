@@ -1,0 +1,975 @@
+{
+  "recordedAt": "2026-09-18T21:39:33.214Z",
+  "count": 30,
+  "smoke": true,
+  "guestsOnly": false,
+  "rows": [
+    {
+      "count": 30,
+      "action": "drag",
+      "frameP95": 41.30000000074506,
+      "updateP95": 2.099999997764826,
+      "intervals": [
+        8.299999997019768,
+        15.5,
+        40.600000001490116,
+        41.30000000074506,
+        16.099999997764826
+      ],
+      "updateTimes": [
+        2.099999997764826,
+        1.7000000029802322,
+        1.9000000022351742,
+        1.699999999254942,
+        1.800000000745058
+      ],
+      "longTasks": [],
+      "graphWrites": 1021,
+      "viewportWrites": 0,
+      "sessionWrites": 0,
+      "reactCommits": 6,
+      "mounted": 27,
+      "transport": {
+        "ready": false,
+        "readCalls": 0,
+        "chunks": 0,
+        "bytes": 0
+      },
+      "finalReplyLength": 0,
+      "mode": "web",
+      "version": "before",
+      "repeat": 0
+    },
+    {
+      "count": 30,
+      "action": "drag",
+      "frameP95": 20.699999999254942,
+      "updateP95": 0.10000000149011612,
+      "intervals": [
+        10.199999999254942,
+        11.700000002980232,
+        20.699999999254942,
+        12.800000000745058,
+        11.699999999254942
+      ],
+      "updateTimes": [
+        0.10000000149011612,
+        0,
+        0,
+        0,
+        0
+      ],
+      "longTasks": [],
+      "graphWrites": 6,
+      "viewportWrites": 0,
+      "sessionWrites": 0,
+      "reactCommits": 7,
+      "mounted": 27,
+      "transport": {
+        "ready": false,
+        "readCalls": 0,
+        "chunks": 0,
+        "bytes": 0
+      },
+      "finalReplyLength": 0,
+      "mode": "web",
+      "version": "after",
+      "repeat": 0
+    }
+  ],
+  "guests": [],
+  "failures": [
+    "Error: Real AI send button is unavailable"
+  ],
+  "manifest": {
+    "revision": "d736c89f9448fb155d7e6906dfe84b01c32623c4",
+    "baselineMapSha256": "4bd55db2dcfb6c71994db6bf515e6e38001e9472c70fb2143370fc328f623028",
+    "sources": {
+      "before": {
+        "lib/api/client.ts": {
+          "sha256": "f00e8be16a07db6faaa4aadb7f461879052c898459e227bd67440e23376e818c",
+          "provenance": "frozen-source-map"
+        },
+        "stores/runtime-store.ts": {
+          "sha256": "815cabb1ea9b1ca4bf954fd92a6c6ea94731dc912785cde8f4d3b3d72e97efe4",
+          "provenance": "frozen-source-map"
+        },
+        "canvas/contents/AIContent.tsx": {
+          "sha256": "e16becdb1d61f987b5b18f8951d0e3b3d8e8997d9a15218669968d2b8693ec3b",
+          "provenance": "frozen-source-map"
+        },
+        "stores/use-ai-store.ts": {
+          "sha256": "5fa73c996563c5716c47c8e6ab768601f124dd60472dfd8846d94308e19a63b7",
+          "provenance": "frozen-source-map"
+        },
+        "canvas/contents/ContentContent.tsx": {
+          "sha256": "dc350c00a1aeeaeabc4261c959c8f1a055dcb746245d2221052822aabe90e1f9",
+          "provenance": "git-original-content-wrapper"
+        },
+        "canvas/components/CanvasViewport.tsx": {
+          "sha256": "e1c96b7be4eb3bcfc84cb4733542d7cdb5ca62e39cb72f372821da21fae4510e",
+          "provenance": "frozen-source-map"
+        },
+        "canvas/components/CanvasProvider.tsx": {
+          "sha256": "c7558694c1dbd8b9b693cf4575371af580b9bbf8d3ed542f3f282e016f38512b",
+          "provenance": "frozen-source-map"
+        },
+        "stores/ui-store.ts": {
+          "sha256": "1d56e869328772fbe683ff8b37bab75e0166ad8e97b67329425dda866eff2104",
+          "provenance": "frozen-source-map"
+        },
+        "stores/graph-store.ts": {
+          "sha256": "c835e33f3597681e25105c2ac8019f0b1dbbc537e2ab911c888d0575a451002b",
+          "provenance": "frozen-source-map"
+        },
+        "lib/api/capabilities.ts": {
+          "sha256": "0d7386aac8cb5b3ee6e9888060817d072d969c420536975828d0dc49b31b7685",
+          "provenance": "frozen-source-map"
+        },
+        "lib/desktop-secrets.ts": {
+          "sha256": "834dc8d9e615a08be4b54d914df5d540683303dba40ac81c32a5c99032a647f0",
+          "provenance": "frozen-source-map"
+        },
+        "lib/desktop-fetch.ts": {
+          "sha256": "c8091af4e91ae7d01f27d66b22452d4ffc5427b6a8917f918871ab15b4fdeec7",
+          "provenance": "frozen-source-map"
+        },
+        "canvas/contents/StickyContent.tsx": {
+          "sha256": "566462a73e4e3ee41b29a804821d7d1df64da8dbc9dc3cfcc16fb063bf5f8fae",
+          "provenance": "current-shared-module"
+        },
+        "lib/desktop-native-jobs.ts": {
+          "sha256": "67cdfbbc4682751961d5b4fcf85f27c471776da7fb56efc73edcf905618fe503",
+          "provenance": "frozen-source-map"
+        },
+        "lib/api/providers.ts": {
+          "sha256": "3aae6b690da481e76373528e0835bb7b5a755cf3a586a791b661bf2abe346cdb",
+          "provenance": "frozen-source-map"
+        },
+        "components/ui/rich-text-editor.tsx": {
+          "sha256": "91fdd97ab6450824f4f272673bfc0e0e6345c38add951944f2075f76f6bb308f",
+          "provenance": "frozen-source-map"
+        },
+        "canvas/sticky-palette.ts": {
+          "sha256": "322762e9650da119120c3103fade969dd1062fcf9d9b1fc146a04473eca131be",
+          "provenance": "frozen-source-map"
+        },
+        "lib/secure-storage.ts": {
+          "sha256": "3a701c771d47caa83d6f2b4faaf146040388198dca7dbc6daad8d3a45f01e04c",
+          "provenance": "frozen-source-map"
+        },
+        "lib/localforage-storage.ts": {
+          "sha256": "af5d20c2563ff24eeac70bb9f7d2c13cdf1c1ca4f55061b6ea57e8f46bc13bf0",
+          "provenance": "frozen-source-map"
+        },
+        "lib/api/index.ts": {
+          "sha256": "62efe90a12024a1ec711402332da4c9b2100aeb09e8f958c4fdc4df41a37df78",
+          "provenance": "frozen-source-map"
+        },
+        "canvas/content-import-adapter.ts": {
+          "sha256": "6bb2edfdd312025fabd1cccfe9268dd044f845bb5ee27ee0baf55c52e50c5653",
+          "provenance": "frozen-source-map"
+        },
+        "lib/content-import.ts": {
+          "sha256": "56cc4782d4cd68a969236289b1a90275987c6565336bfd58cdd047663371226d",
+          "provenance": "frozen-source-map"
+        },
+        "lib/flow/node-dimensions.ts": {
+          "sha256": "022f881c1e335defffa10cb719ea1434fe830450ea676fabf29a6e69e35c977b",
+          "provenance": "frozen-source-map"
+        },
+        "lib/app-dialog.ts": {
+          "sha256": "5937ebd3e0818fcde4b75f8105de29b497a57a1cc749693b4f5b841ffb96ee58",
+          "provenance": "frozen-source-map"
+        },
+        "storage/asset-store.ts": {
+          "sha256": "a38e3b4948cc28e34ef867ae9cf89272fbaeb2913bbb49c4d31d56a4b51d8922",
+          "provenance": "frozen-source-map"
+        },
+        "canvas/node-menu-placement.ts": {
+          "sha256": "af59a54594d4a21e8ff59f8177985405bdcf219d3efdc81f8c9d1a6f793c0789",
+          "provenance": "frozen-source-map"
+        },
+        "lib/flow/ai-context.ts": {
+          "sha256": "c91cfe2e6f2afd116685a8414ff96b636f025d02661a4bf72101ba028b14f955",
+          "provenance": "frozen-source-map"
+        },
+        "domain/content-text.ts": {
+          "sha256": "61eaa256b56a33ce898aba0275a91e0863d9c887d37feaf9d2d3f5d6c7f3f0b2",
+          "provenance": "frozen-source-map"
+        },
+        "lib/flow/ai-prompt.ts": {
+          "sha256": "b11758f2c476f3d38b692a31d845d9f56f9780472adf1fb45abe50af8698cbb7",
+          "provenance": "frozen-source-map"
+        },
+        "canvas/overlay-insets.ts": {
+          "sha256": "30df30686e5044c4068cae436e050da4d79df3998b7d794ee214c613c4ddc30f",
+          "provenance": "frozen-source-map"
+        },
+        "canvas/generation-batch.ts": {
+          "sha256": "661679498c8091ed60fff968be8b79046881cf58996a478d9b89a5a960be7879",
+          "provenance": "current-shared-module"
+        },
+        "canvas/use-media-resource-drag.ts": {
+          "sha256": "61cee7257f324acf9959a0e8d316aa408fb05e3ddb8750b37c8213eb6d05f9c2",
+          "provenance": "current-shared-module"
+        },
+        "runtime/index.ts": {
+          "sha256": "6a2bc0e9a9b246e03b49cb66b1207f6d575345122c27ed6c715ca4414747ce97",
+          "provenance": "current-shared-module"
+        },
+        "canvas/index.ts": {
+          "sha256": "9f9fda5a0552834aa556ba7f21dcfaf8aa4407bcc9f1d2ff5f0bb62cf219fdc0",
+          "provenance": "frozen-source-map"
+        },
+        "lib/resource-storage.ts": {
+          "sha256": "4349dc947375061489cceda7d8c622d1552991fe9b7c2bd3eaa7f52c7eef1c80",
+          "provenance": "frozen-source-map"
+        },
+        "canvas/components/CanvasNodePanel.tsx": {
+          "sha256": "fbcda6e2a05cba035901b973e76901515e9a440d120ff5135dfb6f0650e88020",
+          "provenance": "frozen-source-map"
+        },
+        "canvas/components/CanvasControls.tsx": {
+          "sha256": "b505e3cbfe1c9c543825e5b58f13cefde0db4e2008a1d92139f757f61ad82783",
+          "provenance": "frozen-source-map"
+        },
+        "canvas/toolbar-placement.ts": {
+          "sha256": "87d146bccc300cd72e3517f15f0db97a79d0f4ca8ec89145a22511392f9e263b",
+          "provenance": "frozen-source-map"
+        },
+        "lib/rich-text.ts": {
+          "sha256": "a0f9393e829f909c7aa1b2afa92149366a9f1dd7cad8f7d4930980b61bf390b6",
+          "provenance": "frozen-source-map"
+        },
+        "lib/utils.ts": {
+          "sha256": "f64f5737f7ad0bafe42c954aee249ee386ebb80e1c368b54e403d23e9c3928ac",
+          "provenance": "frozen-source-map"
+        },
+        "canvas/components/MarqueeOverlay.tsx": {
+          "sha256": "97d9dbfa049ff53e70a784f1edd64c94a1653327371efcb08d5b6e54b30930d3",
+          "provenance": "frozen-source-map"
+        },
+        "canvas/node-stacking.ts": {
+          "sha256": "8e80b38feba9aebf5904739d20d75147b423e8574a3802f25dc50a89b0790c6c",
+          "provenance": "frozen-source-map"
+        },
+        "canvas/components/NodeShell.tsx": {
+          "sha256": "b2e52e205008adac4dfc2b4c776615068568bacc00d96a9b84cc9f16c6390689",
+          "provenance": "frozen-source-map"
+        },
+        "canvas/components/CanvasConnector.tsx": {
+          "sha256": "b15c419855e196c8b3218285d7af61577c95b49d2134dd5569daa7fc5d34fbd7",
+          "provenance": "frozen-source-map"
+        },
+        "canvas/components/CanvasExtensionPanel.tsx": {
+          "sha256": "a7f73c1cb0194785837f4f53e7c8cb2292fc8d544b37d27446a69b3a77cea25a",
+          "provenance": "frozen-source-map"
+        },
+        "canvas/components/CanvasMinimap.tsx": {
+          "sha256": "9e7775acda7c50c82e5d29c4b8032999947a8ce8db1d606dd3acd60260042084",
+          "provenance": "frozen-source-map"
+        },
+        "canvas/components/EdgeLayer.tsx": {
+          "sha256": "d403024a8a53f60b6fbd45bfe01b8575500327c10738f735e1f10f3b4108d876",
+          "provenance": "frozen-source-map"
+        },
+        "canvas/components/content-visibility.ts": {
+          "sha256": "1675cc97d2f93390d20cb061f5e0209a57caf62eefb1429cedb4fb542b5e3a0a",
+          "provenance": "frozen-source-map"
+        },
+        "canvas/interact.ts": {
+          "sha256": "5b4d8ea6c60a02005005dc75e233c64b8f64739426f166cb733e92d40121ed6e",
+          "provenance": "frozen-source-map"
+        },
+        "storage/gallery-index.ts": {
+          "sha256": "5a50f8c1544be706dd35ccc3c0844a8f0790fe9feeeeafcd4dc1a4f0271f94b6",
+          "provenance": "frozen-source-map"
+        },
+        "lib/content-visuals.ts": {
+          "sha256": "2c4717daa8d517be50ed4ffb75b89f0fb69bd9abfa404a469041b2f15eb111da",
+          "provenance": "frozen-source-map"
+        },
+        "canvas/grouping.ts": {
+          "sha256": "bcd8edb4edba9ffb7cc92cab4a73f1b73e92d2aef0e7820bf094cf8aa1b27eda",
+          "provenance": "frozen-source-map"
+        },
+        "canvas/viewport.ts": {
+          "sha256": "8369a92b96035c1830fec83adff76690832bc6d546eabed1cd991db371f6657c",
+          "provenance": "frozen-source-map"
+        },
+        "canvas/geometry.ts": {
+          "sha256": "d233e509d8cea49782f855a8d21073ab68c481981c4444ebf54f3ed79610c114",
+          "provenance": "frozen-source-map"
+        },
+        "canvas/edges.ts": {
+          "sha256": "15d25d508504c82e4f3b7af19a64a8fc91308548d1d4bafd6bbc1ca215dab536",
+          "provenance": "frozen-source-map"
+        },
+        "storage/resource-policy.ts": {
+          "sha256": "9c7366a921cfb64304a45f07ca45f521ac9380ee29e0e5be85ae68a8463db8a9",
+          "provenance": "frozen-source-map"
+        },
+        "hooks/use-theme.ts": {
+          "sha256": "57ed587b385ff775f41d96262d473aef338f50c70709da1a4c966cdc7d822e9b",
+          "provenance": "frozen-source-map"
+        },
+        "canvas/node-factory.ts": {
+          "sha256": "e6aed08e8f6892ad4386c605123119ce288bea16893dd81b38dfdbb0a083342e",
+          "provenance": "frozen-source-map"
+        },
+        "canvas/components/CanvasAddMenu.tsx": {
+          "sha256": "5b8d0228cb7a1465bd1b55b9d555302516dd63ce7bfcafe71d6ad7dd39fbe7c6",
+          "provenance": "frozen-source-map"
+        },
+        "lib/api/types.ts": {
+          "sha256": "c2f4facc0a66bd65d4c29573523aee2164525bd3939d9075c6a57efdd9daae32",
+          "provenance": "frozen-source-map"
+        },
+        "canvas/restore-host-focus.ts": {
+          "sha256": "45df4acda0879b7c8fd0907fbe4b926a5dd0fe41f1673dff8237325f8b3fb229",
+          "provenance": "frozen-source-map"
+        },
+        "canvas/clipboard-import.ts": {
+          "sha256": "851823f17d49cb7996477acbd0cec234c382eefea22b81c780d5811cdb776bc8",
+          "provenance": "frozen-source-map"
+        },
+        "runtime/legacy-loader.ts": {
+          "sha256": "d382af05d2eb24bba7c250b9941f0ebf1d02f9aaba0ad8eabb495ab226d1c728",
+          "provenance": "current-shared-module"
+        },
+        "canvas/media-dimensions.ts": {
+          "sha256": "a8491304ea25a5a2d0cb5ea74ff8af34e3fd7d671f656e658787033ccf10b862",
+          "provenance": "current-shared-module"
+        },
+        "runtime/asset-manager.ts": {
+          "sha256": "1bdd07557870763d693f70f46a9a68a7cd620e7d6ee23ccbcac59a43edbdf024",
+          "provenance": "current-shared-module"
+        },
+        "runtime/session-manager.ts": {
+          "sha256": "18702a9ae970e5f5cfc778bdaab84f3f2732e55b60c4849ba78257d1008aaf76",
+          "provenance": "current-shared-module"
+        },
+        "runtime/capture-materializer.ts": {
+          "sha256": "ec1792990a7b078f281f5472762aa66a97e672168c83584524bf0f46ce3646c9",
+          "provenance": "current-shared-module"
+        },
+        "runtime/browser-adapter.ts": {
+          "sha256": "0add24303be09f518f31f96a1c925ad67852cd4adfbc75c6c5b0c6e88a39358f",
+          "provenance": "current-shared-module"
+        },
+        "runtime/content-service.ts": {
+          "sha256": "0f745e7c185c033e6c8456ae0a40936c983979a5716465b610be1a4f9a405f0b",
+          "provenance": "current-shared-module"
+        },
+        "lib/browser-webview.ts": {
+          "sha256": "4e49ae1221999f0cfcee1a258557d68b8cc5d0a3d8435e5415e7cc15ef4dac19",
+          "provenance": "current-shared-module"
+        },
+        "canvas/components/NodeMenuIcon.tsx": {
+          "sha256": "ae6a6fd1cbe324a86810a340a8d6a20f23da2016f72e2aed5e62bedf07347905",
+          "provenance": "frozen-source-map"
+        },
+        "canvas/minimap.ts": {
+          "sha256": "e89043df9cae5a8f1ed907146220967cdedb601dd9581c8a31a4a020b08e81ee",
+          "provenance": "frozen-source-map"
+        },
+        "stores/use-source-store.ts": {
+          "sha256": "d5d937f54d7c9072d6b755e028253091a0745bf146217a54d45f756124f88f66",
+          "provenance": "frozen-source-map"
+        },
+        "canvas/components/NodeHoverToolbar.tsx": {
+          "sha256": "be897174066dcbe7ae10ace2288180c2e348bee727ae5eef13ef4d053eb2f5e7",
+          "provenance": "frozen-source-map"
+        },
+        "storage/index.ts": {
+          "sha256": "84db08ffec0118b8cf93d8e88baed5509fad986e2cfb26de1db1eda28ee7b98f",
+          "provenance": "current-shared-module"
+        },
+        "lib/content-service.ts": {
+          "sha256": "eb4d43bfe8a62c45e5a7d3d349dbb2ebe3f8c9ca3e07ae8a391ef4d902f85ec5",
+          "provenance": "frozen-source-map"
+        },
+        "lib/scraper/index.ts": {
+          "sha256": "3a6113f28087adbd617e653b71c09d42b84f50838bd640620e0b765d21bf4762",
+          "provenance": "frozen-source-map"
+        },
+        "canvas/document-legacy.ts": {
+          "sha256": "baa3df06c975a63d3a32c5328f200b19bf2865f85e6dd0d558716f53971a1959",
+          "provenance": "frozen-source-map"
+        },
+        "lib/file-save.ts": {
+          "sha256": "aeca547884ed530f6027e525f12d236cc61844f3a29b7caa91026ec1de22d47c",
+          "provenance": "frozen-source-map"
+        },
+        "lib/scraper/client.ts": {
+          "sha256": "777139585834bbfa3e5e2febe9880956c8b8d4b3cacab49beff6bf1cc449d28c",
+          "provenance": "frozen-source-map"
+        },
+        "lib/flow/clone.ts": {
+          "sha256": "8c94626e7b1ac4a43c2ee450ca99a498bba82eac1b71479b7d15ea66b4a53727",
+          "provenance": "frozen-source-map"
+        },
+        "storage/session-exit.ts": {
+          "sha256": "8d760faa7c78c00b53f48b032608dd20a293600935e876e24120d30c174b6eab",
+          "provenance": "current-shared-module"
+        },
+        "storage/graph-session.ts": {
+          "sha256": "8e9c6fb0e1af020368462029d495f5c4f30787b9e344aef561de8acc9bd62f5e",
+          "provenance": "current-shared-module"
+        },
+        "storage/graph-store.ts": {
+          "sha256": "cc084a7192035693da4e5f9b928b7e7ae4be1154712212d1fb44a8ffd697fb5d",
+          "provenance": "current-shared-module"
+        },
+        "storage/runtime-persistence.ts": {
+          "sha256": "f05a6183e78b71cf101d669c98e97be73b9957274caa9fd5962ffb72a1da2b30",
+          "provenance": "current-shared-module"
+        },
+        "config/env.ts": {
+          "sha256": "2437d2b2b871e9b7b0afe7209c5b9d1e0f6f7b13ca5838b5b7840f13c93d4e4f",
+          "provenance": "frozen-source-map"
+        },
+        "stores/use-content-service-store.ts": {
+          "sha256": "a7bd87f965f1c5e96ac7db1a34faa85df3eeeae698c6f99effe3780a8e767bbc",
+          "provenance": "frozen-source-map"
+        },
+        "storage/keys.ts": {
+          "sha256": "be4b7490693d60f99ee28fa0be2f87b3bc7b78abfa118e4d62d45a55fe0703c8",
+          "provenance": "current-shared-module"
+        },
+        "canvas/contents/request-generation.ts": {
+          "sha256": "40a1a1923a55e3093e6a068ddfb80548ba394d197b40e51f39a03b6b7c62f654",
+          "provenance": "current-shared-module"
+        },
+        "domain/index.ts": {
+          "sha256": "386ad3db4ea5af7915084af9b369b72d6b096cead7509b0b60a921eda370a6d1",
+          "provenance": "current-shared-module"
+        },
+        "stores/canvas-viewport-store.ts": {
+          "sha256": "0f282f01114a9a621a5f16900a7473a33fb65ce3f9d3a8a9f6b70a17a3334af5",
+          "provenance": "current-shared-module"
+        },
+        "lib/generation/request-diagnostics.ts": {
+          "sha256": "c2549020fdba701a2bb3d98a8a0537da166442e1830e3872420da2f375878ce0",
+          "provenance": "current-shared-module"
+        },
+        "domain/schema.ts": {
+          "sha256": "1ea13799ddce533040d2895c4422fb5cff3479e269b89e122a2b9e9fc94ac2a3",
+          "provenance": "current-shared-module"
+        },
+        "domain/graph.ts": {
+          "sha256": "eb497190b3db2b49317f4f09306ef13024b201f43b3f09dde36b2290e0f9cf33",
+          "provenance": "current-shared-module"
+        },
+        "domain/runtime.ts": {
+          "sha256": "3c6ce395ede16296be46485af4468243d94c1ec6eb04920ed038cb6c3c331f7b",
+          "provenance": "current-shared-module"
+        },
+        "domain/geometry.ts": {
+          "sha256": "afe1cfa94f556a9c27812bd3b968e8ecad87219a5e0d0fb04278f722b89ab5ce",
+          "provenance": "current-shared-module"
+        },
+        "lib/flow/upstream-inputs.ts": {
+          "sha256": "da6f867fe3920382a0c6f366e28a8ecfa58c342086a5c4f477072cea5288cd98",
+          "provenance": "current-shared-module"
+        },
+        "lib/generation/defaults.ts": {
+          "sha256": "d163005b2c84b5a2691396fa1cbd33a49bac7e3db805dcf23bc8df04ac7b3882",
+          "provenance": "current-shared-module"
+        },
+        "lib/generation/resume-context.ts": {
+          "sha256": "8903744e8bb5cd2e6a9c57d3698e34423b27ea9b92dfc21dc4cd3266ae2f1412",
+          "provenance": "current-shared-module"
+        }
+      },
+      "after": {
+        "canvas/contents/StickyContent.tsx": {
+          "sha256": "566462a73e4e3ee41b29a804821d7d1df64da8dbc9dc3cfcc16fb063bf5f8fae",
+          "provenance": "current-shared-module"
+        },
+        "lib/api/client.ts": {
+          "sha256": "f00e8be16a07db6faaa4aadb7f461879052c898459e227bd67440e23376e818c",
+          "provenance": "current-shared-module"
+        },
+        "stores/runtime-store.ts": {
+          "sha256": "815cabb1ea9b1ca4bf954fd92a6c6ea94731dc912785cde8f4d3b3d72e97efe4",
+          "provenance": "current-shared-module"
+        },
+        "canvas/contents/ContentContent.tsx": {
+          "sha256": "56df425899d9e6e2b4e845e2b8e5991e300c210129682905432cb25fec9d4ac2",
+          "provenance": "current-shared-module"
+        },
+        "stores/ui-store.ts": {
+          "sha256": "1d56e869328772fbe683ff8b37bab75e0166ad8e97b67329425dda866eff2104",
+          "provenance": "current-shared-module"
+        },
+        "canvas/components/CanvasViewport.tsx": {
+          "sha256": "a8c5d96c020cfc8f722eeff6e09470288c5aa7c022e1f3d63573e33064461bf7",
+          "provenance": "current-shared-module"
+        },
+        "canvas/components/CanvasProvider.tsx": {
+          "sha256": "8d960e2c8b9cbbc005b14a7b1a731eb738151be778e0f6c11b3d53482ad71989",
+          "provenance": "current-shared-module"
+        },
+        "canvas/contents/AIContent.tsx": {
+          "sha256": "d6139fbfaa2b3f583f78ad79b5c58d7a9ca95588d06bc34541d504825ece71d0",
+          "provenance": "current-shared-module"
+        },
+        "stores/graph-store.ts": {
+          "sha256": "ebefe98cdbcb2f5e690454446a61f6681405b9eefcce16b50401f5b0b4e5eed5",
+          "provenance": "current-shared-module"
+        },
+        "stores/use-ai-store.ts": {
+          "sha256": "5fa73c996563c5716c47c8e6ab768601f124dd60472dfd8846d94308e19a63b7",
+          "provenance": "current-shared-module"
+        },
+        "canvas/sticky-palette.ts": {
+          "sha256": "322762e9650da119120c3103fade969dd1062fcf9d9b1fc146a04473eca131be",
+          "provenance": "current-shared-module"
+        },
+        "components/ui/rich-text-editor.tsx": {
+          "sha256": "91fdd97ab6450824f4f272673bfc0e0e6345c38add951944f2075f76f6bb308f",
+          "provenance": "current-shared-module"
+        },
+        "canvas/grouping.ts": {
+          "sha256": "bcd8edb4edba9ffb7cc92cab4a73f1b73e92d2aef0e7820bf094cf8aa1b27eda",
+          "provenance": "current-shared-module"
+        },
+        "storage/resource-policy.ts": {
+          "sha256": "9c7366a921cfb64304a45f07ca45f521ac9380ee29e0e5be85ae68a8463db8a9",
+          "provenance": "current-shared-module"
+        },
+        "lib/api/capabilities.ts": {
+          "sha256": "0d7386aac8cb5b3ee6e9888060817d072d969c420536975828d0dc49b31b7685",
+          "provenance": "current-shared-module"
+        },
+        "lib/desktop-secrets.ts": {
+          "sha256": "834dc8d9e615a08be4b54d914df5d540683303dba40ac81c32a5c99032a647f0",
+          "provenance": "current-shared-module"
+        },
+        "lib/desktop-fetch.ts": {
+          "sha256": "c8091af4e91ae7d01f27d66b22452d4ffc5427b6a8917f918871ab15b4fdeec7",
+          "provenance": "current-shared-module"
+        },
+        "canvas/overlay-insets.ts": {
+          "sha256": "30df30686e5044c4068cae436e050da4d79df3998b7d794ee214c613c4ddc30f",
+          "provenance": "current-shared-module"
+        },
+        "canvas/components/content-visibility.ts": {
+          "sha256": "ec6501a3051f1c6d97718b5ca097e52e06d736a1dbda59e71a4c97a84d08c17c",
+          "provenance": "current-shared-module"
+        },
+        "canvas/index.ts": {
+          "sha256": "9f9fda5a0552834aa556ba7f21dcfaf8aa4407bcc9f1d2ff5f0bb62cf219fdc0",
+          "provenance": "current-shared-module"
+        },
+        "canvas/components/CanvasControls.tsx": {
+          "sha256": "46ec06a04410799be2e6a152c57b9e0bbcffbe0dc478bb8ec88e33cbc11b3696",
+          "provenance": "current-shared-module"
+        },
+        "canvas/toolbar-placement.ts": {
+          "sha256": "87d146bccc300cd72e3517f15f0db97a79d0f4ca8ec89145a22511392f9e263b",
+          "provenance": "current-shared-module"
+        },
+        "canvas/components/CanvasConnector.tsx": {
+          "sha256": "b15c419855e196c8b3218285d7af61577c95b49d2134dd5569daa7fc5d34fbd7",
+          "provenance": "current-shared-module"
+        },
+        "canvas/components/EdgeLayer.tsx": {
+          "sha256": "e240a8d8699ea5381f2232b710d17971a471e7eb4ce096deeea4872c6afcc7da",
+          "provenance": "current-shared-module"
+        },
+        "canvas/node-stacking.ts": {
+          "sha256": "8e80b38feba9aebf5904739d20d75147b423e8574a3802f25dc50a89b0790c6c",
+          "provenance": "current-shared-module"
+        },
+        "canvas/components/CanvasExtensionPanel.tsx": {
+          "sha256": "a7f73c1cb0194785837f4f53e7c8cb2292fc8d544b37d27446a69b3a77cea25a",
+          "provenance": "current-shared-module"
+        },
+        "canvas/components/MarqueeOverlay.tsx": {
+          "sha256": "97d9dbfa049ff53e70a784f1edd64c94a1653327371efcb08d5b6e54b30930d3",
+          "provenance": "current-shared-module"
+        },
+        "canvas/geometry.ts": {
+          "sha256": "d233e509d8cea49782f855a8d21073ab68c481981c4444ebf54f3ed79610c114",
+          "provenance": "current-shared-module"
+        },
+        "canvas/components/CanvasMinimap.tsx": {
+          "sha256": "9e7775acda7c50c82e5d29c4b8032999947a8ce8db1d606dd3acd60260042084",
+          "provenance": "current-shared-module"
+        },
+        "canvas/components/NodeShell.tsx": {
+          "sha256": "01a340ef6167931d7569cf6027283c911d4b5a06b3232b9e18331c8594d1ba6e",
+          "provenance": "current-shared-module"
+        },
+        "lib/flow/node-dimensions.ts": {
+          "sha256": "022f881c1e335defffa10cb719ea1434fe830450ea676fabf29a6e69e35c977b",
+          "provenance": "current-shared-module"
+        },
+        "canvas/components/CanvasNodePanel.tsx": {
+          "sha256": "f18c7d2e1b741e371dcbfa02e56418b7a9c2e4df322d847aae68692ab2c8f827",
+          "provenance": "current-shared-module"
+        },
+        "lib/api/index.ts": {
+          "sha256": "62efe90a12024a1ec711402332da4c9b2100aeb09e8f958c4fdc4df41a37df78",
+          "provenance": "current-shared-module"
+        },
+        "lib/secure-storage.ts": {
+          "sha256": "3a701c771d47caa83d6f2b4faaf146040388198dca7dbc6daad8d3a45f01e04c",
+          "provenance": "current-shared-module"
+        },
+        "lib/localforage-storage.ts": {
+          "sha256": "af5d20c2563ff24eeac70bb9f7d2c13cdf1c1ca4f55061b6ea57e8f46bc13bf0",
+          "provenance": "current-shared-module"
+        },
+        "lib/utils.ts": {
+          "sha256": "f64f5737f7ad0bafe42c954aee249ee386ebb80e1c368b54e403d23e9c3928ac",
+          "provenance": "current-shared-module"
+        },
+        "lib/rich-text.ts": {
+          "sha256": "a0f9393e829f909c7aa1b2afa92149366a9f1dd7cad8f7d4930980b61bf390b6",
+          "provenance": "current-shared-module"
+        },
+        "lib/api/providers.ts": {
+          "sha256": "3aae6b690da481e76373528e0835bb7b5a755cf3a586a791b661bf2abe346cdb",
+          "provenance": "current-shared-module"
+        },
+        "lib/desktop-native-jobs.ts": {
+          "sha256": "67cdfbbc4682751961d5b4fcf85f27c471776da7fb56efc73edcf905618fe503",
+          "provenance": "current-shared-module"
+        },
+        "storage/asset-store.ts": {
+          "sha256": "a38e3b4948cc28e34ef867ae9cf89272fbaeb2913bbb49c4d31d56a4b51d8922",
+          "provenance": "current-shared-module"
+        },
+        "canvas/use-media-resource-drag.ts": {
+          "sha256": "61cee7257f324acf9959a0e8d316aa408fb05e3ddb8750b37c8213eb6d05f9c2",
+          "provenance": "current-shared-module"
+        },
+        "canvas/components/SourceLocator.tsx": {
+          "sha256": "5fb129534112b774300ba31dc02b77bb17565e17bc9858ba13aa3cfd5507f4e8",
+          "provenance": "current-shared-module"
+        },
+        "lib/frame-task.ts": {
+          "sha256": "be8b141517c059232048106ecb00a6e20a824eab0a9c27b912bbf0822e7ac870",
+          "provenance": "current-shared-module"
+        },
+        "canvas/content-import-adapter.ts": {
+          "sha256": "6bb2edfdd312025fabd1cccfe9268dd044f845bb5ee27ee0baf55c52e50c5653",
+          "provenance": "current-shared-module"
+        },
+        "canvas/generation-batch.ts": {
+          "sha256": "661679498c8091ed60fff968be8b79046881cf58996a478d9b89a5a960be7879",
+          "provenance": "current-shared-module"
+        },
+        "canvas/restore-host-focus.ts": {
+          "sha256": "45df4acda0879b7c8fd0907fbe4b926a5dd0fe41f1673dff8237325f8b3fb229",
+          "provenance": "current-shared-module"
+        },
+        "lib/content-import.ts": {
+          "sha256": "56cc4782d4cd68a969236289b1a90275987c6565336bfd58cdd047663371226d",
+          "provenance": "current-shared-module"
+        },
+        "lib/app-dialog.ts": {
+          "sha256": "5937ebd3e0818fcde4b75f8105de29b497a57a1cc749693b4f5b841ffb96ee58",
+          "provenance": "current-shared-module"
+        },
+        "canvas/navigation-motion.ts": {
+          "sha256": "d3f3839acec3e8cbd6259c377b11285729d1d47f8fa5e897e812ad01a2565e95",
+          "provenance": "current-shared-module"
+        },
+        "canvas/clipboard-import.ts": {
+          "sha256": "a07c11ab536afe32a02ed27e6011afacdf3e9c467b6018fce8e7588791243208",
+          "provenance": "current-shared-module"
+        },
+        "canvas/node-factory.ts": {
+          "sha256": "854cc7cc94e692d1bc96442097393b71b8507a0b4a8c5d8cf4be154659db0aeb",
+          "provenance": "current-shared-module"
+        },
+        "canvas/components/CanvasAddMenu.tsx": {
+          "sha256": "5b8d0228cb7a1465bd1b55b9d555302516dd63ce7bfcafe71d6ad7dd39fbe7c6",
+          "provenance": "current-shared-module"
+        },
+        "canvas/components/CanvasBackground.tsx": {
+          "sha256": "d308b044f695bb76fd23ec9d4032a1352a7a3c84af44a5ec9ae8a0a9383f1305",
+          "provenance": "current-shared-module"
+        },
+        "runtime/index.ts": {
+          "sha256": "6a2bc0e9a9b246e03b49cb66b1207f6d575345122c27ed6c715ca4414747ce97",
+          "provenance": "current-shared-module"
+        },
+        "canvas/viewport.ts": {
+          "sha256": "8369a92b96035c1830fec83adff76690832bc6d546eabed1cd991db371f6657c",
+          "provenance": "current-shared-module"
+        },
+        "stores/canvas-viewport-store.ts": {
+          "sha256": "0f282f01114a9a621a5f16900a7473a33fb65ce3f9d3a8a9f6b70a17a3334af5",
+          "provenance": "current-shared-module"
+        },
+        "lib/api/types.ts": {
+          "sha256": "c2f4facc0a66bd65d4c29573523aee2164525bd3939d9075c6a57efdd9daae32",
+          "provenance": "current-shared-module"
+        },
+        "canvas/edges.ts": {
+          "sha256": "15d25d508504c82e4f3b7af19a64a8fc91308548d1d4bafd6bbc1ca215dab536",
+          "provenance": "current-shared-module"
+        },
+        "canvas/components/NodeHoverToolbar.tsx": {
+          "sha256": "4d5f4e0a3fb79227580d1c80f13a7b00e3e04614f157490405e671b79c311516",
+          "provenance": "current-shared-module"
+        },
+        "canvas/interact.ts": {
+          "sha256": "5b4d8ea6c60a02005005dc75e233c64b8f64739426f166cb733e92d40121ed6e",
+          "provenance": "current-shared-module"
+        },
+        "runtime/legacy-loader.ts": {
+          "sha256": "d382af05d2eb24bba7c250b9941f0ebf1d02f9aaba0ad8eabb495ab226d1c728",
+          "provenance": "current-shared-module"
+        },
+        "runtime/session-manager.ts": {
+          "sha256": "18702a9ae970e5f5cfc778bdaab84f3f2732e55b60c4849ba78257d1008aaf76",
+          "provenance": "current-shared-module"
+        },
+        "runtime/browser-adapter.ts": {
+          "sha256": "0add24303be09f518f31f96a1c925ad67852cd4adfbc75c6c5b0c6e88a39358f",
+          "provenance": "current-shared-module"
+        },
+        "runtime/asset-manager.ts": {
+          "sha256": "1bdd07557870763d693f70f46a9a68a7cd620e7d6ee23ccbcac59a43edbdf024",
+          "provenance": "current-shared-module"
+        },
+        "runtime/capture-materializer.ts": {
+          "sha256": "ec1792990a7b078f281f5472762aa66a97e672168c83584524bf0f46ce3646c9",
+          "provenance": "current-shared-module"
+        },
+        "runtime/content-service.ts": {
+          "sha256": "0f745e7c185c033e6c8456ae0a40936c983979a5716465b610be1a4f9a405f0b",
+          "provenance": "current-shared-module"
+        },
+        "canvas/minimap.ts": {
+          "sha256": "e89043df9cae5a8f1ed907146220967cdedb601dd9581c8a31a4a020b08e81ee",
+          "provenance": "current-shared-module"
+        },
+        "canvas/use-upstream-runtime.ts": {
+          "sha256": "c18283c75bb8500c91584d8473580680284958d494863f9a35d9fe893ae15b15",
+          "provenance": "current-shared-module"
+        },
+        "lib/flow/ai-prompt.ts": {
+          "sha256": "b11758f2c476f3d38b692a31d845d9f56f9780472adf1fb45abe50af8698cbb7",
+          "provenance": "current-shared-module"
+        },
+        "canvas/node-menu-placement.ts": {
+          "sha256": "af59a54594d4a21e8ff59f8177985405bdcf219d3efdc81f8c9d1a6f793c0789",
+          "provenance": "current-shared-module"
+        },
+        "lib/flow/upstream-inputs.ts": {
+          "sha256": "da6f867fe3920382a0c6f366e28a8ecfa58c342086a5c4f477072cea5288cd98",
+          "provenance": "current-shared-module"
+        },
+        "lib/flow/ai-context.ts": {
+          "sha256": "c91cfe2e6f2afd116685a8414ff96b636f025d02661a4bf72101ba028b14f955",
+          "provenance": "current-shared-module"
+        },
+        "lib/resource-storage.ts": {
+          "sha256": "4349dc947375061489cceda7d8c622d1552991fe9b7c2bd3eaa7f52c7eef1c80",
+          "provenance": "current-shared-module"
+        },
+        "canvas/edge-path-cache.ts": {
+          "sha256": "324614165d743db9db606add89e485412ff3417c7c9c064d60ec51bcbbaca0d5",
+          "provenance": "current-shared-module"
+        },
+        "storage/gallery-index.ts": {
+          "sha256": "5a50f8c1544be706dd35ccc3c0844a8f0790fe9feeeeafcd4dc1a4f0271f94b6",
+          "provenance": "current-shared-module"
+        },
+        "hooks/use-theme.ts": {
+          "sha256": "57ed587b385ff775f41d96262d473aef338f50c70709da1a4c966cdc7d822e9b",
+          "provenance": "current-shared-module"
+        },
+        "lib/browser-webview.ts": {
+          "sha256": "4e49ae1221999f0cfcee1a258557d68b8cc5d0a3d8435e5415e7cc15ef4dac19",
+          "provenance": "current-shared-module"
+        },
+        "domain/content-text.ts": {
+          "sha256": "61eaa256b56a33ce898aba0275a91e0863d9c887d37feaf9d2d3f5d6c7f3f0b2",
+          "provenance": "current-shared-module"
+        },
+        "canvas/background.ts": {
+          "sha256": "d75d97ba4217fe956035cc2d9565051dc69c6711a95444e0e6ef9391a7dc4df4",
+          "provenance": "current-shared-module"
+        },
+        "canvas/components/NodeMenuIcon.tsx": {
+          "sha256": "ae6a6fd1cbe324a86810a340a8d6a20f23da2016f72e2aed5e62bedf07347905",
+          "provenance": "current-shared-module"
+        },
+        "lib/content-visuals.ts": {
+          "sha256": "2c4717daa8d517be50ed4ffb75b89f0fb69bd9abfa404a469041b2f15eb111da",
+          "provenance": "current-shared-module"
+        },
+        "stores/use-source-store.ts": {
+          "sha256": "d5d937f54d7c9072d6b755e028253091a0745bf146217a54d45f756124f88f66",
+          "provenance": "current-shared-module"
+        },
+        "canvas/media-dimensions.ts": {
+          "sha256": "a8491304ea25a5a2d0cb5ea74ff8af34e3fd7d671f656e658787033ccf10b862",
+          "provenance": "current-shared-module"
+        },
+        "lib/content-service.ts": {
+          "sha256": "eb4d43bfe8a62c45e5a7d3d349dbb2ebe3f8c9ca3e07ae8a391ef4d902f85ec5",
+          "provenance": "current-shared-module"
+        },
+        "lib/scraper/index.ts": {
+          "sha256": "3a6113f28087adbd617e653b71c09d42b84f50838bd640620e0b765d21bf4762",
+          "provenance": "current-shared-module"
+        },
+        "storage/index.ts": {
+          "sha256": "84db08ffec0118b8cf93d8e88baed5509fad986e2cfb26de1db1eda28ee7b98f",
+          "provenance": "current-shared-module"
+        },
+        "lib/scraper/client.ts": {
+          "sha256": "777139585834bbfa3e5e2febe9880956c8b8d4b3cacab49beff6bf1cc449d28c",
+          "provenance": "current-shared-module"
+        },
+        "lib/flow/clone.ts": {
+          "sha256": "8c94626e7b1ac4a43c2ee450ca99a498bba82eac1b71479b7d15ea66b4a53727",
+          "provenance": "current-shared-module"
+        },
+        "config/env.ts": {
+          "sha256": "2437d2b2b871e9b7b0afe7209c5b9d1e0f6f7b13ca5838b5b7840f13c93d4e4f",
+          "provenance": "current-shared-module"
+        },
+        "stores/use-content-service-store.ts": {
+          "sha256": "a7bd87f965f1c5e96ac7db1a34faa85df3eeeae698c6f99effe3780a8e767bbc",
+          "provenance": "current-shared-module"
+        },
+        "storage/session-exit.ts": {
+          "sha256": "8d760faa7c78c00b53f48b032608dd20a293600935e876e24120d30c174b6eab",
+          "provenance": "current-shared-module"
+        },
+        "storage/graph-session.ts": {
+          "sha256": "8e9c6fb0e1af020368462029d495f5c4f30787b9e344aef561de8acc9bd62f5e",
+          "provenance": "current-shared-module"
+        },
+        "storage/graph-store.ts": {
+          "sha256": "cc084a7192035693da4e5f9b928b7e7ae4be1154712212d1fb44a8ffd697fb5d",
+          "provenance": "current-shared-module"
+        },
+        "storage/keys.ts": {
+          "sha256": "be4b7490693d60f99ee28fa0be2f87b3bc7b78abfa118e4d62d45a55fe0703c8",
+          "provenance": "current-shared-module"
+        },
+        "storage/runtime-persistence.ts": {
+          "sha256": "f05a6183e78b71cf101d669c98e97be73b9957274caa9fd5962ffb72a1da2b30",
+          "provenance": "current-shared-module"
+        },
+        "lib/file-save.ts": {
+          "sha256": "aeca547884ed530f6027e525f12d236cc61844f3a29b7caa91026ec1de22d47c",
+          "provenance": "current-shared-module"
+        },
+        "canvas/contents/request-generation.ts": {
+          "sha256": "40a1a1923a55e3093e6a068ddfb80548ba394d197b40e51f39a03b6b7c62f654",
+          "provenance": "current-shared-module"
+        },
+        "domain/index.ts": {
+          "sha256": "386ad3db4ea5af7915084af9b369b72d6b096cead7509b0b60a921eda370a6d1",
+          "provenance": "current-shared-module"
+        },
+        "canvas/document-legacy.ts": {
+          "sha256": "baa3df06c975a63d3a32c5328f200b19bf2865f85e6dd0d558716f53971a1959",
+          "provenance": "current-shared-module"
+        },
+        "lib/generation/request-diagnostics.ts": {
+          "sha256": "c2549020fdba701a2bb3d98a8a0537da166442e1830e3872420da2f375878ce0",
+          "provenance": "current-shared-module"
+        },
+        "lib/generation/resume-context.ts": {
+          "sha256": "8903744e8bb5cd2e6a9c57d3698e34423b27ea9b92dfc21dc4cd3266ae2f1412",
+          "provenance": "current-shared-module"
+        },
+        "lib/generation/defaults.ts": {
+          "sha256": "d163005b2c84b5a2691396fa1cbd33a49bac7e3db805dcf23bc8df04ac7b3882",
+          "provenance": "current-shared-module"
+        },
+        "domain/schema.ts": {
+          "sha256": "1ea13799ddce533040d2895c4422fb5cff3479e269b89e122a2b9e9fc94ac2a3",
+          "provenance": "current-shared-module"
+        },
+        "domain/graph.ts": {
+          "sha256": "eb497190b3db2b49317f4f09306ef13024b201f43b3f09dde36b2290e0f9cf33",
+          "provenance": "current-shared-module"
+        },
+        "domain/geometry.ts": {
+          "sha256": "afe1cfa94f556a9c27812bd3b968e8ecad87219a5e0d0fb04278f722b89ab5ce",
+          "provenance": "current-shared-module"
+        },
+        "domain/runtime.ts": {
+          "sha256": "3c6ce395ede16296be46485af4468243d94c1ec6eb04920ed038cb6c3c331f7b",
+          "provenance": "current-shared-module"
+        }
+      }
+    },
+    "harness": {
+      "final-product-fixture.jsx": "3d26dc211c6162661d93e9511a7863ecda17ebc25427e2d14b739167ff390ee9",
+      "final-product-main.cjs": "d936ea3d697a479fdd0d177237bd35268a9574aba3b3486b47f63f6560a90811",
+      "final-product-preload.cjs": "66409cea02c5617aee8e5ce397d40de9db7bb5c86fd04346a7ac1df5dff81747",
+      "run-final-product.mjs": "0a8c6d9da656795bb30cd51bb63a978fc086253b7623b42c049db1abd097e71d"
+    },
+    "beforeBundleSha256": "79b5e01b086fda3776b5720ee0560bdf0514d8178a95026b6857f04302a817ef",
+    "afterBundleSha256": "4b7d2d6953efed4eac0278755b2c9e6b2d213adbed2fac38824656943553ea72"
+  },
+  "environment": {
+    "cpu": "13th Gen Intel(R) Core(TM) i9-13900HX",
+    "totalMemoryGiB": 15.745964050292969,
+    "versions": {
+      "node": "24.18.1",
+      "acorn": "8.16.0",
+      "ada": "3.4.4",
+      "amaro": "1.1.9",
+      "ares": "1.34.6",
+      "brotli": "1.2.0",
+      "cldr": "48.0",
+      "icu": "78.2",
+      "llhttp": "9.4.3",
+      "merve": "1.2.2",
+      "modules": "148",
+      "napi": "10",
+      "nbytes": "0.1.4",
+      "ncrypto": "0.0.1",
+      "nghttp2": "1.69.0",
+      "nghttp3": "",
+      "ngtcp2": "",
+      "openssl": "0.0.0",
+      "simdjson": "4.6.4",
+      "simdutf": "7.7.0",
+      "sqlite": "3.53.1",
+      "tz": "2025c",
+      "undici": "7.29.0",
+      "unicode": "17.0",
+      "uv": "1.52.1",
+      "uvwasi": "0.0.23",
+      "v8": "15.0.245.28-electron.0",
+      "zlib": "1.3.2.1-motley",
+      "zstd": "1.6.0",
+      "electron": "43.4.1",
+      "chrome": "150.0.7871.224"
+    },
+    "gpu": {
+      "2d_canvas": "disabled_software",
+      "direct_rendering_display_compositor": "disabled_off_ok",
+      "gpu_compositing": "disabled_software",
+      "multiple_raster_threads": "enabled_on",
+      "opengl": "disabled_off",
+      "rasterization": "disabled_software",
+      "raw_draw": "disabled_off_ok",
+      "skia_graphite": "disabled_off",
+      "trees_in_viz": "disabled_off",
+      "video_decode": "disabled_software",
+      "video_encode": "disabled_software",
+      "webgl": "disabled_off",
+      "webgpu": "disabled_off",
+      "webnn": "disabled_off"
+    }
+  }
+}

@@ -7,7 +7,8 @@ import { ChevronDown, Globe, Layers3, Sparkles, StickyNote, X, type LucideIcon }
 import type { NodeKind, NodeSpec } from '@/domain'
 import { useGraphStore } from '@/stores/graph-store'
 import { useUiStore } from '@/stores/ui-store'
-import { useCanvas } from './CanvasProvider'
+import { useCanvasInteraction } from './CanvasProvider'
+const EMPTY_NODES: NodeSpec[] = []
 
 const KIND_META: Record<NodeKind, { label: string; icon: LucideIcon; iconClass: string }> = {
   sticky: { label: '贴纸', icon: StickyNote, iconClass: 'text-amber-500' },
@@ -41,7 +42,8 @@ export function CanvasNodePanel() {
   const showNodePanel = useUiStore((state) => state.showNodePanel)
   const panelFilter = useUiStore((state) => state.panelFilter)
   const panelSearch = useUiStore((state) => state.panelSearch)
-  const { nodes, selection, centerOnWorld } = useCanvas()
+  const { selection, centerOnWorld } = useCanvasInteraction()
+  const nodes = useGraphStore(state => state.currentDocument?.nodes ?? EMPTY_NODES)
   const [filterOpen, setFilterOpen] = useState(false)
   const filterRef = useRef<HTMLDivElement>(null)
 

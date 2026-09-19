@@ -1,7 +1,7 @@
 /**
  * 内容抬升层可见区域虚拟化（纯函数）。
  *
- * 屏幕可见矩形 → 世界矩形，再加固定世界像素 overscan。
+ * 屏幕可见矩形及预加载边距统一换算到世界坐标。
  * 仅决定是否调用 renderNode；壳、边、命中仍使用完整 nodes。
  */
 
@@ -17,11 +17,16 @@ import type {
 import { nodeRect, rectsIntersect } from '../geometry'
 import { screenRectToWorld, visibleScreenRect, worldToScreen, type ViewportPadding } from '../viewport'
 
-/** 内容层 overscan：固定世界像素，避免平移时内容刚入屏才挂载。 */
+/** 内容层预加载边距按屏幕像素计算。 */
 export const CONTENT_OVERSCAN_WORLD_PX = 240
 
-export function contentPresentationStyle(node: Pick<NodeSpec, 'kind' | 'size'>, viewport: Viewport) {
+export function contentPresentationStyle(node: Pick<NodeSpec, 'kind' | 'size'> & { category?: string | null; payload?: { kind: string; provider?: string } }, viewport: Viewport) {
   if (node.kind === 'browser') return { width: '100%', height: '100%', zoom: 1, '--canvas-node-radius': `${24 * contentLayerViewport(viewport).zoom}px` }
+  const ordinary = node.kind === 'content' && (
+    node.category === 'image' || node.category === 'social' || node.category === 'data' || node.category === 'presentation' || node.category === 'document'
+    || (node.category === 'video' && node.payload?.provider !== 'youtube')
+  )
+  if (ordinary) return { width: node.size.width, height: node.size.height, transform: `scale(${contentLayerViewport(viewport).zoom})`, transformOrigin: '0 0', zoom: 1 }
   return { width: node.size.width, height: node.size.height, zoom: contentLayerViewport(viewport).zoom }
 }
 
@@ -76,7 +81,7 @@ export function visibleWorldRect(
   if (visible.width <= 0 || visible.height <= 0) return null
   const world = screenRectToWorld(visible, viewport)
   const overscanValue = overscan === undefined ? CONTENT_OVERSCAN_WORLD_PX : overscan
-  const pad = Number.isFinite(overscanValue) && overscanValue > 0 ? overscanValue : 0
+  const pad = Number.isFinite(overscanValue) && overscanValue > 0 ? overscanValue / viewport.zoom : 0
   return {
     x: world.x - pad,
     y: world.y - pad,

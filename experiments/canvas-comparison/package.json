@@ -1,0 +1,7 @@
+{
+  "name": "cnote-canvas-comparison",
+  "private": true,
+  "type": "module",
+  "scripts": { "bench": "node run.mjs" },
+  "dependencies": { "reactflow": "11.11.4", "react": "19.2.8", "react-dom": "19.2.8" }
+}

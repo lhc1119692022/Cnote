@@ -10,17 +10,17 @@
  * （size * zoom，只平移）共用同一节点原点，必须保持一致。
  */
 
-import type { PointerEvent as ReactPointerEvent } from 'react'
+import { memo, type PointerEvent as ReactPointerEvent } from 'react'
 import { Plus } from 'lucide-react'
 import type { NodeSpec } from '@/domain'
 import { useGraphStore } from '@/stores/graph-store'
-import { useCanvas } from './CanvasProvider'
+import { useCanvasInteraction } from './CanvasProvider'
 import { NodeHoverToolbar } from './NodeHoverToolbar'
 
 /** 边框拖拽热区宽度（世界像素）；内部留给内容层命中 */
 const BORDER_HIT = 8
 
-export function NodeShell({ node }: { node: NodeSpec }) {
+export const NodeShell = memo(function NodeShell({ node }: { node: NodeSpec }) {
   const {
     containerRef,
     selection,
@@ -33,7 +33,7 @@ export function NodeShell({ node }: { node: NodeSpec }) {
     hoveredNodeId,
     connectingTargetId,
     resizing,
-  } = useCanvas()
+  } = useCanvasInteraction()
   const isLocked = useGraphStore((state) => state.isLocked)
   const selected = selection.includes(node.id)
   const resizingThis = resizing?.nodeId === node.id
@@ -158,4 +158,4 @@ export function NodeShell({ node }: { node: NodeSpec }) {
       )}
     </div>
   )
-}
+})

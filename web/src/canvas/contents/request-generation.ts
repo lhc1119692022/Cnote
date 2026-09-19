@@ -5,7 +5,7 @@ import { batchLayout } from '@/canvas/generation-batch'
  */
 
 import { nanoid } from 'nanoid'
-import { contentNodeText } from '@/domain/content-text'
+import { directUpstreamNodes, upstreamNodeInput, type UpstreamRuntime } from '@/lib/flow/upstream-inputs'
 import type {
   ContentAsset,
   ContentGenerationProvenance,
@@ -138,29 +138,12 @@ function contentMediaType(node: ContentNodeSpec, mimeType?: string): GenerationR
   return null
 }
 
-function textFromNode(node: NodeSpec): string {
-  switch (node.kind) {
-    case 'content':
-      return contentNodeText(node)?.trim() || ''
-    case 'sticky':
-      return node.content.trim()
-    case 'browser':
-      return node.url.trim()
-    default:
-      return ''
-  }
-}
-
 export function collectUpstreamNodes(requestNodeId: string, nodes: NodeSpec[] | undefined, edges: EdgeSpec[] | undefined): NodeSpec[] {
-  if (!nodes || !edges) return []
-  const sourceIds = [...new Set(edges.filter((edge) => edge.target === requestNodeId).map((edge) => edge.source))]
-  return sourceIds
-    .map((sourceId) => nodes.find((node) => node.id === sourceId))
-    .filter((node): node is NodeSpec => Boolean(node && !node.disabled))
+  return directUpstreamNodes(requestNodeId, nodes, edges).map(entry => entry.node)
 }
 
-export function collectUpstreamText(upstreams: NodeSpec[]): string {
-  return upstreams.map(textFromNode).filter(Boolean).join('\n\n')
+export function collectUpstreamText(upstreams: NodeSpec[], runtime: UpstreamRuntime = useRuntimeStore.getState()): string {
+  return upstreams.map(node => upstreamNodeInput(node, runtime).text).filter(Boolean).join('\n\n')
 }
 
 function contentNodeReferences(node: ContentNodeSpec, assets: Record<string, ContentAsset>): GenerationReference[] {

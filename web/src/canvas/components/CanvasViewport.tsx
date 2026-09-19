@@ -17,10 +17,11 @@
  * 壳 / 边 / 命中仍遍历完整 nodes。
  */
 
-import type { ReactNode } from 'react'
+import { useMemo, type ReactNode } from 'react'
+import { useShallow } from 'zustand/react/shallow'
 import { Layers3 } from 'lucide-react'
 import { nodeRect, unionRect } from '@/canvas'
-import { isAINodeSendInflight } from '@/canvas/contents/AIContent'
+import { useSendingAINodeIds } from '@/canvas/contents/AIContent'
 import { canvasOverlayInsets } from '@/canvas/overlay-insets'
 import { nodeToolbarHorizontalPlacement, selectionToolbarTop } from '@/canvas/toolbar-placement'
 import { nodeFrontOrder, nodeStackOrder } from '@/canvas/node-stacking'
@@ -60,22 +61,24 @@ export function CanvasContentOverlay({
   groups?: boolean
 }) {
   const { nodes, viewport, containerSize, selection, connecting, resizing, draggingNodeIds, hoveredNodeId, setHoveredNode, focusedNodeId, setFocusedNodeId } = useCanvas()
-  const runs = useRuntimeStore((state) => state.runs)
-  const sessions = useRuntimeStore((state) => state.sessions)
+  const [runs, sessions] = useRuntimeStore(useShallow(state => [state.runs, state.sessions]))
+  const runtimePinnedIds = useMemo(() => [...collectContentMountPinIds(nodes, { runs, sessions })], [nodes, runs, sessions])
+  const inflightAINodeIds = useSendingAINodeIds()
   const showNodePanel = useUiStore((state) => state.showNodePanel)
   const showExtensionPanel = useUiStore((state) => state.showExtensionPanel)
   const extensionWidth = useUiStore((state) => state.extensionWidth)
   const overlayInsets = canvasOverlayInsets({ showNodePanel, showExtensionPanel, extensionWidth })
   const visibleWorld = visibleWorldRect(viewport, containerSize, undefined, overlayInsets)
-  const frontZ = nodeFrontOrder(nodes)
+  const frontZ = useMemo(() => nodeFrontOrder(nodes), [nodes])
   const pinnedIds = collectContentMountPinIds(nodes, {
     selection: [...selection, ...draggingNodeIds, ...(focusedNodeId ? [focusedNodeId] : [])],
     resizingNodeId: resizing?.nodeId,
     connectingSourceId: connecting?.sourceId,
-    runs,
-    sessions,
-    inflightAINodeIds: nodes.filter((node) => node.kind === 'ai' && isAINodeSendInflight(node.id)).map((node) => node.id),
+    inflightAINodeIds: [...runtimePinnedIds, ...inflightAINodeIds],
   })
+  const mountedNodes = nodes.filter(node => (node.kind === 'group') === groups && shouldMountNodeContent(node, visibleWorld, pinnedIds))
+  const stableMountedNodes = useShallow((value: NodeSpec[]) => value)(mountedNodes)
+  const contentById = useMemo(() => new Map(stableMountedNodes.map(node => [node.id, renderNode(node)])), [stableMountedNodes, renderNode])
 
   return (
     <div
@@ -84,7 +87,7 @@ export function CanvasContentOverlay({
       style={{ zIndex: groups ? 5 : 15 }}
     >
       {nodes.filter((node) => (node.kind === 'group') === groups).map((node) => {
-        const content = shouldMountNodeContent(node, visibleWorld, pinnedIds) ? renderNode(node) : null
+        const content = contentById.get(node.id)
         const style = contentLayerStyle(node, viewport)
         return (
           <div

@@ -125,6 +125,7 @@ export interface GenerationTaskRecoveryMetadata {
 }
 
 export interface GenerationTask {
+  requestDiagnostics?: import('@/lib/generation/request-diagnostics').GenerationRequestDiagnostics
   id: string
   status: GenerationTaskStatus
   progress?: number
@@ -133,6 +134,8 @@ export interface GenerationTask {
   /** Completed outputs as `ContentAsset` ids — not ephemeral URLs. */
   resultAssetIds?: string[]
   error?: string
+  rawStatus?: string
+  failureDetails?: { code?: string; type?: string; requestId?: string }
   submittedAt?: number
   completedAt?: number
   /** Remote provider task id used to resume polling after restart. */
