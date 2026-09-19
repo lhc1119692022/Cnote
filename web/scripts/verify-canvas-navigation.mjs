@@ -120,7 +120,10 @@ const { nodeStackOrder, nodeFrontOrder, hitTestStackedNode } = loadFrom(join(src
   assert.match(provider, /const target = hitTestConnectionTarget\(world\)/)
   assert.match(provider, /endConnect\(hitTestConnectionTarget\(input.world\) \?\? null\)/)
   const styles = readFileSync(new URL('../src/index.css', import.meta.url), 'utf8')
-  assert.ok(styles.includes("[data-node-id][data-node-connection-target] .node-connection-handle,"))
+  assert.ok(styles.includes("[data-node-id][data-node-hovered='true'] .node-connection-handle,"))
+  assert.ok(styles.includes("[data-node-id][data-node-connection-target] .node-connection-handle {"))
+  assert.ok(!styles.includes("[data-node-id][data-node-selected='true'] .node-connection-handle,"))
+  assert.ok(!styles.includes('[data-node-id]:focus-within .node-connection-handle'))
 }
 {
   const node = { id: 'editing', kind: 'sticky', z: -2 }
@@ -1301,8 +1304,10 @@ function stickyNode(id, x, y, width = 100, height = 80, extra = {}) {
   const toolbar = readFileSync(join(srcRoot, 'canvas/components/NodeHoverToolbar.tsx'), 'utf8')
   assert.ok(toolbar.includes('...nodeToolbarScaleStyle(viewport.zoom, toolbarPlacement)'))
   assert.ok(toolbar.includes('setToolbarWidth(element.offsetWidth)'))
-  assert.ok(toolbar.includes('setToolbarHeight(element.offsetHeight)'))
-  assert.ok(toolbar.includes('maxWidth: toolbarHorizontal.maxWidth,'))
+  assert.ok(toolbar.includes('selected && selection.length === 1'))
+  assert.ok(toolbar.includes("const toolbarPlacement = 'top' as const"))
+  assert.ok(toolbar.includes('screenWidth - measuredWidth : (screenWidth - measuredWidth) / 2'))
+  assert.ok(!toolbar.includes('nodeToolbarPlacement('))
 }
 
 {

@@ -148,9 +148,27 @@ window.matchMedia = () => ({ matches: true })
 await act(async () => canvas.centerOnWorld({ x: 500, y: 500 }))
 assert.notDeepEqual(graph().view, { x: 0, y: 0, zoom: 1 })
 const pattern = canvasDotPattern({ x: -25, y: 49, zoom: 1 })
-assert.equal(pattern.backgroundPosition, '23px 1px')
-assert.equal(pattern.backgroundSize, '24px 24px')
-assert.ok(Number.parseFloat(canvasDotPattern({ x: 1e9, y: -1e9, zoom: 0.01 }).backgroundSize) >= 12)
+assert.equal(pattern.backgroundPosition, '35px 49px')
+assert.equal(pattern.backgroundSize, '60px 60px')
+assert.equal(canvasDotPattern({ x: 0, y: 0, zoom: 0.95 }).backgroundSize, '57px 57px')
+assert.ok(pattern.backgroundImage.includes('2px, transparent 2px'))
+for (const [zoom, spacing] of [[4, 240], [2, 120], [0.95, 57], [0.5, 30], [0.49, 29.4], [1 / 3, 20], [0.333, 19.98], [0.25, 15], [0.125, 7.5], [0.1, 6]]) {
+  const zoomedPattern = canvasDotPattern({ x: 0, y: 0, zoom })
+  for (const dimension of zoomedPattern.backgroundSize.split(' ')) {
+    assert.ok(Math.abs(Number.parseFloat(dimension) - spacing) < 1e-9)
+  }
+  if (spacing < 20) {
+    assert.equal(zoomedPattern.backgroundImage, 'none')
+  } else {
+    const radius = 2 * zoom
+    assert.ok(zoomedPattern.backgroundImage.includes(`${radius}px, transparent ${radius}px`))
+  }
+}
+assert.equal(canvasDotPattern({ x: 1e9, y: -1e9, zoom: 0.01 }).backgroundImage, 'none')
+assert.equal(canvasDotPattern({ x: 35, y: -35, zoom: 0.5 }).backgroundPosition, '5px 25px')
+for (const zoom of [0, -1, NaN, Infinity]) {
+  assert.deepEqual(canvasDotPattern({ x: -25, y: 49, zoom }), pattern)
+}
 assert.equal(visibleWorldRect({ x: 0, y: 0, zoom: 2 }, { width: 800, height: 600 }).x, -120)
 assert.equal(contentPresentationStyle({ ...makeNode(0), kind: 'content', category: 'image' }, { zoom: 2 }).transform, 'scale(2)')
 assert.equal(contentPresentationStyle({ ...makeNode(0), kind: 'content', category: 'text' }, { zoom: 2 }).zoom, 2)

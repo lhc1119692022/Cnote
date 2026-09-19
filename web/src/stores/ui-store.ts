@@ -19,7 +19,7 @@ export interface UiStoreState {
   selectionMode: boolean
   selectedPanelIds: string[]
   selectedEdgeId: string | null
-  nodeChrome: Record<string, { settings?: boolean; systemPrompt?: boolean }>
+  nodeChrome: Record<string, { settings?: boolean; systemPrompt?: boolean; audioTrim?: boolean }>
 }
 
 export interface UiStoreActions {
@@ -34,7 +34,7 @@ export interface UiStoreActions {
   setSelectionMode: (enabled: boolean) => void
   setSelectedPanelIds: (ids: string[]) => void
   setSelectedEdgeId: (id: string | null) => void
-  setNodeChrome: (id: string, patch: { settings?: boolean; systemPrompt?: boolean }) => void
+  setNodeChrome: (id: string, patch: { settings?: boolean; systemPrompt?: boolean; audioTrim?: boolean }) => void
 }
 
 export type UiStore = UiStoreState & UiStoreActions

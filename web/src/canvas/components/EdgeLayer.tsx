@@ -9,11 +9,13 @@ import { useEffect, useMemo, type PointerEvent as ReactPointerEvent } from 'reac
 import { Unplug } from 'lucide-react'
 import { cubicBezierPoint } from '@/canvas'
 import { createEdgePathCache } from '@/canvas/edge-path-cache'
+import { useCutEdges } from '@/canvas/cut-edges'
 import { useGraphStore } from '@/stores/graph-store'
 import { useUiStore } from '@/stores/ui-store'
 import { useCanvas } from './CanvasProvider'
 
 export function EdgeLayer() {
+  const cutIds = useCutEdges((state) => state.ids)
   const { nodes, edges, viewport, worldToScreen, containerRef } = useCanvas()
   const selectedEdgeId = useUiStore((state) => state.selectedEdgeId)
   const isLocked = useGraphStore((state) => state.isLocked)
@@ -70,7 +72,8 @@ export function EdgeLayer() {
               key={path.id}
               d={path.d}
               fill="none"
-              stroke={selected ? 'var(--primary)' : 'var(--border)'}
+              stroke={cutIds.includes(path.id) ? '#e11d48' : selected ? 'var(--primary)' : 'var(--border)'}
+              strokeDasharray={cutIds.includes(path.id) ? '8 6' : undefined}
               strokeWidth={selected ? 2.25 : 1.5}
               vectorEffect="non-scaling-stroke"
               style={{ pointerEvents: 'none' }}

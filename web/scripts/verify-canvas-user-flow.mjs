@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { readFileSync, existsSync } from 'node:fs'
 import { createRequire } from 'node:module'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import vm from 'node:vm'
 import { dirname, join } from 'node:path'
 import ts from 'typescript'
@@ -62,7 +62,7 @@ function load(relative) {
   if (cache.has(filename)) return cache.get(filename).exports
   const module = { exports: {} }
   cache.set(filename, module)
-  const code = ts.transpileModule(readFileSync(filename, 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.ReactJSX, esModuleInterop: true } }).outputText
+  const code = ts.transpileModule(readFileSync(filename, 'utf8').replace(/import\.meta\.url/g, JSON.stringify(pathToFileURL(filename).href)), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.ReactJSX, esModuleInterop: true } }).outputText
   vm.runInThisContext('(function(require,module,exports){' + code + '\n})', { filename })((name) => {
     if (mocks[name]) return mocks[name]
     if (name.endsWith('.css')) return {}
@@ -517,8 +517,8 @@ assert.ok(!requestText.includes('mb-1.5 h-3.5 w-3.5 shrink-0 text-muted-foregrou
 const providerText = readFileSync(new URL('../src/canvas/components/CanvasProvider.tsx', import.meta.url), 'utf8')
 assert.ok(providerText.includes('onDoubleClick='))
 const { canvasDotPattern } = load('canvas/background.ts')
-assert.equal(canvasDotPattern({ x: 0, y: 0, zoom: 1 }).backgroundSize, '24px 24px')
-assert.equal(canvasDotPattern({ x: 24, y: -24, zoom: 1 }).backgroundPosition, '0px 0px')
+assert.equal(canvasDotPattern({ x: 0, y: 0, zoom: 1 }).backgroundSize, '60px 60px')
+assert.equal(canvasDotPattern({ x: 60, y: -60, zoom: 1 }).backgroundPosition, '0px 0px')
 assert.ok(providerText.includes('<CanvasBackground />'))
 const providerTree = ts.createSourceFile('CanvasProvider.tsx', providerText, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX)
 let doubleClickSource

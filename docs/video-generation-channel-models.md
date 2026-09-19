@@ -22,6 +22,8 @@
 
 ## 新增模型或渠道
 
+视频输入素材规格现由独立官方模型档案决定，见 `docs/video-media-validation.md`。渠道目录的旧输入类型和素材数量不覆盖已配置的官方档案；同一模型跨渠道使用同样的规格。新增已知模型别名时同步维护 `official-media-rules.ts` 的映射，不修改其请求模型ID。渠道合同仍负责请求字段、地址和轮询。
+
 优先修改 `web/src/lib/generation/video-catalog.ts`：
 
 1. 添加模型的 API ID 和 UI 名称。

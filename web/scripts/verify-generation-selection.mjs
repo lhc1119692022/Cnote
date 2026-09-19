@@ -54,12 +54,38 @@ mocks.set('@/lib/desktop-secrets', { deleteDesktopSecret: async () => {}, syncDe
 const { runGenerationBatch } = load('lib/generation/batch.ts')
 const { generationChannelSupportsVariant } = load('stores/use-generation-store.ts')
 {
+  const { useGenerationStore, GENERATION_CHANNEL_PRESETS } = load('stores/use-generation-store.ts')
+  useGenerationStore.setState({ channels: [], generationDefaultsVersion: 0 })
+  useGenerationStore.getState().initializeDefaultChannels()
+  const defaults = useGenerationStore.getState().channels
+  assert.ok(defaults.length > 0)
+  assert.ok(defaults.every((item) => item.modelIds.length === 0), 'presets do not claim available models')
+  for (const item of defaults) assert.deepEqual(useGenerationStore.getState().getModels(item.id), [])
+  const created = useGenerationStore.getState().addChannel({ protocol: 'video-kacang' })
+  assert.deepEqual(useGenerationStore.getState().getChannel(created.id).modelIds, [], 'new channels start empty')
+  const explicit = useGenerationStore.getState().addChannel({ protocol: 'video-kacang', modelIds: ['my-model'] })
+  assert.deepEqual(useGenerationStore.getState().getChannel(explicit.id).modelIds, ['my-model'])
+  const preset = GENERATION_CHANNEL_PRESETS.find((item) => item.modelIds.length > 0)
+  assert.ok(preset)
+  const legacy = { ...defaults.find((item) => item.presetId === preset.id), modelIds: preset.modelIds }
+  useGenerationStore.setState({ channels: [legacy, { ...legacy, id: 'configured', apiKey: 'test-key' }, { ...legacy, id: 'custom', modelIds: ['custom-model'] }], generationDefaultsVersion: 1 })
+  useGenerationStore.getState().initializeDefaultChannels()
+  assert.deepEqual(useGenerationStore.getState().getChannel(legacy.id).modelIds, [], 'unused old defaults are repaired')
+  assert.deepEqual(useGenerationStore.getState().getChannel('configured').modelIds, preset.modelIds)
+  assert.deepEqual(useGenerationStore.getState().getChannel('custom').modelIds, ['custom-model'])
+  useGenerationStore.getState().updateChannel(legacy.id, { modelIds: ['live-model'] })
+  assert.deepEqual(useGenerationStore.getState().getModels(legacy.id).map((item) => item.id), ['live-model'], 'saved changes are immediately available')
+  useGenerationStore.getState().initializeDefaultChannels()
+  assert.deepEqual(useGenerationStore.getState().getChannel(legacy.id).modelIds, ['live-model'], 'migration runs only once')
+  useGenerationStore.setState({ channels: [], generationDefaultsVersion: 0 })
+}
+{
   const { useGenerationStore, generationVideoRequestContractForModel } = load('stores/use-generation-store.ts')
   const { WAN_3_MODEL } = load('lib/generation/video-catalog.ts')
   const stale = { id: 'wan-3.0', capabilities: ['generate-audio'], maxImages: 10, resolutions: ['1080p'], videoRequestContract: { durationField: 'seconds', imageReferencesField: 'reference_images' } }
   const legacy = { id: 'wan-legacy', providerId: 'video', protocol: 'video-808relay', modelIds: ['wan-3.0'], modelCatalog: [stale], videoRequestContract: stale.videoRequestContract }
   useGenerationStore.setState({ channels: [legacy] })
-  assert.equal(useGenerationStore.getState().getModels('wan-legacy')[0].maxImages, 10)
+  assert.equal(useGenerationStore.getState().getModels('wan-legacy')[0].maxImages, undefined, 'official screenshot does not impose the historical channel image count')
   assert.ok(useGenerationStore.getState().getModels('wan-legacy')[0].resolutions.includes('1080p'))
   assert.deepEqual(generationVideoRequestContractForModel(legacy, stale), WAN_3_MODEL.videoRequestContract)
   assert.equal(generationVideoRequestContractForModel({ ...legacy, protocol: 'video-kacang' }, stale).durationField, 'seconds', 'other providers retain their own contracts')

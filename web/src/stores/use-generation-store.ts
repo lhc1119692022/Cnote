@@ -1,4 +1,5 @@
 import { create } from 'zustand'
+import { withOfficialMediaCapabilities } from '@/lib/generation/official-media-rules'
 import { createJSONStorage, persist } from 'zustand/middleware'
 import { nanoid } from 'nanoid'
 import { localForageStorage } from '@/lib/localforage-storage'
@@ -422,7 +423,7 @@ function normalizeChannel(channel: GenerationChannel): GenerationChannel {
     ? (channel.protocol === 'video-api' && presetProtocol && presetProtocol !== 'video-api' ? presetProtocol : generationProtocolForChannel(channel))
     : configuredAdapters[0]?.protocol || generationProtocolForChannel(channel)
   const catalog = modelsForGenerationProtocol(protocol)
-  const modelIds = channel.modelIds || catalog.map((model) => model.id)
+  const modelIds = Array.isArray(channel.modelIds) ? channel.modelIds : []
   const modelCatalog = channel.modelCatalog?.length ? channel.modelCatalog : preset?.models?.length ? preset.models : catalog
   const selectedAdapter = configuredAdapters.find((adapter) => adapter.protocol === protocol) || configuredAdapters[0]
   const mediaTransport = normalizeMediaTransport(is808VideoChannel(channel, protocol)
@@ -470,7 +471,19 @@ export const useGenerationStore = create<GenerationState>()(
       generationDefaultsVersion: 0,
       initializeDefaultChannels: () => {
         const state = get()
-        if (state.generationDefaultsVersion >= 1) return
+        if (state.generationDefaultsVersion >= 2) return
+        const channels = state.channels.map((channel) => {
+          const preset = generationPresetForId(channel.presetId)
+          const isUntouchedDefault = preset && channel.id === `official-${preset.id}`
+            && !channel.apiKey && !channel.encryptedKey
+            && channel.modelIds.length === preset.modelIds.length
+            && channel.modelIds.every((id) => preset.modelIds.includes(id))
+          return isUntouchedDefault ? { ...channel, modelIds: [] } : channel
+        })
+        if (state.generationDefaultsVersion >= 1) {
+          set({ channels, generationDefaultsVersion: 2 })
+          return
+        }
         const additions = GENERATION_CHANNEL_PRESETS
           .filter((preset) => {
             const defaultId = `official-${preset.id}`
@@ -486,7 +499,7 @@ export const useGenerationStore = create<GenerationState>()(
             name: preset.name,
             baseURL: preset.defaultBaseURL || '',
             apiKey: '',
-            modelIds: preset.modelIds,
+            modelIds: [],
             modelCatalog: preset.models,
             enabled: true,
             supportsImage: preset.supportsImage,
@@ -504,7 +517,7 @@ export const useGenerationStore = create<GenerationState>()(
             }] : undefined,
           }))
         additions.forEach((channel) => saveDesktopSecret(channel.secretName || generationSecretName(channel.id), undefined))
-        set({ channels: [...state.channels, ...additions], generationDefaultsVersion: 1 })
+        set({ channels: [...channels, ...additions], generationDefaultsVersion: 2 })
       },
       addChannel: (input = {}) => {
         const providerId = input.providerId || 'custom'
@@ -523,7 +536,7 @@ export const useGenerationStore = create<GenerationState>()(
           name: input.name || '生成渠道',
           baseURL: endpointURL,
           apiKey: input.apiKey || '',
-          modelIds: input.modelIds || (preset?.modelIds.length ? preset.modelIds : catalog.map((model) => model.id)),
+          modelIds: input.modelIds || [],
           modelCatalog: input.modelCatalog || preset?.models || catalog,
           enabled: input.enabled ?? true,
           supportsImage: input.supportsImage ?? !isVideoGenerationProtocol(preset?.protocol || protocol),
@@ -592,12 +605,12 @@ export const useGenerationStore = create<GenerationState>()(
         return (channel.modelIds || []).map((id) => {
           const owner = adapters.find((adapter) => (channel.modelCatalog || modelsForGenerationProtocol(adapter.protocol)).some((model) => model.id === id))
           const catalogModel = resolve808WanModel(channel, id, owner?.protocol || adapters[0]?.protocol || generationProtocolForChannel(channel)) || catalogs.find((model) => model.id === id)
-          return catalogModel
+          return withOfficialMediaCapabilities(catalogModel
             ? { ...catalogModel, id, adapterId: owner?.id }
             : {
                 ...unknownGenerationModelForProtocol(id, owner?.protocol || adapters[0]?.protocol || generationProtocolForChannel(channel)),
                 adapterId: owner?.id || adapters[0]?.id,
-              }
+              })
         })
       },
     }),

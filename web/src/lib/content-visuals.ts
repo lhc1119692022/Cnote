@@ -1,4 +1,4 @@
-import { AlignLeft, FileText, Image, Presentation, Share2, Table2, Workflow, Youtube, type LucideIcon } from 'lucide-react'
+import { AlignLeft, FileText, Image, Music2, Presentation, Share2, Table2, Workflow, Youtube, type LucideIcon } from 'lucide-react'
 import type { ContentCategory } from '@/types/flow'
 
 export type ContentCategoryId = ContentCategory
@@ -13,6 +13,7 @@ export interface ContentCategoryVisual {
 }
 
 export const contentCategoryVisuals: Record<ContentCategoryId, ContentCategoryVisual> = {
+  audio: { id: 'audio', label: '音频', icon: Music2, iconClass: 'text-rose-500', iconSurfaceClass: 'bg-muted', hoverClass: 'hover:bg-muted/60' },
   text: { id: 'text', label: '文本', icon: AlignLeft, iconClass: 'text-slate-500', iconSurfaceClass: 'bg-slate-50', hoverClass: 'hover:border-slate-200 hover:bg-slate-50/60' },
   video: { id: 'video', label: '视频', icon: Youtube, iconClass: 'text-red-500', iconSurfaceClass: 'bg-red-50', hoverClass: 'hover:border-red-200 hover:bg-red-50/60' },
   social: { id: 'social', label: '社媒', icon: Share2, iconClass: 'text-pink-500', iconSurfaceClass: 'bg-pink-50', hoverClass: 'hover:border-pink-200 hover:bg-pink-50/60' },

@@ -290,6 +290,10 @@ export const useGraphStore = create<GraphStore>((set, get) => ({
       && edge.targetHandle === opts?.targetHandle
     ))
     if (duplicate) return
+    if (targetNode.kind === 'request' && targetNode.variant === 'video') {
+      void import('@/canvas/video-input-validation').then(({ connectVideoInput }) => connectVideoInput(source, target, opts))
+      return
+    }
     const edge: EdgeSpec = {
       id: nanoid(),
       source,

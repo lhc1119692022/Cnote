@@ -28,8 +28,10 @@ export function ResourceStorageSettings() {
   }
   const size = (bytes: number) => (bytes / 1024 / 1024).toFixed(1) + ' MB'
   return <section className="mt-5 border-t border-border pt-4">
+    <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-3">
     <div className="flex flex-wrap items-center gap-x-6 gap-y-2 text-xs text-muted-foreground">{usage && <><span>媒体文件 {size(usage.resources)}</span><span>文档与会话 {size(usage.data)}</span><span>缓存与预览 {size(usage.cache)}</span><span>总计 {size(usage.total)}</span></>}</div>
-    <div className="mt-3 flex flex-wrap gap-2"><Button variant="secondary" size="sm" disabled={busy} onClick={() => void action(true)}>清理缓存</Button><Button variant="secondary" size="sm" disabled={busy} onClick={() => void action(false)}>清理未使用资源</Button><Button variant="ghost" size="sm" disabled={busy} onClick={() => void refresh().catch(error => setMessage(String(error)))}>刷新占用</Button></div>
+    <div className="flex shrink-0 flex-wrap gap-2"><Button variant="secondary" size="sm" disabled={busy} onClick={() => void action(true)}>清理缓存</Button><Button variant="secondary" size="sm" disabled={busy} onClick={() => void action(false)}>清理未使用资源</Button><Button variant="ghost" size="sm" disabled={busy} onClick={() => void refresh().catch(error => setMessage(String(error)))}>刷新占用</Button></div>
+    </div>
     {message && <p role="status" className="mt-2 text-xs text-muted-foreground">{message}</p>}
   </section>
 }

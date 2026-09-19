@@ -36,7 +36,8 @@ export interface ParsedContent {
 
 export const CONTENT_FILE_ACCEPT_BY_CATEGORY: Record<ContentCategory, string> = {
   text: '.txt,.md,.markdown,text/plain,text/markdown',
-  video: 'video/*,audio/*,.mp4,.webm,.mov,.m4v,.mp3,.m4a,.aac,.wav,.flac,.oga',
+  video: 'video/*,.mp4,.webm,.mov,.m4v',
+  audio: 'audio/*,.mp3,.m4a,.aac,.wav,.flac,.oga,.ogg,.opus,.aiff,.aif',
   social: '',
   document: '.txt,.md,.markdown,.pdf,.docx,text/plain,text/markdown,application/pdf',
   data: '.csv,.tsv,.xlsx,text/csv,text/tab-separated-values',
@@ -108,7 +109,7 @@ function classifyUrl(value: string, hint?: ContentCategory): UrlClassification {
 
   if (/\.(png|jpe?g|gif|webp|avif|svg)(?:$|\/)/.test(path)) return { provider: 'generic', category: 'image', subtype: 'image', badge: '图片 URL' }
   if (/\.(mp4|webm|mov|m4v)(?:$|\/)/.test(path)) return { provider: 'generic', category: 'video', subtype: 'direct-video', badge: '视频 URL', playback: 'video' }
-  if (/\.(mp3|m4a|aac|wav|flac|oga)(?:$|\/)/.test(path)) return { provider: 'podcast', category: 'video', subtype: 'podcast', badge: '音频', playback: 'audio' }
+  if (/\.(mp3|m4a|aac|wav|flac|oga|ogg|opus|aiff|aif)(?:$|\/)/.test(path)) return { provider: 'podcast', category: 'audio', subtype: 'podcast', badge: '音频', playback: 'audio' }
 
   if (hostMatches(host, 'youtube.com', 'youtu.be')) return { provider: 'youtube', category: 'video', subtype: 'youtube', badge: 'YouTube', playback: 'embed' }
   if (hostMatches(host, 'bilibili.com', 'b23.tv')) return { provider: 'bilibili', category: 'video', subtype: 'bilibili', badge: 'Bilibili', playback: 'preview' }
@@ -393,7 +394,7 @@ function detectFile(file: Blob, fileName: string, hint?: ContentCategory) {
   const mime = file.type.toLowerCase()
   if (mime.startsWith('image/') || /^(png|jpe?g|gif|webp|svg|avif)$/.test(ext)) return { category: 'image' as const, subtype: 'image' as const }
   if (mime.startsWith('video/') || /^(mp4|webm|mov|avi|mkv)$/.test(ext)) return { category: 'video' as const, subtype: 'local-video' as const }
-  if (mime.startsWith('audio/') || /^(mp3|m4a|aac|wav|flac|oga|ogg)$/.test(ext)) return { category: 'video' as const, subtype: 'podcast' as const }
+  if (mime.startsWith('audio/') || /^(mp3|m4a|aac|wav|flac|oga|ogg|opus|aiff|aif)$/.test(ext)) return { category: 'audio' as const, subtype: 'podcast' as const }
   if (mime === 'application/pdf' || ext === 'pdf') return { category: 'document' as const, subtype: 'pdf' as const }
   if (ext === 'docx' || mime.includes('wordprocessingml')) return { category: 'document' as const, subtype: 'docx' as const }
   if (ext === 'xls' || mime === 'application/vnd.ms-excel') {
@@ -584,10 +585,10 @@ export async function detectAndParseContent(
       }
     }
 
-    if (classification.category === 'video' && classification.playback !== 'preview') {
+    if ((classification.category === 'video' || classification.category === 'audio') && classification.playback !== 'preview') {
       const isAudio = classification.playback === 'audio'
       return {
-        category: 'video',
+        category: isAudio ? 'audio' : 'video',
         subtype: classification.subtype,
         source,
         payload: { kind: 'video', provider: isAudio ? 'podcast' : 'direct', playback: classification.playback, url: normalized },

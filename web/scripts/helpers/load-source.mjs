@@ -1,7 +1,7 @@
 import { readFileSync, existsSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { dirname, resolve } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import ts from 'typescript'
 
 const sourceRoot = fileURLToPath(new URL('../../src/', import.meta.url))
@@ -16,7 +16,7 @@ export function sourceLoader(mocks = {}) {
     if (modules.has(path)) return modules.get(path).exports
     const module = { exports: {} }
     modules.set(path, module)
-    const source = readFileSync(path, 'utf8').replace(/import\.meta\.env/g, '({ DEV: false, MODE: "test" })')
+    const source = readFileSync(path, 'utf8').replace(/import\.meta\.env/g, '({ DEV: false, MODE: "test" })').replace(/import\.meta\.url/g, JSON.stringify(pathToFileURL(path).href))
     const compiled = ts.transpileModule(source, {
       compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX, esModuleInterop: true },
     }).outputText

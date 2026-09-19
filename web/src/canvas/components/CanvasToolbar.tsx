@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   ArrowLeft,
+  Cable,
   Check,
   ChevronDown,
   Download,
@@ -19,6 +20,7 @@ import { addNodeAtViewportCenter, type AddableKind } from '@/canvas/node-factory
 import { documentToLegacyFlow } from '@/canvas/document-legacy'
 import { NodeMenuIcon } from '@/canvas/components/NodeMenuIcon'
 import { Button } from '@/components/ui/button'
+import { APIKeysManager } from '@/components/settings/APIKeysManager'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import type { Size } from '@/domain'
 import { showMessage } from '@/lib/app-dialog'
@@ -63,6 +65,7 @@ export function CanvasToolbar({
   const [editingTitle, setEditingTitle] = useState(false)
   const [titleDraft, setTitleDraft] = useState(documentName)
   const [showAddMenu, setShowAddMenu] = useState(false)
+  const [showChannelSettings, setShowChannelSettings] = useState(false)
   const [showTemplateDialog, setShowTemplateDialog] = useState(false)
   const [templateTitle, setTemplateTitle] = useState('')
   const [templateDescription, setTemplateDescription] = useState('')
@@ -482,6 +485,10 @@ export function CanvasToolbar({
                   保存
                 </span>
               </Button>
+              <Button variant="ghost" className={actionButtonClass} onClick={() => setShowChannelSettings(true)} title="渠道设置" aria-label="渠道设置">
+                <Cable className="h-5 w-5 shrink-0" />
+                <span className={actionLabelClass}>渠道</span>
+              </Button>
               <Button
                 variant="ghost"
                 className={actionButtonClass}
@@ -538,6 +545,12 @@ export function CanvasToolbar({
           )}
         </div>
       </div>
+
+      <Dialog open={showChannelSettings} onOpenChange={setShowChannelSettings}>
+        <DialogContent className="flex overflow-hidden p-0" style={{ width: 'min(860px, calc(100vw - 2rem))', height: 'min(720px, calc(100dvh - 2rem))', maxWidth: 'none' }}>
+          <APIKeysManager embedded onClose={() => setShowChannelSettings(false)} />
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={compactTitle && editingTitle} onOpenChange={setEditingTitle}>
         <DialogContent>

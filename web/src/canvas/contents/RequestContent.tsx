@@ -1,4 +1,6 @@
 import { GenerationActionButton } from '@/canvas/components/GenerationActionButton'
+import { addVideoInputFile, useVideoInputFeedback } from '@/canvas/video-input-validation'
+import { officialMediaProfile } from '@/lib/generation/official-media-rules'
 import { usePromptAutosize } from '@/canvas/use-prompt-autosize'
 /**
  * 生成节点内容：只在 CanvasViewport 内容抬升层渲染。
@@ -600,6 +602,7 @@ export const RequestContent = memo(function RequestContent({ node }: { node: Req
   usePromptAutosize(promptRef, prompt, generationVariant)
   const [isRunning, setIsRunning] = useState(false)
   const [requestError, setRequestError] = useState<string | null>(null)
+  const mediaFeedback = useVideoInputFeedback((state) => state.nodes[node.id])
   const [activeRunId, setActiveRunId] = useState<string | null>(null)
   activeRunIdRef.current = activeRunId
   const [draggedReferenceId, setDraggedReferenceId] = useState<string | null>(null)
@@ -705,6 +708,7 @@ export const RequestContent = memo(function RequestContent({ node }: { node: Req
     Boolean(selectedModel) &&
     Boolean(prompt.trim() || orderedReferences.length || upstreamText.trim()) &&
     !referenceError &&
+    !mediaFeedback?.pending &&
     !isRunning &&
     !node.disabled
 
@@ -827,7 +831,7 @@ export const RequestContent = memo(function RequestContent({ node }: { node: Req
       const stored = readRequestSpec(node.id)
       const current = stored?.[generationVariant]
       const nextVideoMode = generationVariant === 'video'
-        ? (!current?.capability ? undefined : videoModesForModel(model).includes(videoMode) ? videoMode : videoModesForModel(model)[0])
+        ? current?.capability
         : effectiveCapability
       updateVariant({
         channelId,
@@ -837,7 +841,7 @@ export const RequestContent = memo(function RequestContent({ node }: { node: Req
         ...modelConfigUpdates(current, model, generationVariant),
       })
     },
-    [effectiveCapability, generationVariant, node.id, updateVariant, videoMode],
+    [effectiveCapability, generationVariant, node.id, updateVariant],
   )
 
   const persistPrompt = useCallback(() => {
@@ -855,6 +859,10 @@ export const RequestContent = memo(function RequestContent({ node }: { node: Req
       const referenceOverrides: Record<string, GenerationReferenceOverride> = { ...(stored[generationVariant].referenceOverrides || {}) }
       for (const reference of normalized) {
         referenceOverrides[reference.id] = { ...referenceOverrides[reference.id], role: reference.role, order: reference.order }
+      }
+      const keptIds = new Set(normalized.map((reference) => reference.id))
+      for (const id of Object.keys(referenceOverrides)) {
+        if (id.startsWith('asset-') && !keptIds.has(id)) delete referenceOverrides[id]
       }
       updateVariant({
         referenceAssetIds: ownedReferenceAssetIds(normalized),
@@ -1422,6 +1430,11 @@ export const RequestContent = memo(function RequestContent({ node }: { node: Req
 
   const handleFile = async (file: File, type: GenerationReference['type'], role?: GenerationReference['role']) => {
     if (!generationVariant) return
+    if (generationVariant === 'video') {
+      setRequestError(null)
+      await addVideoInputFile(node.id, file, type, role)
+      return
+    }
     const documentId = useGraphStore.getState().currentDocumentId
     const variant = generationVariant
     if (!documentId) return
@@ -1510,7 +1523,7 @@ export const RequestContent = memo(function RequestContent({ node }: { node: Req
         promptMentions,
         referenceOverrides: {
           ...stored[variant].referenceOverrides,
-          [reference.id]: { ...stored[variant].referenceOverrides?.[reference.id], excluded: true },
+          [reference.id]: { ...stored[variant].referenceOverrides?.[reference.id], excluded: true, compatibleCopy: undefined },
         },
       })
       useGraphStore.getState().commitHistory()
@@ -1998,6 +2011,11 @@ export const RequestContent = memo(function RequestContent({ node }: { node: Req
                 {!!activeTask.requestDiagnostics.unknownRetentionCount && <span> · {activeTask.requestDiagnostics.unknownRetentionCount} 个地址保留期未知</span>}
               </p>
             )}
+            {generationVariant === 'video' && (mediaFeedback?.message || !officialMediaProfile(variantConfig?.model)) ? (
+              <div role="status" className="mt-1 max-h-20 overflow-y-auto whitespace-pre-line text-[10px] text-muted-foreground" title={mediaFeedback?.message}>
+                {mediaFeedback?.message || '未配置官方规格，未验证模型素材限制'}
+              </div>
+            ) : null}
             {requestError && (
               <div role="alert" className="mb-2 rounded-xl border border-destructive/25 bg-destructive/5 px-3 py-2 text-xs leading-5 text-destructive">
                 {requestError}

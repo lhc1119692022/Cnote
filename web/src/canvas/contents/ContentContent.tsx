@@ -15,6 +15,7 @@ import {
   FileUp,
   Image as ImageIcon,
   LoaderCircle,
+  Music2,
   Maximize2,
   Presentation,
   Share2,
@@ -25,10 +26,11 @@ import {
 } from 'lucide-react'
 import { chooseContentCategory, importContentIntoNode } from '@/canvas/content-import-adapter'
 import { RichTextEditor } from '@/components/ui/rich-text-editor'
+import { AudioPlayer } from './AudioPlayer'
 import { useCanvasInteraction } from '@/canvas/components/CanvasProvider'
 import type { ContentCategory, ContentNodeSpec, ContentSourceRef, GenerationRun, NodeSpec } from '@/domain'
 import { CONTENT_FILE_ACCEPT, CONTENT_FILE_ACCEPT_BY_CATEGORY, getContentFileAccept } from '@/lib/content-import'
-import { CONTENT_NODE_MIN_SIZE } from '@/lib/flow/node-dimensions'
+import { AUDIO_NODE_DEFAULT_SIZE, CONTENT_NODE_DEFAULT_SIZE, CONTENT_NODE_MIN_SIZE } from '@/lib/flow/node-dimensions'
 import { showMessage } from '@/lib/app-dialog'
 import { AssetManager } from '@/runtime'
 import { assetIdForResource } from '@/storage/asset-store'
@@ -60,6 +62,7 @@ const contentCategoryOptions: CategoryOption[] = [
   { id: 'video', label: '视频', icon: Video, iconClass: 'text-red-500' },
   { id: 'social', label: '社媒', icon: Share2, iconClass: 'text-pink-500' },
   { id: 'image', label: '图片', icon: ImageIcon, iconClass: 'text-cyan-500' },
+  { id: 'audio', label: '音频', icon: Music2, iconClass: 'text-rose-500' },
   { id: 'document', label: '文档', icon: FileText, iconClass: 'text-blue-500' },
   { id: 'mindmap', label: '思维导图', icon: Workflow, iconClass: 'text-violet-500' },
   { id: 'presentation', label: '演示文稿', icon: Presentation, iconClass: 'text-orange-500' },
@@ -350,6 +353,18 @@ function VideoBody({ node }: { node: ContentNodeSpec }) {
       <video src={playbackUrl} className="h-full w-full object-contain" controls playsInline preload="metadata" onLoadedMetadata={event => recordMediaDimensions(node.id, mediaIdentity(node), event.currentTarget.videoWidth, event.currentTarget.videoHeight)} />
     </div>
   )
+}
+
+function AudioBody({ node }: { node: ContentNodeSpec }) {
+  const { src, loading } = useResolvedMediaSrc(node)
+  useEffect(() => {
+    if (!node.manualSize && node.size.width === CONTENT_NODE_DEFAULT_SIZE.width && node.size.height === CONTENT_NODE_DEFAULT_SIZE.height) {
+      useGraphStore.getState().updateNode(node.id, { size: { ...AUDIO_NODE_DEFAULT_SIZE } })
+    }
+  }, [node.id, node.manualSize, node.size.width, node.size.height])
+  if (loading && !src) return <MediaEmpty label="音频加载中" />
+  if (!src) return <ImportEmpty node={node} description="导入音频，或粘贴音频链接" />
+  return <AudioPlayer key={src} src={src} nodeId={node.id} />
 }
 
 function DocumentBody({ node }: { node: ContentNodeSpec }) {
@@ -690,14 +705,14 @@ function CategoryPicker({ node }: { node: ContentNodeSpec }) {
   const pendingCategory = useRef<ContentCategory | null>(null)
 
   const choose = (category: ContentCategory) => {
-    if (category === 'presentation' || category === 'data' || category === 'image') {
+    if (category === 'presentation' || category === 'data' || category === 'image' || category === 'audio') {
       pendingCategory.current = category
       if (inputRef.current) {
         inputRef.current.accept = CONTENT_FILE_ACCEPT_BY_CATEGORY[category]
         inputRef.current.value = ''
         inputRef.current.click()
       }
-      if (category !== 'image') return
+      return
     }
     chooseContentCategory(node.id, category)
   }
@@ -733,7 +748,6 @@ function CategoryPicker({ node }: { node: ContentNodeSpec }) {
           event.target.value = ''
           pendingCategory.current = null
           if (!file) return
-          if (category === 'presentation' || category === 'data') chooseContentCategory(node.id, category)
           void importContentIntoNode(node.id, { kind: 'file', file }, category).catch((error) => {
             showMessage(error instanceof Error ? error.message : '导入失败，请稍后重试。')
           })
@@ -745,6 +759,8 @@ function CategoryPicker({ node }: { node: ContentNodeSpec }) {
 
 function LeafBody({ node }: { node: ContentNodeSpec }) {
   switch (node.category) {
+    case 'audio':
+      return <AudioBody node={node} />
     case 'text':
       return <TextBody node={node} />
     case 'image':

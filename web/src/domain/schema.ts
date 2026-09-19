@@ -7,7 +7,7 @@
 
 import type { FlowDocument } from './graph'
 
-export const CURRENT_SCHEMA_VERSION = 2
+export const CURRENT_SCHEMA_VERSION = 3
 
 export interface CnoteDocument {
   schemaVersion: number
@@ -29,6 +29,7 @@ export interface Migration {
  */
 export const MIGRATIONS: readonly Migration[] = [
   { from: 1, to: 2, up: migrateV1ToV2 },
+  { from: 2, to: 3, up: migrateV2ToV3 },
 ]
 
 export function migrateDocument(input: unknown): CnoteDocument {
@@ -100,6 +101,21 @@ function normalizeDocumentName(document: CnoteDocument): CnoteDocument {
   const title = (payload as unknown as Record<string, unknown>).title
   const name = typeof title === 'string' && title.trim() ? title : '未命名画布'
   return { ...document, payload: { ...payload, name } }
+}
+
+function migrateV2ToV3(input: unknown): unknown {
+  const document = input as CnoteDocument
+  return {
+    ...document,
+    schemaVersion: 3,
+    payload: {
+      ...document.payload,
+      nodes: document.payload.nodes.map((node) => node.kind === 'request' ? {
+        ...node,
+        video: { ...node.video, autoAdaptImages: node.video?.autoAdaptImages ?? false },
+      } : node),
+    },
+  }
 }
 
 function migrateV1ToV2(input: unknown): unknown {

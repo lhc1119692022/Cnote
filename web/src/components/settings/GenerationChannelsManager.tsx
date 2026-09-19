@@ -53,6 +53,7 @@ export function GenerationChannelsManager({ embedded = false, openNewRequest = 0
 
   const [showChannelDialog, setShowChannelDialog] = useState(false)
   const [editingChannelId, setEditingChannelId] = useState<string | null>(null)
+  const hasExistingApiKey = Boolean(editingChannelId && getAPIKey(editingChannelId))
   const [presetId, setPresetId] = useState('')
   const [channelName, setChannelName] = useState('')
   const [protocol, setProtocol] = useState<GenerationProtocolId>('openai-images')
@@ -165,10 +166,7 @@ export function GenerationChannelsManager({ embedded = false, openNewRequest = 0
     setProtocol(nextProtocol)
     setBaseURL('')
     setMediaTransport('custom')
-    const knownModels = isVideoGenerationProtocol(nextProtocol)
-      ? modelsForGenerationProtocol(nextProtocol).map((model) => model.id)
-      : []
-    setModelIds(knownModels)
+    setModelIds([])
     setModelCatalog(modelsForGenerationProtocol(nextProtocol))
     setCustomModelId('')
     setAvailableModelIds([])
@@ -219,10 +217,6 @@ export function GenerationChannelsManager({ embedded = false, openNewRequest = 0
       showMessage('请输入 API Key')
       return
     }
-    if (modelIds.length === 0) {
-      showMessage('请至少手动添加一个模型 ID')
-      return
-    }
     if (!supportsImage && !supportsVideo) {
       showMessage('请至少选择图片节点或视频节点')
       return
@@ -235,7 +229,7 @@ export function GenerationChannelsManager({ embedded = false, openNewRequest = 0
       showMessage('当前预设要求公网 HTTPS 参考素材，请使用自定义媒体存储。')
       return
     }
-    if (supportsVideo && mediaTransport === 'custom' && !hasConfiguredMediaStorage) {
+    if (modelIds.length > 0 && supportsVideo && mediaTransport === 'custom' && !hasConfiguredMediaStorage) {
       showMessage('请先在“本地存储”中配置自定义上传服务')
       return
     }
@@ -409,7 +403,7 @@ export function GenerationChannelsManager({ embedded = false, openNewRequest = 0
             {mediaTestMessage && <p role="status" className={`mt-2 min-w-0 break-words text-[11px] ${mediaTestState === 'success' ? 'text-emerald-700' : mediaTestState === 'error' ? 'text-destructive' : 'text-muted-foreground'}`} title={mediaTestMessage}>{mediaTestMessage}</p>}
           </div>}
 
-          <div className="mt-4 text-[13px] text-muted-foreground"><span className="mb-2 flex items-center gap-1.5 font-medium"><KeyRound className="h-3.5 w-3.5" />API Key {editingChannelId && <span className="font-normal">（留空则保持不变）</span>}</span><input type="password" value={apiKey} onChange={(event) => setAPIKey(event.target.value)} placeholder={editingChannelId ? '留空保持现有密钥' : '输入 API Key'} className="h-10 w-full rounded-lg border border-border bg-background px-3 text-foreground outline-none focus:border-primary focus:ring-2 focus:ring-ring/20" /></div>
+          <div className="mt-4 text-[13px] text-muted-foreground"><span className="mb-2 flex items-center gap-1.5 font-medium"><KeyRound className="h-3.5 w-3.5" />API Key <span className="font-normal">{hasExistingApiKey ? '（已配置，留空保持不变）' : apiKey.trim() ? '（待保存）' : '（尚未填写）'}</span></span><input type="password" value={apiKey} onChange={(event) => setAPIKey(event.target.value)} placeholder={hasExistingApiKey ? '留空保持现有密钥' : '请输入 API Key'} className="h-10 w-full rounded-lg border border-border bg-background px-3 text-foreground outline-none focus:border-primary focus:ring-2 focus:ring-ring/20" /></div>
           <div className="mt-5"><div className="flex items-center justify-between gap-3"><div><h3 className="text-[13px] font-medium">渠道模型</h3><p className="mt-1 text-[11px] text-muted-foreground">可从接口拉取模型；无法拉取时仍可手动添加模型 ID。</p></div><Button type="button" variant="secondary" size="sm" className="shrink-0 gap-1.5" disabled={isFetchingModels} onClick={() => void handleFetchModels()}><RefreshCw className={`h-3.5 w-3.5 ${isFetchingModels ? 'animate-spin' : ''}`} />拉取模型</Button></div>
             {(availableModelIds.length > 0 || modelFetchMessage) && (
               <div className={`mt-3 min-h-[52px] rounded-lg border px-3 py-3 text-[11px] ${availableModelIds.length ? 'border-border bg-background' : 'border-dashed border-border text-muted-foreground'}`}>
@@ -419,9 +413,9 @@ export function GenerationChannelsManager({ embedded = false, openNewRequest = 0
             )}
             <div className="mt-3 min-h-[52px] rounded-lg border border-border bg-background px-3 py-3">{modelIds.length > 0 ? <div className="flex flex-wrap gap-2">{modelIds.map((modelId) => <button key={modelId} type="button" onClick={() => setModelIds((current) => current.filter((id) => id !== modelId))} className="flex items-center gap-1.5 rounded-lg border border-primary bg-primary/10 px-2.5 py-1.5 text-[11px] text-foreground" title="移除模型">{modelId}<X className="h-3 w-3" /></button>)}</div> : <p className="text-center text-[11px] text-muted-foreground">尚未添加模型 ID</p>}</div>
             <div className="mt-2 flex gap-2"><input value={customModelId} onChange={(event) => setCustomModelId(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); addCustomModel() } }} placeholder="手动输入模型 ID" className="h-9 min-w-0 flex-1 rounded-lg border border-border bg-background px-3 text-[12px] text-foreground outline-none focus:border-primary focus:ring-2 focus:ring-ring/20" /><Button variant="secondary" size="sm" onClick={addCustomModel}>添加模型</Button></div>
-            {modelIds.length === 0 && <p className="mt-2 text-[11px] text-destructive">至少需要选择或添加一个模型 ID</p>}</div>
+            {modelIds.length === 0 && <p className="mt-2 text-[11px] text-muted-foreground">已选 0 个模型</p>}</div>
 
-          <div className="mt-6 flex justify-end gap-3"><Button variant="secondary" onClick={resetChannelDialog}>取消</Button><Button onClick={handleSaveChannel} disabled={modelIds.length === 0}>{editingChannelId ? '保存' : '添加生成渠道'}</Button></div>
+          <div className="mt-6 flex justify-end gap-3"><Button variant="secondary" onClick={resetChannelDialog}>取消</Button><Button onClick={handleSaveChannel}>{editingChannelId ? '保存' : '添加生成渠道'}</Button></div>
         </DialogContent>
       </Dialog>
     </div>

@@ -8,6 +8,7 @@ import { retainLocalResource } from '@/lib/resource-storage'
 import { contentCategoryVisuals } from '@/lib/content-visuals'
 import { useGraphStore } from '@/stores/graph-store'
 import { useRuntimeStore } from '@/stores/runtime-store'
+import { AUDIO_NODE_DEFAULT_SIZE } from '@/lib/flow/node-dimensions'
 
 function categoryLabel(category: ContentCategory): string {
   return contentCategoryVisuals[category]?.label || '内容'
@@ -40,6 +41,7 @@ export function applyParsedContent(nodeId: string, parsed: ParsedContent): void 
   if (!stored || stored.kind !== 'content') return
   const mapped = applyParsedSource(parsed)
   const patch: Partial<ContentNodeSpec> = {
+    ...(parsed.category === 'audio' && stored.category !== 'audio' ? { size: { ...AUDIO_NODE_DEFAULT_SIZE } } : {}),
     category: parsed.category,
     subtype: parsed.subtype,
     payload: parsed.payload,
@@ -84,6 +86,7 @@ export function chooseContentCategory(nodeId: string, category: ContentCategory)
   const stored = useGraphStore.getState().currentDocument?.nodes.find((node) => node.id === nodeId)
   if (!stored || stored.kind !== 'content') return
   useGraphStore.getState().updateNode(nodeId, {
+    ...(category === 'audio' && stored.category !== 'audio' ? { size: { ...AUDIO_NODE_DEFAULT_SIZE } } : {}),
     category,
     subtype: null,
     source: null,

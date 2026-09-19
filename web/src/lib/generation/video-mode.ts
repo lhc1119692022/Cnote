@@ -1,6 +1,8 @@
 import type { GenerationModel } from '@/stores/use-generation-store'
 import type { GenerationCapability, GenerationReference, GenerationVariantConfig } from '@/types/flow'
 
+import { withOfficialMediaCapabilities } from './official-media-rules'
+
 export const VIDEO_MODE_LABELS = {
   'reference-to-video': '多模态',
   'first-last-frame': '首尾帧',
@@ -14,6 +16,7 @@ export const VIDEO_MODE_PLACEHOLDERS: Record<VideoMode, string> = {
 }
 
 export function videoModesForModel(model?: GenerationModel): VideoMode[] {
+  if (model) model = withOfficialMediaCapabilities(model)
   if (!model) return []
   if (model.capabilitySource === 'inferred' && model.capabilities.some((capability) => capability.endsWith('-to-video') || ['video-reference', 'audio-reference', 'video-edit', 'generate-audio'].includes(capability))) {
     return ['reference-to-video', 'first-last-frame']
@@ -31,6 +34,7 @@ export function resolveVideoMode(capability: GenerationCapability | undefined, r
 }
 
 export function videoInputTypes(model: GenerationModel | undefined, mode: VideoMode): GenerationReference['type'][] {
+  if (model) model = withOfficialMediaCapabilities(model)
   if (model?.capabilitySource === 'inferred' && model.capabilities.some((capability) => capability.endsWith('-to-video') || ['video-reference', 'audio-reference', 'video-edit', 'generate-audio'].includes(capability))) {
     return mode === 'reference-to-video' ? ['image', 'video', 'audio'] : ['image']
   }
@@ -49,10 +53,11 @@ export function normalizeVideoModeConfig(config: GenerationVariantConfig, model?
     assigned.add(role)
     return { ...reference, role }
   })
-  return { ...config, capability, references, generateAudio: Boolean(config.generateAudio) && !config.noMusic && (!model || model.capabilities.includes('generate-audio')), noMusic: undefined }
+  return { ...config, capability: config.capability === 'video-edit' ? 'video-edit' : capability, references, generateAudio: Boolean(config.generateAudio) && !config.noMusic && (!model || model.capabilities.includes('generate-audio')), noMusic: undefined }
 }
 
 export function videoReferenceError(model: GenerationModel | undefined, config: GenerationVariantConfig): string | undefined {
+  if (model) model = withOfficialMediaCapabilities(model)
   const mode = resolveVideoMode(config.capability, config.references)
   if (model && !videoModesForModel(model).includes(mode)) return `尚未配置 ${model.name} 的${VIDEO_MODE_LABELS[mode]}能力`
   const allowedTypes = videoInputTypes(model, mode)

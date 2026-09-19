@@ -320,17 +320,20 @@
   box-shadow: none;
 }
 
-/* Native webviews/videos inside a CSS-transformed canvas are extremely
-   expensive in Electron. Hide them while the viewport or a node is moving.
-   Keep visibility (not display) so guests are not reloaded when shown again. */
 .canvas-viewport-moving webview,
 .canvas-viewport-moving iframe,
 .canvas-viewport-moving video,
 .react-flow__node.dragging webview,
 .react-flow__node.dragging iframe,
 .react-flow__node.dragging video {
-  visibility: hidden !important;
   pointer-events: none !important;
+}
+
+.canvas-viewport-moving webview,
+.canvas-viewport-moving iframe,
+.react-flow__node.dragging webview,
+.react-flow__node.dragging iframe {
+  visibility: hidden !important;
 }
 
 .canvas-viewport-moving .browser-webview-shield,
@@ -733,6 +736,11 @@
 
 [data-content-node]:has(details[open] > [data-node-menu]) {
   --canvas-content-order: 2;
+}
+
+.canvas-cutting,
+.canvas-cutting * {
+  cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='%23111827' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'%3E%3Cg stroke='white' stroke-width='3'%3E%3Cpath d='M8 3L15 17M16 3L9 17'/%3E%3Ccircle cx='7' cy='19' r='3'/%3E%3Ccircle cx='17' cy='19' r='3'/%3E%3C/g%3E%3Cpath d='M8 3L15 17M16 3L9 17'/%3E%3Ccircle cx='7' cy='19' r='3'/%3E%3Ccircle cx='17' cy='19' r='3'/%3E%3C/svg%3E") 12 11, crosshair !important;
 }
 
 .node-hover-toolbar {
@@ -1179,9 +1187,7 @@
 .react-flow__node:hover .node-connection-handle,
 [data-node-id]:hover .node-connection-handle,
 [data-node-id][data-node-hovered='true'] .node-connection-handle,
-[data-node-id][data-node-connection-target] .node-connection-handle,
-[data-node-id][data-node-selected='true'] .node-connection-handle,
-[data-node-id]:focus-within .node-connection-handle {
+[data-node-id][data-node-connection-target] .node-connection-handle {
   opacity: 1;
   pointer-events: auto !important;
 }

@@ -1,4 +1,5 @@
 import { batchLayout } from '@/canvas/generation-batch'
+import { placeNewestResult } from '@/canvas/result-placement'
 /**
  * Request 节点的运行时素材派生与结果落盘。
  * GenerationReference 只在提交/预览时存在，不写入 FlowDocument。
@@ -134,6 +135,7 @@ function contentMediaType(node: ContentNodeSpec, mimeType?: string): GenerationR
   const fromMime = mimeToReferenceType(mimeType)
   if (fromMime) return fromMime
   if (node.category === 'image') return 'image'
+  if (node.category === 'audio') return 'audio'
   if (node.category === 'video') return 'video'
   return null
 }
@@ -328,11 +330,14 @@ export function mergeGenerationReferences(
   overrides: GenerationConfig['referenceOverrides'] | undefined,
 ): GenerationReference[] {
   const seen = new Set<string>()
-  const merged = [...local, ...upstream].map((reference, index) => ({
-    ...reference,
-    order: index,
-    ...overrides?.[reference.id],
-  }))
+  const merged = [...local, ...upstream].map((reference, index) => {
+    const override = overrides?.[reference.id]
+    return {
+      ...reference,
+      order: override?.order ?? index,
+      role: override?.role ?? reference.role,
+    }
+  })
   return normalizeGenerationReferences(
     merged.filter((reference) => {
       if (reference.upstreamNodeId && overrides?.[reference.id]?.excluded) return false
@@ -489,12 +494,8 @@ export function upsertGenerationResultNodes(options: {
   const label = existing?.label || (current.label || (options.variant === 'image' ? '图片' : '视频')) + '结果'
   const id = existing?.id || nanoid()
   const size = existing?.size || { ...CONTENT_NODE_DEFAULT_SIZE }
-  const position = existing?.position || { x: current.position.x + current.size.width + DOWNSTREAM_OFFSET_X, y: current.position.y }
-  if (!existing) {
-    while (doc.nodes.some(node => position.x < node.position.x + node.size.width + RESULT_STACK_GAP && position.x + size.width + RESULT_STACK_GAP > node.position.x && position.y < node.position.y + node.size.height + RESULT_STACK_GAP && position.y + size.height + RESULT_STACK_GAP > node.position.y)) {
-      position.y = Math.max(...doc.nodes.filter(node => position.x < node.position.x + node.size.width + RESULT_STACK_GAP && position.x + size.width + RESULT_STACK_GAP > node.position.x && position.y < node.position.y + node.size.height + RESULT_STACK_GAP && position.y + size.height + RESULT_STACK_GAP > node.position.y).map(node => node.position.y + node.size.height + RESULT_STACK_GAP))
-    }
-  }
+  const placement = existing ? { position: existing.position, nodes: doc.nodes } : placeNewestResult(doc.nodes, current.id, { x: current.position.x + current.size.width + DOWNSTREAM_OFFSET_X, y: current.position.y }, size, RESULT_STACK_GAP)
+  const position = placement.position
   const assetId = active?.resourceId ? assetIdForResource(active.resourceId) : undefined
   const next: ContentNodeSpec = {
     ...existing, id, kind: 'content', position, size, label, category: options.variant,
@@ -507,7 +508,7 @@ export function upsertGenerationResultNodes(options: {
   }
   if (next.generationBatch?.expanded && next.generationBatch.collapsedSize) next.size = batchLayout(next).size
   if (existing && JSON.stringify(existing) === JSON.stringify(next)) return [id]
-  const nodes = existing ? doc.nodes.map(node => node.id === id ? next : node) : [...doc.nodes, next]
+  const nodes = existing ? doc.nodes.map(node => node.id === id ? next : node) : [...placement.nodes, next]
   const requestIndex = nodes.findIndex(node => node.id === current.id)
   nodes[requestIndex] = { ...current, resultNodeIds: { ...current.resultNodeIds, [options.variant]: [...new Set([...ownedResultNodeIds(current.resultNodeIds?.[options.variant]), id])] } }
   const edges = existing ? doc.edges : [...doc.edges, { id: nanoid(), source: current.id, target: id, sourceHandle: 'out', targetHandle: 'in' }]

@@ -78,7 +78,8 @@ const getPersistedStateSize = async (key: string) => {
   return new Blob([value]).size
 }
 
-export function APIKeysManager() {
+export function APIKeysManager({ embedded = false, onClose }: { embedded?: boolean; onClose?: () => void } = {}) {
+  const [channelFilter, setChannelFilter] = useState('all')
   const {
     apiKeys,
     addAPIKey,
@@ -102,6 +103,7 @@ export function APIKeysManager() {
   const [generationDialogRequest, setGenerationDialogRequest] = useState(0)
   const [showChannelDialog, setShowChannelDialog] = useState(false)
   const [editingChannelId, setEditingChannelId] = useState<string | null>(null)
+  const hasExistingApiKey = Boolean(editingChannelId && getAPIKey(editingChannelId))
   const [channelName, setChannelName] = useState('')
   const [providerId, setProviderId] = useState('custom')
   const [baseURL, setBaseURL] = useState('')
@@ -309,8 +311,8 @@ export function APIKeysManager() {
 
   useEffect(() => {
     const nextTab = isSettingsTab(requestedTab) ? requestedTab : 'channels'
-    setActiveTab((current) => current === nextTab ? current : nextTab)
-  }, [requestedTab])
+    if (!embedded) setActiveTab((current) => current === nextTab ? current : nextTab)
+  }, [requestedTab, embedded])
 
   const selectTab = (tab: SettingsTab) => {
     setActiveTab(tab)
@@ -676,13 +678,13 @@ export function APIKeysManager() {
     { label: '渠道配置', count: apiKeys.length, size: storageBreakdown.channels },
   ]
 
-  return (
-    <AppShell>
-      <main className="flex h-full min-w-0 flex-col overflow-hidden">
+  const content = (
+    <>
+      <main className="flex h-full w-full min-w-0 flex-col overflow-hidden">
         <header className="flex h-[60px] shrink-0 items-center justify-between border-b border-border bg-card px-6">
-          <h1 className="text-[15px] font-semibold text-foreground">设置</h1>
+          <h1 className="text-[15px] font-semibold text-foreground">{embedded ? '渠道设置' : '设置'}</h1>
           <div className="flex items-center gap-2">
-            {activeTab === 'channels' && (
+            {!embedded && activeTab === 'channels' && (
               <>
                 <input ref={importInputRef} type="file" accept="application/json,.json" className="hidden" style={{ display: 'none' }} onChange={handleImportConfiguration} />
                 <Button variant="secondary" size="sm" className="gap-1.5" onClick={() => importInputRef.current?.click()}><Upload className="h-3.5 w-3.5" />导入</Button>
@@ -690,20 +692,27 @@ export function APIKeysManager() {
                 <Button size="sm" className="gap-1.5" onClick={openNewChannelDialog}><Plus className="h-3.5 w-3.5" />新增渠道</Button>
               </>
             )}
-            {activeTab === 'generation' && <Button size="sm" className="gap-1.5" onClick={() => setGenerationDialogRequest((request) => request + 1)}><Plus className="h-3.5 w-3.5" />新增生成渠道</Button>}
+            {!embedded && activeTab === 'generation' && <Button size="sm" className="gap-1.5" onClick={() => setGenerationDialogRequest((request) => request + 1)}><Plus className="h-3.5 w-3.5" />新增生成渠道</Button>}
+            {embedded && <>
+              <select aria-label="筛选渠道" value={channelFilter} onChange={(event) => setChannelFilter(event.target.value)} className="h-9 rounded-lg border border-border bg-card px-3 text-sm">
+                <option value="all">全部</option><option value="text">文本</option><option value="generation">生成</option>
+              </select>
+              <Button variant="ghost" size="icon-sm" title="关闭渠道设置" aria-label="关闭渠道设置" onClick={onClose}><X className="h-4 w-4" /></Button>
+            </>}
           </div>
         </header>
 
         <div className="flex-1 overflow-auto p-6">
-          <div className="mb-5 flex flex-wrap gap-2">
+          {!embedded && <div className="mb-5 flex flex-wrap gap-2">
             <button type="button" onClick={() => selectTab('channels')} className={activeTab === 'channels' ? 'rounded-lg bg-primary px-3 py-1.5 text-[13px] text-primary-foreground' : 'rounded-lg border border-border bg-background px-3 py-1.5 text-[13px] text-muted-foreground hover:bg-muted dark:border-0 dark:bg-secondary'}>文本渠道</button>
             <button type="button" onClick={() => selectTab('generation')} className={activeTab === 'generation' ? 'rounded-lg bg-primary px-3 py-1.5 text-[13px] text-primary-foreground' : 'rounded-lg border border-border bg-background px-3 py-1.5 text-[13px] text-muted-foreground hover:bg-muted dark:border-0 dark:bg-secondary'}>生成渠道</button>
             <button type="button" onClick={() => selectTab('content-service')} className={activeTab === 'content-service' ? 'rounded-lg bg-primary px-3 py-1.5 text-[13px] text-primary-foreground' : 'rounded-lg border border-border bg-background px-3 py-1.5 text-[13px] text-muted-foreground hover:bg-muted dark:border-0 dark:bg-secondary'}>内容解析服务</button>
             <button type="button" onClick={() => selectTab('storage')} className={activeTab === 'storage' ? 'rounded-lg bg-primary px-3 py-1.5 text-[13px] text-primary-foreground' : 'rounded-lg border border-border bg-background px-3 py-1.5 text-[13px] text-muted-foreground hover:bg-muted dark:border-0 dark:bg-secondary'}>本地存储</button>
-          </div>
+          </div>}
 
-          {activeTab === 'channels' ? (
+          {(embedded ? channelFilter !== 'generation' : activeTab === 'channels') && (
             <section>
+              {embedded && <div className="mb-3 flex items-center justify-between"><h2 className="text-sm font-medium">文本渠道</h2><Button variant="ghost" size="icon-sm" title="新增文本渠道" aria-label="新增文本渠道" onClick={openNewChannelDialog}><Plus className="h-4 w-4" /></Button></div>}
               {apiKeys.length === 0 ? (
                 <div className="flex flex-col items-center justify-center py-24 text-center">
                   <KeyRound className="mb-4 h-10 w-10 text-muted-foreground/50" />
@@ -740,11 +749,13 @@ export function APIKeysManager() {
                 </div>
               )}
             </section>
-          ) : activeTab === 'generation' ? (
+          )}
+          {(embedded || activeTab === 'generation') && <section hidden={embedded && channelFilter === 'text'} className={embedded && channelFilter === 'all' ? 'mt-6' : ''}>
+            {embedded && <div className="mb-3 flex items-center justify-between"><h2 className="text-sm font-medium">生成渠道</h2><Button variant="ghost" size="icon-sm" title="新增生成渠道" aria-label="新增生成渠道" onClick={() => setGenerationDialogRequest((request) => request + 1)}><Plus className="h-4 w-4" /></Button></div>}
             <GenerationChannelsManager embedded openNewRequest={generationDialogRequest} />
-          ) : activeTab === 'content-service' ? (
-            <ContentServiceSettings />
-          ) : (
+          </section>}
+          {!embedded && activeTab === 'content-service' && <ContentServiceSettings />}
+          {!embedded && activeTab === 'storage' && (
             <section>
               <div className="rounded-xl border border-border bg-card p-5">
                 <div className="flex flex-wrap items-center justify-between gap-3">
@@ -774,14 +785,16 @@ export function APIKeysManager() {
 
               <ResourceStorageSettings />
               {isDesktopRuntime && <div className="mt-5 border-t border-border pt-4">
-                <div className="flex items-center gap-2"><HardDrive className="h-4 w-4 text-muted-foreground" /><h2 className="text-sm font-medium">桌面端缓存与本地数据</h2></div>
-                <div className="mt-3 flex flex-wrap items-baseline gap-x-3 gap-y-1 text-[12px]"><span className="text-muted-foreground">当前位置</span><span className="min-w-0 break-all text-foreground">{desktopStorageLocation?.currentPath || '读取中…'}</span></div>
-                {desktopStorageLocation?.configuredPath && desktopStorageLocation.configuredPath !== desktopStorageLocation.currentPath && <p className="mt-1 break-all text-[11px] text-muted-foreground">下次启动：{desktopStorageLocation.configuredPath}</p>}
-                <div className="mt-3 flex flex-wrap gap-2">
+                <div className="flex flex-wrap items-center gap-x-6 gap-y-3">
+                <div className="flex shrink-0 items-center gap-2"><HardDrive className="h-4 w-4 text-muted-foreground" /><h2 className="text-sm font-medium">桌面端缓存与本地数据</h2></div>
+                <div className="flex min-w-0 flex-1 flex-wrap items-baseline gap-x-3 gap-y-1 text-[12px]"><span className="text-muted-foreground">当前位置</span><span className="min-w-0 break-all text-foreground">{desktopStorageLocation?.currentPath || '读取中…'}</span></div>
+                <div className="flex shrink-0 flex-wrap gap-2">
                   <Button size="sm" className="gap-1.5" disabled={desktopStorageBusy} onClick={() => void chooseDesktopStorageLocation()}><FolderOpen className="h-3.5 w-3.5" />迁移到…</Button>
                   <Button variant="secondary" size="sm" disabled={desktopStorageBusy || !desktopStorageLocation?.restartRequired} onClick={() => void resetDesktopStorageLocation()}>取消迁移</Button>
                   {desktopStorageLocation?.restartRequired && <Button variant="outline" size="sm" className="gap-1.5" onClick={restartDesktop}><RefreshCw className="h-3.5 w-3.5" />立即重启</Button>}
                 </div>
+                </div>
+                {desktopStorageLocation?.configuredPath && desktopStorageLocation.configuredPath !== desktopStorageLocation.currentPath && <p className="mt-1 break-all text-[11px] text-muted-foreground">下次启动：{desktopStorageLocation.configuredPath}</p>}
                 {desktopStorageMessage && <p className="mt-3 text-[12px] leading-relaxed text-muted-foreground">{desktopStorageMessage}</p>}
               </div>}
               </div>
@@ -792,7 +805,11 @@ export function APIKeysManager() {
                     <div className="flex items-center gap-2"><Cloud className="h-4 w-4 text-muted-foreground" /><h2 className="text-sm font-medium">自定义媒体存储</h2>{mediaStorage.enabled && mediaStorage.health?.ok && <span className="inline-flex items-center gap-1 rounded-full border border-emerald-300 bg-emerald-50 px-2 py-0.5 text-[10px] text-emerald-700 dark:border-emerald-800 dark:bg-emerald-950/30 dark:text-emerald-300"><CheckCircle2 className="h-3 w-3" />已连接</span>}</div>
                     <p className="mt-1.5 text-[12px] text-muted-foreground">用于把本地图片、视频、音频等参考素材转换为无需登录即可读取的 HTTPS 地址。</p>
                   </div>
-                  {mediaStorage.usage && <span className="text-[11px] text-muted-foreground">上次更新 {new Date(mediaStorage.usage.fetchedAt).toLocaleString()}</span>}
+                <div className="flex shrink-0 flex-wrap items-center gap-2">
+                  <Button size="sm" className="gap-1.5" disabled={mediaTesting || !mediaBaseURL.trim()} onClick={() => void testMediaStorage()}><RefreshCw className={`h-3.5 w-3.5 ${mediaTesting ? 'animate-spin' : ''}`} />{mediaTesting ? '正在测试' : '测试并保存'}</Button>
+                  <Button variant="secondary" size="sm" className="gap-1.5" disabled={mediaRefreshing || !mediaBaseURL.trim()} onClick={() => void refreshMediaUsage()}><RefreshCw className={`h-3.5 w-3.5 ${mediaRefreshing ? 'animate-spin' : ''}`} />刷新远端用量</Button>
+                  {(mediaStorage.baseURL || mediaBaseURL) && <Button variant="outline" size="sm" className="gap-1.5 text-destructive" onClick={async () => { if (!await askConfirmation('确定清除自定义媒体存储配置吗？远端对象不会被删除。')) return; mediaStorage.clearSettings(); setMediaBaseURL(''); setMediaAccessToken(''); setMediaObjects([]); setMediaObjectsCursor(undefined); setMediaMessage('已清除配置；远端对象仍保留。') }}><Trash2 className="h-3.5 w-3.5" />清除配置</Button>}
+                </div>
                 </div>
 
                 <div className="mt-5 grid gap-4 md:grid-cols-2">
@@ -809,11 +826,7 @@ export function APIKeysManager() {
                   </div>
                 </details>
 
-                <div className="mt-4 flex flex-wrap gap-2">
-                  <Button size="sm" className="gap-1.5" disabled={mediaTesting || !mediaBaseURL.trim()} onClick={() => void testMediaStorage()}><RefreshCw className={`h-3.5 w-3.5 ${mediaTesting ? 'animate-spin' : ''}`} />{mediaTesting ? '正在测试' : '测试并保存'}</Button>
-                  <Button variant="secondary" size="sm" className="gap-1.5" disabled={mediaRefreshing || !mediaBaseURL.trim()} onClick={() => void refreshMediaUsage()}><RefreshCw className={`h-3.5 w-3.5 ${mediaRefreshing ? 'animate-spin' : ''}`} />刷新远端用量</Button>
-                  {(mediaStorage.baseURL || mediaBaseURL) && <Button variant="outline" size="sm" className="gap-1.5 text-destructive" onClick={async () => { if (!await askConfirmation('确定清除自定义媒体存储配置吗？远端对象不会被删除。')) return; mediaStorage.clearSettings(); setMediaBaseURL(''); setMediaAccessToken(''); setMediaObjects([]); setMediaObjectsCursor(undefined); setMediaMessage('已清除配置；远端对象仍保留。') }}><Trash2 className="h-3.5 w-3.5" />清除配置</Button>}
-                </div>
+                {mediaStorage.usage && <p className="mt-3 text-[11px] text-muted-foreground">上次更新 {new Date(mediaStorage.usage.fetchedAt).toLocaleString()}</p>}
                 {mediaMessage && <p className={`mt-3 text-[12px] leading-5 ${mediaMessage.startsWith('连接成功') || mediaMessage.includes('已更新') ? 'text-emerald-600 dark:text-emerald-400' : 'text-muted-foreground'}`}>{mediaMessage}</p>}
 
                 {mediaAutoError && <p role="status" className="mt-2 text-[11px] text-destructive">{mediaAutoError}</p>}
@@ -855,8 +868,8 @@ export function APIKeysManager() {
           </div>
           <label className="mt-3 block text-[13px] text-muted-foreground"><span className="mb-2 block font-medium">接口地址</span><input value={baseURL} onChange={(event) => setBaseURL(event.target.value)} placeholder="https://api.openai.com" className="h-10 w-full rounded-lg border border-border bg-background px-3 text-foreground outline-none focus:border-primary focus:ring-2 focus:ring-ring/20" /></label>
           <div className="mt-4 text-[13px] text-muted-foreground">
-            <span className="mb-2 block font-medium">API Key {editingChannelId && <span className="font-normal">（留空则保持不变）</span>}</span>
-            <input type="password" value={apiKey} onChange={(event) => setAPIKey(event.target.value)} placeholder={editingChannelId ? '留空保持现有密钥' : '输入 API Key'} className="h-10 w-full rounded-lg border border-border bg-background px-3 text-foreground outline-none focus:border-primary focus:ring-2 focus:ring-ring/20" />
+            <span className="mb-2 block font-medium">API Key <span className="font-normal">{hasExistingApiKey ? '（已配置，留空保持不变）' : apiKey.trim() ? '（待保存）' : '（尚未填写）'}</span></span>
+            <input type="password" value={apiKey} onChange={(event) => setAPIKey(event.target.value)} placeholder={hasExistingApiKey ? '留空保持现有密钥' : '请输入 API Key'} className="h-10 w-full rounded-lg border border-border bg-background px-3 text-foreground outline-none focus:border-primary focus:ring-2 focus:ring-ring/20" />
           </div>
 
           {!isDesktopRuntime && <details className="group mt-4 rounded-lg border border-border bg-muted/30 p-3.5">
@@ -901,6 +914,8 @@ export function APIKeysManager() {
           <div className="mt-6 flex justify-end gap-3"><Button variant="secondary" onClick={resetChannelDialog}>取消</Button><Button onClick={handleSaveChannel} disabled={modelIds.length === 0}>{editingChannelId ? '保存' : '添加渠道'}</Button></div>
         </DialogContent>
       </Dialog>
-    </AppShell>
+    </>
   )
+
+  return embedded ? content : <AppShell>{content}</AppShell>
 }

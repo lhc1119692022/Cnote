@@ -1,4 +1,5 @@
 import { STICKY_PALETTE, STICKY_COLOR_ORDER } from '@/canvas/sticky-palette'
+import { cancelVideoInputValidation, useVideoInputFeedback } from '@/canvas/video-input-validation'
 import { memo, useEffect, useLayoutEffect, useRef, useState, type ChangeEvent, type KeyboardEvent, type PointerEvent, type ReactNode } from 'react'
 import { ClipboardCopy, Copy, Download, Globe, Layers3, Link2Off, Pin, RefreshCw, Scissors, Settings2, Sparkles, Star, StickyNote, Trash2 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
@@ -13,8 +14,7 @@ import { documentToLegacyFlow } from '@/canvas/document-legacy'
 import { importContentIntoNode } from '@/canvas/content-import-adapter'
 import { useCanvasInteraction } from './CanvasProvider'
 import { useCanvasViewportStore } from '@/stores/canvas-viewport-store'
-import { nodeToolbarHorizontalPlacement, nodeToolbarPlacement, nodeToolbarScaleStyle, selectionToolbarTop } from '@/canvas/toolbar-placement'
-import { canvasOverlayInsets } from '@/canvas/overlay-insets'
+import { nodeToolbarScaleStyle } from '@/canvas/toolbar-placement'
 import { useUiStore } from '@/stores/ui-store'
 import type { ContentMediaItem, ContentNodeData } from '@/types/flow'
 
@@ -189,22 +189,16 @@ async function downloadContentMedia(node: ContentNodeSpec): Promise<void> {
 }
 
 const HIDDEN_VIEWPORT = { x: 0, y: 0, zoom: 1 }
-const EMPTY_NODES: NodeSpec[] = []
 
 export const NodeHoverToolbar = memo(function NodeHoverToolbar({ node, selected }: { node: NodeSpec; selected: boolean }) {
-  const { containerSize, hoveredNodeId, setHoveredNode, resizing, draggingNodeIds, worldToScreen, selection } = useCanvasInteraction()
+  const { setHoveredNode, resizing, draggingNodeIds, worldToScreen, selection } = useCanvasInteraction()
   const [editing, setEditing] = useState(false)
-  const visible = node.kind === 'group' ? selected : (selected || hoveredNodeId === node.id)
+  const visible = selected && selection.length === 1 && selection[0] === node.id
   const viewport = useCanvasViewportStore(state => visible || editing ? state.view : HIDDEN_VIEWPORT)
-  const nodes = useGraphStore(state => visible || editing ? state.currentDocument?.nodes ?? EMPTY_NODES : EMPTY_NODES)
   const updateNode = useGraphStore((state) => state.updateNode)
   const duplicateNode = useGraphStore((state) => state.duplicateNode)
   const deleteNode = useGraphStore((state) => state.deleteNode)
   const isLocked = useGraphStore((state) => state.isLocked)
-  const showNodePanel = useUiStore((state) => state.showNodePanel)
-  const showExtensionPanel = useUiStore((state) => state.showExtensionPanel)
-  const extensionWidth = useUiStore((state) => state.extensionWidth)
-  const overlayInsets = canvasOverlayInsets({ showNodePanel, showExtensionPanel, extensionWidth })
   const dragging = resizing?.nodeId === node.id || draggingNodeIds.includes(node.id)
   const nodeScreenStart = worldToScreen(node.position)
   const nodeScreenEnd = worldToScreen({
@@ -216,7 +210,6 @@ export const NodeHoverToolbar = memo(function NodeHoverToolbar({ node, selected 
   const [feedback, setFeedback] = useState<{ message: string; tone: 'info' | 'error' } | null>(null)
   const [busy, setBusy] = useState(false)
   const [toolbarWidth, setToolbarWidth] = useState(0)
-  const [toolbarHeight, setToolbarHeight] = useState(48)
   const feedbackTimer = useRef(0)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const toolbarRef = useRef<HTMLDivElement>(null)
@@ -228,7 +221,6 @@ export const NodeHoverToolbar = memo(function NodeHoverToolbar({ node, selected 
     if (!element) return
     const update = () => {
       setToolbarWidth(element.offsetWidth)
-      setToolbarHeight(element.offsetHeight)
     }
     update()
     if (typeof ResizeObserver === 'undefined') return
@@ -238,18 +230,9 @@ export const NodeHoverToolbar = memo(function NodeHoverToolbar({ node, selected 
   }, [editing, feedback, showCopyText, showDownloadMedia, node.kind, viewport.zoom])
 
   const measuredWidth = toolbarWidth > 0 ? toolbarWidth : 288
-  const selectionMembers = nodes.filter((candidate) => selection.includes(candidate.id) && candidate.kind !== 'group')
-  const selectionTop = selectionMembers.length > 1
-    ? Math.min(...selectionMembers.map((candidate) => worldToScreen(candidate.position).y))
-    : null
-  const safeTop = selected && node.kind !== 'group' && selectionTop !== null
-    ? selectionToolbarTop(selectionTop, containerSize.height) + 48
-    : 72
-  const toolbarLayout = nodeToolbarPlacement(nodeScreenStart.y, nodeScreenEnd.y, toolbarHeight, containerSize.height, safeTop)
-  const toolbarPlacement = toolbarLayout.placement
-  const toolbarHorizontal = nodeToolbarHorizontalPlacement(
-    nodeScreenStart.x, nodeScreenEnd.x, measuredWidth, containerSize.width, overlayInsets,
-  )
+  const toolbarPlacement = 'top' as const
+  const screenWidth = nodeScreenEnd.x - nodeScreenStart.x
+  const toolbarLeft = measuredWidth <= screenWidth ? screenWidth - measuredWidth : (screenWidth - measuredWidth) / 2
 
   const meta = KIND_META[node.kind]
   const Icon = meta.icon
@@ -467,17 +450,17 @@ export const NodeHoverToolbar = memo(function NodeHoverToolbar({ node, selected 
   return (
     <div
       data-canvas-chrome="true"
+      data-audio-trim-toolbar={node.id}
       ref={toolbarRef}
       className={[
         'node-hover-toolbar absolute z-50',
-        (visible || editing) && !dragging ? 'is-visible' : '',
+        visible && !dragging ? 'is-visible' : '',
       ].join(' ')}
       data-placement={toolbarPlacement}
       style={{
-        top: (toolbarLayout.anchor - nodeScreenStart.y) / viewport.zoom,
-        left: (toolbarHorizontal.left - nodeScreenStart.x) / viewport.zoom,
+        top: -8 / viewport.zoom,
+        left: toolbarLeft / viewport.zoom,
         width: 'max-content',
-        maxWidth: toolbarHorizontal.maxWidth,
         ...nodeToolbarScaleStyle(viewport.zoom, toolbarPlacement),
       }}
       data-horizontal="left"
@@ -541,6 +524,7 @@ export const NodeHoverToolbar = memo(function NodeHoverToolbar({ node, selected 
             ))}
           </div>
         )}
+        {node.kind === 'request' && node.variant === 'video' ? <VideoAdaptToggle node={node} disabled={isLocked} /> : null}
         {node.kind === 'group' ? (
           <ToolbarButton label="解绑" disabled={isLocked} onClick={() => useGraphStore.getState().ungroup(node.id)}>
             <Link2Off className="h-4 w-4" />
@@ -562,6 +546,11 @@ export const NodeHoverToolbar = memo(function NodeHoverToolbar({ node, selected 
             {showDownloadMedia ? (
               <ToolbarButton label={node.kind === 'content' && node.category === 'text' ? '下载内容' : '下载媒体'} disabled={busy} onClick={() => void downloadMedia()}>
                 <Download className="h-4 w-4" />
+              </ToolbarButton>
+            ) : null}
+            {node.kind === 'content' && node.category === 'audio' && showDownloadMedia ? (
+              <ToolbarButton label="截取音频" disabled={busy || isLocked} onClick={() => useUiStore.getState().setNodeChrome(node.id, { audioTrim: true })}>
+                <Scissors className="h-4 w-4" />
               </ToolbarButton>
             ) : null}
             {showRefreshUpstream ? (
@@ -621,6 +610,21 @@ export const NodeHoverToolbar = memo(function NodeHoverToolbar({ node, selected 
   )
 })
 
+function VideoAdaptToggle({ node, disabled }: { node: Extract<NodeSpec, { kind: 'request' }>; disabled: boolean }) {
+  const pending = useVideoInputFeedback((state) => state.nodes[node.id]?.pending)
+  return <>
+    <ToolbarButton label={`图片无感适配：${node.video.autoAdaptImages ? '开启' : '关闭'}`} pressed={Boolean(node.video.autoAdaptImages)} disabled={disabled} onClick={() => {
+      const current = useGraphStore.getState().currentDocument?.nodes.find((item) => item.id === node.id)
+      if (current?.kind !== 'request') return
+      useGraphStore.getState().updateNode(node.id, { video: { ...current.video, autoAdaptImages: !current.video.autoAdaptImages } })
+      useGraphStore.getState().commitHistory()
+    }}>
+      <Sparkles className={`h-4 w-4 ${node.video.autoAdaptImages ? 'text-emerald-600' : 'text-muted-foreground'}`} />
+    </ToolbarButton>
+    {pending ? <ToolbarButton label="取消素材检查" onClick={() => cancelVideoInputValidation(node.id)}><Link2Off className="h-4 w-4" /></ToolbarButton> : null}
+  </>
+}
+
 function ToolbarButton({
   label,
   onClick,
@@ -641,7 +645,7 @@ function ToolbarButton({
       type="button"
       title={label}
       aria-label={label}
-      aria-pressed={pressed || undefined}
+      aria-pressed={pressed}
       disabled={disabled}
       className={[
         'flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40',

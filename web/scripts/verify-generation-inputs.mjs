@@ -11,6 +11,8 @@ import { create } from 'zustand'
 const require = createRequire(import.meta.url)
 const sourceRoot = fileURLToPath(new URL('../src/', import.meta.url))
 const mocks = new Map()
+mocks.set('./media-inspection', { validateOfficialMediaReferences: async () => [] })
+mocks.set('@/canvas/video-input-validation', { useVideoInputFeedback: create(() => ({ nodes: {} })), addVideoInputFile: async () => {} })
 const modules = new Map()
 
 function evaluate(source, requireModule = require) {
@@ -453,17 +455,18 @@ assert.deepEqual(videoModesForModel({ ...model, capabilitySource: 'inferred' }),
 assert.deepEqual(videoInputTypes({ ...model, capabilitySource: 'inferred' }, 'reference-to-video'), ['image', 'video', 'audio'])
 assert.equal(base.capability, 'reference-to-video')
 assert.equal(videoReferenceError(model, base), undefined, 'multimodal permits prompt-only generation')
-assert.match(videoReferenceError({ ...model, capabilities: ['reference-to-video'] }, base), /纯文本生成能力/)
+assert.equal(videoReferenceError({ ...model, capabilities: ['reference-to-video'] }, base), undefined, 'official model inputs override stale channel capabilities')
 const frames = normalizeVideoModeConfig({ ...base, capability: 'first-last-frame', references: merged.references.slice(0, 2) })
 assert.deepEqual(frames.references.map((reference) => reference.role), ['first_frame', 'last_frame'])
 assert.equal(videoReferenceError(model, frames), undefined)
-assert.match(videoReferenceError(model, normalizeVideoModeConfig({ ...frames, references: [frames.references[0]] })), /首帧和一张尾帧/)
+assert.equal(videoReferenceError(model, normalizeVideoModeConfig({ ...frames, references: [frames.references[0]] })), undefined)
 assert.equal(normalizeVideoModeConfig({ ...base, capability: 'audio-reference' }).capability, 'reference-to-video')
 assert.equal(normalizeVideoModeConfig({ ...base, capability: 'generate-audio', noMusic: true }).generateAudio, false)
-for (const legacyMode of ['text-to-video', 'image-to-video', 'video-reference', 'audio-reference', 'video-edit', 'generate-audio']) {
+for (const legacyMode of ['text-to-video', 'image-to-video', 'video-reference', 'audio-reference', 'generate-audio']) {
   assert.equal(normalizeVideoModeConfig({ ...base, capability: legacyMode }).capability, 'reference-to-video')
 }
 assert.equal(normalizeVideoModeConfig({ ...frames, capability: undefined }).capability, 'first-last-frame', 'legacy frame roles still identify the frame workflow')
+assert.equal(normalizeVideoModeConfig({ ...base, capability: 'video-edit' }).capability, 'video-edit', 'editing input duration rules must remain distinguishable')
 const convertedFrames = normalizeVideoModeConfig({ ...frames, capability: 'reference-to-video' })
 assert.deepEqual(convertedFrames.references.map((reference) => reference.role), ['reference_image', 'reference_image'])
 assert.deepEqual(convertedFrames.references.map((reference) => reference.id), frames.references.map((reference) => reference.id))
@@ -512,7 +515,6 @@ const textRequest = await submit({ ...base, capability: 'text-to-video' })
   for (const invalid of [
     { seconds: 31 },
     { seconds: 1.5 },
-    { references: Array.from({ length: 11 }, (_, index) => ({ ...publicImage, id: String(index), url: 'https://cdn.test/' + index + '.png' })) },
   ]) {
     requests.length = 0
     await assert.rejects(() => runWan(invalid))
@@ -675,8 +677,8 @@ for (const legacyTransport of [undefined, 'auto', 'public-url', 'presign', 'mult
   assert.equal(requests[0].url, 'https://storage.test/upload', 'retired transports use only configured custom storage')
 }
 storageSettings.baseURL = ''
-await assert.rejects(() => submit({ ...localConfig, capability: 'first-last-frame' }, 'custom', { mediaUploadURL: 'https://storage.test/upload' }), /validation/)
-assert.equal(requests.length, 0, 'invalid mode is rejected before uploading or creating a task')
+await submit({ ...localConfig, capability: 'first-last-frame' }, 'custom', { mediaUploadURL: 'https://storage.test/upload' })
+assert.equal(requests.length, 2, 'single first frame is accepted under official input rules')
 assert.equal((await submit({ ...base, capability: 'image-to-video', references: merged.references.slice(0, 2) })).body.reference_images.length, 2, 'legacy image mode merges into multimodal without a single-image constraint')
 const mixedInput = await submit({ ...base, references: [...localConfig.references, merged.references[1]] }, 'custom', { mediaUploadURL: 'https://storage.test/upload' })
 assert.equal(mixedInput.body.reference_images[0], 'https://cdn.test/uploaded.png')

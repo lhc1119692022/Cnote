@@ -31,6 +31,7 @@ export interface BaseNodeSpec {
 // ---------------------------------------------------------------------------
 
 export type ContentCategory =
+  | 'audio'
   | 'text'
   | 'video'
   | 'social'
@@ -215,10 +216,19 @@ export interface GenerationReferenceOverride {
   role?: GenerationReferenceRole
   order?: number
   excluded?: boolean
+  compatibleCopy?: {
+    sourceIdentity: string
+    assetId: string
+    fileName: string
+    mimeType: string
+    size: number
+    processingKey: string
+  }
 }
 
 /** Declared generation parameters. Task/run state is `GenerationRun`. */
 export interface GenerationConfig {
+  autoAdaptImages?: boolean
   channelId?: string
   model?: string
   /** Adapter that owns the selected model when a channel exposes several contracts. */

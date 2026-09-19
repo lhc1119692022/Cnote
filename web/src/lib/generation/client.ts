@@ -9,6 +9,8 @@ import { normalizeVideoModeConfig, videoReferenceError } from './video-mode'
 import { loadLocalResourceBlob, loadLocalResourceUrl, storeLocalResource } from '@/lib/resource-storage'
 import { desktopFetch } from '@/lib/desktop-fetch'
 import { resolveMediaTransport, assertGenerationRequestSize, assertMediaLifetime, assertAnonymousCompleteFileUrl, signedMediaExpiry } from './media-policy'
+import { officialMediaProfile, officialRequestLimitError, withOfficialMediaCapabilities } from './official-media-rules'
+import { validateOfficialMediaReferences } from './media-inspection'
 import { ensureDesktopSecret, syncDesktopSecret } from '@/lib/desktop-secrets'
 import { is808VideoChannel, resolve808WanModel } from './video-catalog'
 import { parseRequestDiagnostics, type GenerationRequestDiagnostics } from './request-diagnostics'
@@ -123,6 +125,7 @@ function videoResolutionForModel(value: string | undefined, model: GenerationMod
 }
 
 function validateVideoConfig(model: GenerationModel, config: GenerationVariantConfig) {
+  model = withOfficialMediaCapabilities(model)
   const referenceError = videoReferenceError(model, config)
   if (referenceError) throw new Error(referenceError)
   if (config.generateAudio && !model.capabilities.includes('generate-audio')) throw new Error(`${model.name} 未配置生成音频能力`)
@@ -725,12 +728,20 @@ export async function submitGenerationTask(context: GenerationRequestContext, si
   const selectedProtocol = protocolFor(context.channel, context.config.adapterId, context.model.id)
   const documented = context.variant === 'video' ? resolve808WanModel(context.channel, context.model.id, selectedProtocol) : undefined
   if (documented) context = { ...context, model: documented }
+  if (context.variant === 'video') context = { ...context, model: withOfficialMediaCapabilities(context.model) }
   const { model, variant } = context
   const initialConfig = variant === 'video' ? normalizeVideoModeConfig(context.config, model) : context.config
   if (documented && (!initialConfig.aspectRatio || initialConfig.aspectRatio === 'auto')) initialConfig.aspectRatio = '16:9'
   let videoResolution: string | undefined
   if (variant === 'video') {
-    try { videoResolution = validateVideoConfig(model, initialConfig) } catch (error) { throw new GenerationStageError('validation', error instanceof Error ? error.message : String(error), error) }
+    try {
+      videoResolution = validateVideoConfig(model, initialConfig)
+      const profile = officialMediaProfile(model.id)
+      const promptError = profile && officialRequestLimitError(profile, initialConfig)
+      if (promptError) throw new Error(promptError)
+      const violations = await validateOfficialMediaReferences(model.id, initialConfig, signal)
+      if (violations.length) throw new Error(violations.map((item) => item.message).join('\n'))
+    } catch (error) { throw new GenerationStageError('validation', error instanceof Error ? error.message : String(error), error) }
   }
   const channel: GenerationChannel = { ...context.channel, protocol: protocolFor(context.channel, initialConfig.adapterId, model.id) }
   const videoContract = variant === 'video' ? generationVideoRequestContractForModel(channel, model, initialConfig.adapterId) : undefined
@@ -827,7 +838,12 @@ export async function submitGenerationTask(context: GenerationRequestContext, si
     }
     requestURL = joinVersionedEndpoint(baseURL, videoContract?.createPath || '/v1/videos')
     requestBody = JSON.stringify(body)
-    try { assertGenerationRequestSize(requestBody) } catch (error) {
+    try {
+      const profile = officialMediaProfile(model.id)
+      const limitError = profile && officialRequestLimitError(profile, config, requestBody)
+      if (limitError) throw new Error(limitError)
+      if (!profile?.maxRequestBytes) assertGenerationRequestSize(requestBody)
+    } catch (error) {
       throw new GenerationStageError('validation', error instanceof Error ? error.message : String(error), error)
     }
   } else {

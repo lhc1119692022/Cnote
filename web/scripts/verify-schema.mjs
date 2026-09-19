@@ -39,8 +39,8 @@ function loadFrom(filename) {
 
 const { CURRENT_SCHEMA_VERSION, MIGRATIONS, migrateDocument } = loadFrom(withExt(join(srcRoot, 'domain/schema.ts')))
 
-assert.equal(CURRENT_SCHEMA_VERSION, 2)
-assert.equal(MIGRATIONS.length, 1)
+assert.equal(CURRENT_SCHEMA_VERSION, 3)
+assert.equal(MIGRATIONS.length, 2)
 assert.equal(MIGRATIONS[0].from, 1)
 assert.equal(MIGRATIONS[0].to, 2)
 
@@ -106,7 +106,7 @@ function envelope(schemaVersion, overrides = {}) {
   }
 }
 
-const current = envelope(2, {
+const current = envelope(3, {
   payload: {
     id: 'partial',
     name: 'Partial flow',
@@ -119,7 +119,7 @@ assert.equal(currentResult, current)
 assert.equal(currentResult.payload.nodes[0].resultNodeIds.image, 'still-a-string')
 assert.equal(currentResult.migratedFrom, undefined)
 
-for (const version of [1, 2]) {
+for (const version of [1, 2, 3]) {
   for (const name of [undefined, null, 42, {}, '', '   ']) {
     for (const title of ['Recovered title', undefined, null, 42, '', '   ']) {
       const source = envelope(version, { payload: flowPayload({ name, title }) })
@@ -146,11 +146,12 @@ const generatedContent = v1.payload.nodes[2]
 const migrated = migrateDocument(v1)
 
 assert.notEqual(migrated, v1)
-assert.equal(migrated.schemaVersion, 2)
+assert.equal(migrated.schemaVersion, 3)
 assert.equal(migrated.kind, 'flow')
 assert.equal(migrated.leftover, 'keep')
 assert.equal(migrated.payload.extraPayload, true)
-assert.deepEqual(migrated.migratedFrom, ['schema:1'])
+assert.deepEqual(migrated.migratedFrom, ['schema:1', 'schema:2'])
+assert.equal(migrated.payload.nodes[0].video.autoAdaptImages, false)
 assert.deepEqual(migrated.payload.nodes[0].resultNodeIds, { image: ['img-1'], video: ['vid-1'] })
 assert.equal(migrated.payload.nodes[0].extraNode, 1)
 assert.equal(migrated.payload.nodes[0].id, requestNode.id)
@@ -194,14 +195,14 @@ assert.deepEqual(arrayMigrated.payload.nodes[0].resultNodeIds, {
   other: 'leave',
 })
 assert.equal(arrayMigrated.payload.nodes[1], sticky)
-assert.deepEqual(arrayMigrated.migratedFrom, ['legacy:zip', 'schema:1'])
+assert.deepEqual(arrayMigrated.migratedFrom, ['legacy:zip', 'schema:1', 'schema:2'])
 
 assert.throws(
   () => migrateDocument({ schemaVersion: 0, kind: 'flow', payload: {} }),
   /missing migration|broken migration chain/,
 )
 assert.throws(
-  () => migrateDocument({ schemaVersion: 3, kind: 'flow', payload: {} }),
+  () => migrateDocument({ schemaVersion: 4, kind: 'flow', payload: {} }),
   /ahead/,
 )
 assert.throws(

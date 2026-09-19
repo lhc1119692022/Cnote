@@ -27,6 +27,7 @@ export interface FlowEdge {
 export type NodeType = 'content' | 'ai' | 'request' | 'browser' | 'sticky' | 'group'
 
 export type ContentCategory =
+  | 'audio'
   | 'text'
   | 'video'
   | 'social'

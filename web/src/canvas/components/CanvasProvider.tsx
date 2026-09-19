@@ -1,4 +1,9 @@
+import { audioTrimDisplayNode } from '@/canvas/audio-trim-layout'
 import { restoreHostFocus } from '@/canvas/restore-host-focus'
+import { installEdgeCutting } from '@/canvas/cut-edges'
+import { CutTrail } from './CutTrail'
+import { preserveMotionMedia } from '@/canvas/motion-media'
+import { installVideoInputValidation } from '@/canvas/video-input-validation'
 import { useShallow } from 'zustand/react/shallow'
 import { createFrameTask } from '@/lib/frame-task'
 import { interpolateViewport } from '@/canvas/navigation-motion'
@@ -38,13 +43,14 @@ import {
 } from '@/canvas'
 import { canvasOverlayInsets } from '@/canvas/overlay-insets'
 import { hitTestStackedNode } from '@/canvas/node-stacking'
-import { handleCanvasDrop, rememberClientPoint, readSystemClipboardAndImport } from '@/canvas/clipboard-import'
+import { handleCanvasDrop, rememberClientPoint } from '@/canvas/clipboard-import'
 import { movableDragIds } from '@/canvas/grouping'
 import { createAddableNode, defaultSizeFor, type AddableKind } from '@/canvas/node-factory'
 import {
   AI_NODE_MIN_SIZE,
   BROWSER_NODE_MIN_SIZE,
   CONTENT_NODE_MIN_SIZE,
+  AUDIO_NODE_MIN_SIZE,
   REQUEST_NODE_MIN_SIZE,
   STICKY_NODE_MIN_SIZE,
 } from '@/lib/flow/node-dimensions'
@@ -181,10 +187,12 @@ export function CanvasProvider({
     [extensionWidth, showExtensionPanel, showNodePanel],
   )
 
-  const nodes = currentDocument?.nodes ?? EMPTY_NODES
+  const nodeChrome = useUiStore((state) => state.nodeChrome)
+  const nodes = useMemo(() => (currentDocument?.nodes ?? EMPTY_NODES).map((node) => audioTrimDisplayNode(node, nodeChrome[node.id]?.audioTrim === true)), [currentDocument?.nodes, nodeChrome])
   const edges = currentDocument?.edges ?? EMPTY_EDGES
 
   const containerRef = useRef<HTMLDivElement>(null)
+  useEffect(() => { if (containerRef.current) return installEdgeCutting(containerRef.current) }, [])
   const viewportRef = useRef(viewport)
   useEffect(() => useCanvasViewportStore.subscribe((state) => { viewportRef.current = state.view }), [])
   const moveFrame = useMemo(() => createFrameTask({ request: callback => requestAnimationFrame(callback), cancel: handle => cancelAnimationFrame(handle) }), [])
@@ -251,6 +259,7 @@ export function CanvasProvider({
 
   const [marquee, setMarquee] = useState<MarqueeState | null>(null)
   const [connecting, setConnecting] = useState<ConnectingState | null>(null)
+  useEffect(() => installVideoInputValidation(), [])
   const [connectingTargetId, setConnectingTargetId] = useState<string | null>(null)
   const [connectionFeedback, setConnectionFeedback] = useState<string | null>(null)
   const connectionFeedbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -259,6 +268,10 @@ export function CanvasProvider({
   const overlayInsetsRef = useRef(overlayInsets)
   const [resizing, setResizing] = useState<ResizeState | null>(null)
   const [draggingNodeIds, setDraggingNodeIds] = useState<string[]>([])
+  const mediaInMotion = isViewportMoving || draggingNodeIds.length > 0
+  useEffect(() => {
+    if (mediaInMotion && containerRef.current) return preserveMotionMedia(containerRef.current)
+  }, [mediaInMotion])
   const resizeRef = useRef<ResizeSession | null>(null)
   const [containerSize, setContainerSize] = useState<Size>({ width: 0, height: 0 })
   const containerSizeRef = useRef(containerSize)
@@ -271,7 +284,6 @@ export function CanvasProvider({
   stackInteractionRef.current = stackInteraction
   const hoverClearTimer = useRef<number | null>(null)
   const [addMenu, setAddMenu] = useState<CanvasAddMenuState | null>(null)
-  const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null)
   const [connectionMenu, setConnectionMenu] = useState<{
     x: number
     y: number
@@ -763,12 +775,13 @@ export function CanvasProvider({
       if (useGraphStore.getState().isLocked) return
       const node = nodesRef.current.find((candidate) => candidate.id === nodeId)
       if (!node) return
-      const origin = { width: node.size.width, height: node.size.height }
+      const stored = useGraphStore.getState().currentDocument?.nodes.find((candidate) => candidate.id === nodeId) || node
+      const origin = { width: stored.size.width, height: stored.size.height }
       resizeRef.current = {
         nodeId,
         origin,
         startScreen: { x: screenPoint.x, y: screenPoint.y },
-        min: minSizeForKind(node.kind),
+        min: node.kind === 'content' && node.category === 'audio' ? AUDIO_NODE_MIN_SIZE : minSizeForKind(node.kind),
       }
       setResizing({ nodeId, origin, current: origin })
       const ui = useUiStore.getState()
@@ -899,7 +912,6 @@ export function CanvasProvider({
       connectionFeedbackTimerRef.current = null
       setConnectionFeedback(null)
     }
-    if (contextMenu) setContextMenu(null)
     if (connectionMenu) setConnectionMenu(null)
     if (event.button !== 0 && event.button !== 1) return
     // 连线 / 缩放由 NodeShell 入口触发，根按下不介入
@@ -1068,7 +1080,6 @@ export function CanvasProvider({
           if (hitTestNode(input.world)) return
           event.preventDefault()
           const rect = event.currentTarget.getBoundingClientRect()
-          setContextMenu(null)
           setAddMenu({ x: event.clientX - rect.left, y: event.clientY - rect.top, clientX: event.clientX, clientY: event.clientY })
         }}
         onPointerDownCapture={onPointerDownCapture}
@@ -1111,16 +1122,12 @@ export function CanvasProvider({
         }}
         onContextMenu={(event) => {
           if (isEditableTarget(event.target)) return
-          rememberClientPoint(event.clientX, event.clientY)
-          const input = toInput(event.clientX, event.clientY, event.button, event.shiftKey, event.ctrlKey, event.metaKey)
-          if (hitTestNode(input.world)) return
           event.preventDefault()
-          const rect = event.currentTarget.getBoundingClientRect()
-          setContextMenu({ x: event.clientX - rect.left, y: event.clientY - rect.top })
         }}
       >
         <CanvasBackground />
         {children}
+        <CutTrail />
         {connectionFeedback ? (
           <div
             data-canvas-chrome="true"
@@ -1158,27 +1165,6 @@ export function CanvasProvider({
           </div>
         ) : null}
         {addMenu && <CanvasAddMenu menu={addMenu} container={containerRef.current} onClose={() => setAddMenu(null)} />}
-        {contextMenu ? (
-          <div
-            data-canvas-chrome="true"
-            data-canvas-context-menu
-            className="cnote-menu-surface pointer-events-auto absolute z-50 w-40"
-            style={clampOverlayPosition(contextMenu, containerSize, { width: 160, height: 56 })}
-            onPointerDown={(event) => event.stopPropagation()}
-          >
-            <button
-              type="button"
-              className="cnote-menu-item"
-              onClick={() => {
-                setContextMenu(null)
-                setConnectionMenu(null)
-                void readSystemClipboardAndImport()
-              }}
-            >
-              粘贴
-            </button>
-          </div>
-        ) : null}
       </div>
       </CanvasInteractionContext.Provider>
     </CanvasContext.Provider>
