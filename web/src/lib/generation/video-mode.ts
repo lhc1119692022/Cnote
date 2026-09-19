@@ -29,7 +29,7 @@ export function videoModesForModel(model?: GenerationModel): VideoMode[] {
 
 export function resolveVideoMode(capability: GenerationCapability | undefined, references: GenerationReference[] = []): VideoMode {
   if (capability === 'first-last-frame') return 'first-last-frame'
-  if ((!capability || capability === 'generate-audio') && references.some((reference) => reference.role === 'last_frame')) return 'first-last-frame'
+  if ((!capability || capability === 'generate-audio') && references.some((reference) => reference.type === 'image' && reference.role === 'last_frame')) return 'first-last-frame'
   return 'reference-to-video'
 }
 
@@ -46,7 +46,8 @@ export function normalizeVideoModeConfig(config: GenerationVariantConfig, model?
   const capability = resolveVideoMode(config.capability, config.references)
   const assigned = new Set(config.references.filter((reference) => reference.type === 'image').map((reference) => reference.role))
   const references = config.references.map((reference): GenerationReference => {
-    if (reference.type !== 'image') return reference
+    if (reference.type === 'video') return { ...reference, role: 'reference_video' }
+    if (reference.type === 'audio') return { ...reference, role: reference.role === 'reference_voice' ? 'reference_voice' : 'reference_audio' }
     if (capability === 'reference-to-video') return { ...reference, role: 'reference_image' }
     if (reference.role === 'first_frame' || reference.role === 'last_frame') return reference
     const role = !assigned.has('first_frame') ? 'first_frame' : !assigned.has('last_frame') ? 'last_frame' : 'reference_image'

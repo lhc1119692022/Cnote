@@ -133,6 +133,10 @@ export function APIKeysManager({ embedded = false, onClose }: { embedded?: boole
   const [mediaObjects, setMediaObjects] = useState<MediaStorageObject[]>([])
   const [mediaObjectsCursor, setMediaObjectsCursor] = useState<string | undefined>()
   const [mediaDeletingKey, setMediaDeletingKey] = useState<string | null>(null)
+  const [mediaObjectsVisible, setMediaObjectsVisible] = useState(false)
+  const [mediaClearing, setMediaClearing] = useState(false)
+  const mediaClearingRef = useRef(false)
+  const mediaScopeRef = useRef(0)
   const [mediaAutoError, setMediaAutoError] = useState('')
   const mediaObjectsRequestRef = useRef(0)
   const mediaObjectCountRef = useRef(50)
@@ -227,7 +231,7 @@ export function APIKeysManager({ embedded = false, onClose }: { embedded?: boole
     let lastFocusAttemptAt = 0
     let dirty = false
     const refresh = async (includeUsage = true) => {
-      if (disposed || document.visibilityState === 'hidden') return
+      if (disposed || mediaClearingRef.current || document.visibilityState === 'hidden') return
       if (running) { refreshAgain = true; return }
       running = true
       const requestId = ++mediaObjectsRequestRef.current
@@ -365,6 +369,7 @@ export function APIKeysManager({ embedded = false, onClose }: { embedded?: boole
   }
 
   const loadMediaObjects = async (cursor?: string) => {
+    if (mediaClearingRef.current) return
     const requestId = ++mediaObjectsRequestRef.current
     try {
       const result = await mediaStorage.listObjects({
@@ -375,12 +380,14 @@ export function APIKeysManager({ embedded = false, onClose }: { embedded?: boole
       if (requestId !== mediaObjectsRequestRef.current) return
       setMediaObjects((current) => Array.from(new Map((cursor ? [...current, ...result.objects] : result.objects).map((object) => [object.key, object])).values()))
       setMediaObjectsCursor(result.cursor)
+      setMediaObjectsVisible(true)
     } catch (error) {
       setMediaMessage(error instanceof Error ? error.message : '无法读取远端对象')
     }
   }
 
   const deleteMediaObject = async (object: MediaStorageObject) => {
+    if (mediaClearingRef.current) return
     if (!await askConfirmation(`确定删除远端对象“${object.originalName || object.key}”吗？删除后，使用该地址的任务将无法再读取素材。`)) return
     setMediaDeletingKey(object.key)
     try {
@@ -393,6 +400,54 @@ export function APIKeysManager({ embedded = false, onClose }: { embedded?: boole
       setMediaMessage(error instanceof Error ? error.message : '删除远端对象失败')
     } finally {
       setMediaDeletingKey(null)
+    }
+  }
+
+  useEffect(() => {
+    mediaScopeRef.current++
+    mediaObjectsRequestRef.current++
+    setMediaObjectsVisible(false)
+    setMediaObjects([])
+    setMediaObjectsCursor(undefined)
+  }, [mediaBaseURL, mediaAccessToken, activeTab])
+
+  const clearMediaObjects = async () => {
+    if (mediaClearingRef.current || mediaDeletingKey || !mediaObjectsVisible || !mediaObjects.length) return
+    mediaClearingRef.current = true
+    setMediaClearing(true)
+    const draft = { baseURL: mediaBaseURL, accessToken: mediaAccessToken }
+    const scope = mediaScopeRef.current
+    let deleted = 0
+    try {
+      if (!await askConfirmation('确定清理此上传服务的全部远端对象吗？包括尚未加载的分页对象。删除不可恢复，使用这些地址的 Flow 或任务将无法再读取素材。')) return
+      if (scope !== mediaScopeRef.current) return
+      mediaObjectsRequestRef.current++
+      const objects = new Map<string, MediaStorageObject>()
+      const cursors = new Set<string>()
+      let cursor: string | undefined
+      do {
+        const page = await mediaStorage.listObjects({ limit: 50, cursor, draft })
+        for (const object of page.objects) objects.set(object.key, object)
+        cursor = page.cursor
+        if (cursor && cursors.has(cursor)) throw new Error('远端分页游标重复，已停止清理。')
+        if (cursor) cursors.add(cursor)
+      } while (cursor)
+      for (const object of objects.values()) {
+        if (scope !== mediaScopeRef.current) throw new Error('上传服务或页面已切换，清理已停止')
+        await mediaStorage.deleteObject(object.key, draft)
+        deleted++
+        mediaObjectsRequestRef.current++
+        setMediaObjects((current) => current.filter((item) => item.key !== object.key))
+      }
+      setMediaObjectsCursor(undefined)
+      setMediaMessage(`已清理 ${deleted} 个远端对象`)
+    } catch (error) {
+      setMediaMessage(`已清理 ${deleted} 个对象；${error instanceof Error ? error.message : '清理失败'}，剩余对象已保留。`)
+    } finally {
+      await mediaStorage.refreshUsage(draft).catch(() => undefined)
+      mediaObjectsRequestRef.current++
+      mediaClearingRef.current = false
+      setMediaClearing(false)
     }
   }
 
@@ -681,9 +736,12 @@ export function APIKeysManager({ embedded = false, onClose }: { embedded?: boole
   const content = (
     <>
       <main className="flex h-full w-full min-w-0 flex-col overflow-hidden">
-        <header className="flex h-[60px] shrink-0 items-center justify-between border-b border-border bg-card px-6">
+        <header className="flex min-h-[60px] shrink-0 flex-wrap items-center justify-between gap-2 border-b border-border bg-card px-6 py-2">
           <h1 className="text-[15px] font-semibold text-foreground">{embedded ? '渠道设置' : '设置'}</h1>
           <div className="flex items-center gap-2">
+            {!embedded && <nav aria-label="设置分类" className="flex flex-wrap gap-2">
+              {([['channels', '文本渠道'], ['generation', '生成渠道'], ['content-service', '内容解析服务'], ['storage', '本地存储']] as const).map(([tab, label]) => <button key={tab} type="button" aria-pressed={activeTab === tab} onClick={() => selectTab(tab)} className={activeTab === tab ? 'rounded-lg bg-primary px-3 py-1.5 text-[13px] text-primary-foreground' : 'rounded-lg border border-border bg-background px-3 py-1.5 text-[13px] text-muted-foreground hover:bg-muted dark:border-0 dark:bg-secondary'}>{label}</button>)}
+            </nav>}
             {!embedded && activeTab === 'channels' && (
               <>
                 <input ref={importInputRef} type="file" accept="application/json,.json" className="hidden" style={{ display: 'none' }} onChange={handleImportConfiguration} />
@@ -703,12 +761,6 @@ export function APIKeysManager({ embedded = false, onClose }: { embedded?: boole
         </header>
 
         <div className="flex-1 overflow-auto p-6">
-          {!embedded && <div className="mb-5 flex flex-wrap gap-2">
-            <button type="button" onClick={() => selectTab('channels')} className={activeTab === 'channels' ? 'rounded-lg bg-primary px-3 py-1.5 text-[13px] text-primary-foreground' : 'rounded-lg border border-border bg-background px-3 py-1.5 text-[13px] text-muted-foreground hover:bg-muted dark:border-0 dark:bg-secondary'}>文本渠道</button>
-            <button type="button" onClick={() => selectTab('generation')} className={activeTab === 'generation' ? 'rounded-lg bg-primary px-3 py-1.5 text-[13px] text-primary-foreground' : 'rounded-lg border border-border bg-background px-3 py-1.5 text-[13px] text-muted-foreground hover:bg-muted dark:border-0 dark:bg-secondary'}>生成渠道</button>
-            <button type="button" onClick={() => selectTab('content-service')} className={activeTab === 'content-service' ? 'rounded-lg bg-primary px-3 py-1.5 text-[13px] text-primary-foreground' : 'rounded-lg border border-border bg-background px-3 py-1.5 text-[13px] text-muted-foreground hover:bg-muted dark:border-0 dark:bg-secondary'}>内容解析服务</button>
-            <button type="button" onClick={() => selectTab('storage')} className={activeTab === 'storage' ? 'rounded-lg bg-primary px-3 py-1.5 text-[13px] text-primary-foreground' : 'rounded-lg border border-border bg-background px-3 py-1.5 text-[13px] text-muted-foreground hover:bg-muted dark:border-0 dark:bg-secondary'}>本地存储</button>
-          </div>}
 
           {(embedded ? channelFilter !== 'generation' : activeTab === 'channels') && (
             <section>
@@ -832,8 +884,8 @@ export function APIKeysManager({ embedded = false, onClose }: { embedded?: boole
                 {mediaAutoError && <p role="status" className="mt-2 text-[11px] text-destructive">{mediaAutoError}</p>}
                 {mediaStorage.usage && <div className="mt-5 grid gap-3 sm:grid-cols-2"><div className="rounded-lg bg-muted/50 px-4 py-3"><p className="text-[11px] text-muted-foreground">远端对象</p><p className="mt-1.5 text-lg font-medium">{mediaStorage.usage.objectCount}</p></div><div className="rounded-lg bg-muted/50 px-4 py-3"><p className="text-[11px] text-muted-foreground">远端占用</p><p className="mt-1.5 text-lg font-medium">{formatBytes(mediaStorage.usage.totalBytes)}</p></div></div>}
 
-                <div className="mt-5 flex flex-wrap items-center justify-between gap-2 border-t border-border pt-4"><div><h3 className="text-[12px] font-medium">远端对象</h3><p className="mt-1 text-[11px] text-muted-foreground">只删除你确认不再被任何 Flow 或任务使用的对象。</p></div><Button variant="outline" size="sm" className="gap-1.5" disabled={!mediaBaseURL.trim()} onClick={() => void loadMediaObjects()}><RefreshCw className="h-3.5 w-3.5" />查看对象</Button></div>
-                {mediaObjects.length > 0 && <div className="mt-3 space-y-2">{mediaObjects.map((object) => <article key={object.key} title={object.key} className="flex items-center justify-between gap-3 rounded-lg border border-border bg-background px-3 py-2.5"><div className="min-w-0"><p className="truncate text-[12px] font-medium">{object.originalName || object.key}</p><p className="mt-1 truncate text-[10px] text-muted-foreground">{formatBytes(object.size)}{object.uploaded ? ` · ${new Date(object.uploaded).toLocaleString()}` : ''}</p></div><Button variant="outline" size="icon-sm" aria-label={`删除远端对象 ${object.originalName || object.key}`} disabled={mediaDeletingKey === object.key} onClick={() => void deleteMediaObject(object)}><Trash2 className="h-3.5 w-3.5 text-destructive" /></Button></article>)}{mediaObjectsCursor && <Button variant="secondary" size="sm" className="mt-2 w-full" onClick={() => void loadMediaObjects(mediaObjectsCursor)}>加载更多</Button>}</div>}
+                <div className="mt-5 flex flex-wrap items-center justify-between gap-2 border-t border-border pt-4"><div><h3 className="text-[12px] font-medium">远端对象</h3><p className="mt-1 text-[11px] text-muted-foreground">只删除你确认不再被任何 Flow 或任务使用的对象。</p></div><div className="flex gap-2"><Button variant="outline" size="sm" className="gap-1.5 text-destructive" disabled={!mediaObjectsVisible || !mediaObjects.length || mediaClearing || Boolean(mediaDeletingKey)} onClick={() => void clearMediaObjects()}><Trash2 className="h-3.5 w-3.5" />{mediaClearing ? '清理中…' : '全部清理'}</Button><Button variant="outline" size="sm" className="gap-1.5" disabled={!mediaBaseURL.trim() || mediaClearing} onClick={() => mediaObjectsVisible ? setMediaObjectsVisible(false) : void loadMediaObjects()}><RefreshCw className="h-3.5 w-3.5" />{mediaObjectsVisible ? '收起对象' : '查看对象'}</Button></div></div>
+                {mediaObjectsVisible && mediaObjects.length > 0 && <div className="mt-3 space-y-2">{mediaObjects.map((object) => <article key={object.key} title={object.key} className="flex items-center justify-between gap-3 rounded-lg border border-border bg-background px-3 py-2.5"><div className="min-w-0"><p className="truncate text-[12px] font-medium">{object.originalName || object.key}</p><p className="mt-1 truncate text-[10px] text-muted-foreground">{formatBytes(object.size)}{object.uploaded ? ` · ${new Date(object.uploaded).toLocaleString()}` : ''}</p></div><Button variant="outline" size="icon-sm" aria-label={`删除远端对象 ${object.originalName || object.key}`} disabled={mediaClearing || Boolean(mediaDeletingKey)} onClick={() => void deleteMediaObject(object)}><Trash2 className="h-3.5 w-3.5 text-destructive" /></Button></article>)}{mediaObjectsCursor && <Button variant="secondary" size="sm" className="mt-2 w-full" disabled={mediaClearing} onClick={() => void loadMediaObjects(mediaObjectsCursor)}>加载更多</Button>}</div>}
 
               </div>
 

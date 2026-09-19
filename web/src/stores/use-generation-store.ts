@@ -7,7 +7,7 @@ import { decryptAPIKey, encryptAPIKey } from '@/lib/secure-storage'
 import { deleteDesktopSecret, syncDesktopSecretInBackground } from '@/lib/desktop-secrets'
 import { normalizeMediaTransport } from '@/lib/generation/media-policy'
 import type { GenerationCapability } from '@/types/flow'
-import { is808VideoChannel, resolve808WanModel, GENERATION_CHANNEL_PRESETS, VIDEO_808_DEFAULT_BASE_URL, VIDEO_MODEL_CATALOG } from '@/lib/generation/video-catalog'
+import { is808VideoChannel, resolve808WanModel, resolveKacangModel, GENERATION_CHANNEL_PRESETS, VIDEO_808_DEFAULT_BASE_URL, VIDEO_MODEL_CATALOG } from '@/lib/generation/video-catalog'
 export { GENERATION_CHANNEL_PRESETS } from '@/lib/generation/video-catalog'
 
 export type GenerationProviderId = 'openai' | 'google' | 'video' | 'custom'
@@ -30,6 +30,12 @@ export interface GenerationVideoRequestContract {
   audioReferencesField?: string
   generateAudioField?: string
   requiresPublicHttps?: boolean
+  referenceLimits?: Partial<Record<'image' | 'video' | 'audio', number>>
+  minReferenceImages?: number
+  requiresFramePair?: boolean
+  maxDurationByResolution?: Record<string, number>
+  referenceResolutions?: string[]
+  maxPromptLength?: number
 }
 
 export interface GenerationChannelPreset {
@@ -327,6 +333,8 @@ export function generationVideoRequestContractForModel(channel: GenerationChanne
   const adapter = generationAdapterForConfig(channel, adapterId)
   const wan = resolve808WanModel(channel, model?.id || '', adapter?.protocol || generationProtocolForChannel(channel))
   if (wan) return wan.videoRequestContract
+  const kacang = resolveKacangModel(channel, model?.id || '', adapter?.protocol || generationProtocolForChannel(channel))
+  if (kacang) return kacang.videoRequestContract
   const preset = generationPresetForId(channel.presetId)
   const contract = model?.videoRequestContract || adapter?.videoRequestContract || channel.videoRequestContract || preset?.videoRequestContract
   if (contract) return contract
@@ -604,7 +612,8 @@ export const useGenerationStore = create<GenerationState>()(
         const catalogs = [...(channel.modelCatalog || []), ...adapters.flatMap((adapter) => modelsForGenerationProtocol(adapter.protocol))]
         return (channel.modelIds || []).map((id) => {
           const owner = adapters.find((adapter) => (channel.modelCatalog || modelsForGenerationProtocol(adapter.protocol)).some((model) => model.id === id))
-          const catalogModel = resolve808WanModel(channel, id, owner?.protocol || adapters[0]?.protocol || generationProtocolForChannel(channel)) || catalogs.find((model) => model.id === id)
+          const protocol = owner?.protocol || adapters[0]?.protocol || generationProtocolForChannel(channel)
+          const catalogModel = resolve808WanModel(channel, id, protocol) || resolveKacangModel(channel, id, protocol) || catalogs.find((model) => model.id === id)
           return withOfficialMediaCapabilities(catalogModel
             ? { ...catalogModel, id, adapterId: owner?.id }
             : {

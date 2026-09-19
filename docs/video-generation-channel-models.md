@@ -16,13 +16,15 @@
 ## 当前预设
 
 - `video-808relay`：对应 808Relay 视频调用文档，默认地址为 `https://api.808relay.com`，包含文档确认的六个模型，使用 `seconds`、`reference_images`、`generate_audio` 等字段。
-- `video-kacang`：对应 `D:\Downloads\kacang-api-docs.md`，默认地址为 `https://newapi.prompt-hubs.com/v1`，包含文档列出的二十个视频模型。模型合同可以单独指定，例如 Doubao 使用 `reference_images`，MiniMax/S 系列使用文档中的 camelCase 字段。
+- `video-kacang`：对应在线公开目录 `https://newapi.prompt-hubs.com/docs` 的 `2026-09-19.008` 版本，默认地址为 `https://newapi.prompt-hubs.com/v1`，预设包含当前二十二个视频模型。MiniMax/S 使用公开 snake_case 参考字段；Doubao 使用 `start_frame` / `end_frame`、`reference_images` / `video_references` / `audio_reference`；Grok 使用 `image` 首帧及 `images` 参考图。旧 camelCase 是服务端兼容别名，不再作为新请求的首选格式。
 
 两套预设均为视频专用，默认不提供图片生成能力。`baseURL` 不是不可变配置；用户可以直接编辑它，模型 ID 也可以继续通过“拉取模型”或手动输入扩展。
 
 ## 新增模型或渠道
 
-视频输入素材规格现由独立官方模型档案决定，见 `docs/video-media-validation.md`。渠道目录的旧输入类型和素材数量不覆盖已配置的官方档案；同一模型跨渠道使用同样的规格。新增已知模型别名时同步维护 `official-media-rules.ts` 的映射，不修改其请求模型ID。渠道合同仍负责请求字段、地址和轮询。
+视频文件规格由独立官方模型档案决定，见 `docs/video-media-validation.md`。同一个底层模型复用文件检查规则；明确记录在渠道合同 `referenceLimits` 中的限制与官方数量限制取交集，不能被通用模型能力重新放开。历史目录的旧数量不自动成为渠道硬限制。新增已知模型别名时同步维护 `official-media-rules.ts` 的映射，不修改请求模型 ID。渠道合同负责请求字段、地址、轮询、成对帧和条件限制。
+
+`kacang-public-catalog.ts` 是经过筛选的公开参数快照，不在运行时下载或执行远程文档。已确认模型在模型列表、合同查询及提交时都会按渠道解析，因此已保存的旧目录与新拉取的模型也会更新；旧版本特有 ID 继续使用历史目录，不替换用户的模型列表或密钥。渠道隔离按选中的协议执行，不能把同名模型的 Kacang 字段套到 808Relay。详细来源、差异及未证实项见 `video-provider-contract-audit.md`。
 
 优先修改 `web/src/lib/generation/video-catalog.ts`：
 

@@ -96,12 +96,44 @@ const { generationChannelSupportsVariant } = load('stores/use-generation-store.t
   assert.equal(resolve808WanModel(legacy, 'wan-30'), undefined)
   useGenerationStore.setState({ channels: [] })
 }
+{
+  const { useGenerationStore, generationVideoRequestContractForModel } = load('stores/use-generation-store.ts')
+  const { resolveKacangModel } = load('lib/generation/video-catalog.ts')
+  const stale = { id: 'S-2.0mini-线路三', capabilities: ['reference-to-video'], inputTypes: ['image', 'video', 'audio'], videoRequestContract: { imageReferencesField: 'input_reference', videoReferencesField: 'referenceVideos' } }
+  const legacy = { id: 'kacang-legacy', providerId: 'video', protocol: 'video-kacang', baseURL: 'https://newapi.prompt-hubs.com/v1', modelIds: [stale.id, 'grok-imagine-video', 'doubao-seedance-2.0', 'S-2.0官转933-线路三'], modelCatalog: [stale] }
+  useGenerationStore.setState({ channels: [legacy] })
+  const resolved = useGenerationStore.getState().getModels(legacy.id)
+  assert.deepEqual(resolved[0].inputTypes, ['image', 'audio'])
+  assert.equal(resolved[0].maxVideos, 0, 'official Seedance capabilities cannot undo an explicit channel exclusion')
+  assert.equal(resolved[1].videoRequestContract.imageReferencesField, 'images', 'fetched Grok IDs get their real contract')
+  assert.equal(resolved[2].allowsFirstFrameOnly, false, 'Doubao on Kacang requires paired frames')
+  assert.equal(resolved[3].maxImages, 9, 'official Seedance rules recognize the live 官转 alias')
+  assert.equal(generationVideoRequestContractForModel(legacy, stale).imageReferencesField, 'reference_images')
+  assert.equal(resolveKacangModel({ ...legacy, protocol: 'video-api' }, stale.id).id, stale.id)
+  assert.equal(resolveKacangModel({ ...legacy, protocol: 'video-api', baseURL: 'https://other.test' }, stale.id), undefined)
+  assert.equal(resolveKacangModel({ ...legacy, protocol: 'video-808relay' }, stale.id), undefined)
+  assert.equal(resolveKacangModel(legacy, 'S-unknown-model'), undefined)
+  useGenerationStore.setState({ channels: [] })
+}
 const {
   generationRequestContextFromSnapshot,
   generationRunStatusFromTasks,
   generationTaskResumeBlockReason,
   isGenerationTaskResumable,
 } = load('lib/generation/resume-context.ts')
+
+{
+  const { generationVideoRequestContractForModel } = load('stores/use-generation-store.ts')
+  const mixedChannel = {
+    id: 'mixed-contracts', providerId: 'video', protocol: 'video-808relay', presetId: 'video-808relay',
+    modelIds: ['custom-video'], modelCatalog: [{ id: 'custom-video', adapterId: 'kacang', capabilities: ['reference-to-video'] }],
+    videoRequestContract: { durationField: 'wrong-channel-field' },
+    adapters: [{ id: '808', protocol: 'video-808relay' }, { id: 'kacang', protocol: 'video-kacang' }],
+  }
+  const contract = generationVideoRequestContractForModel(mixedChannel, mixedChannel.modelCatalog[0])
+  assert.equal(contract.durationField, 'wrong-channel-field', 'stale model adapter metadata must not switch the selected channel protocol')
+  assert.equal(generationVideoRequestContractForModel(mixedChannel, mixedChannel.modelCatalog[0], '808').durationField, 'wrong-channel-field')
+}
 
 function channel(extra) {
   return {

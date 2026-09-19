@@ -30,6 +30,7 @@
     "test:video-api:mock": "node scripts/verify-video-api-mock.mjs",
     "test:media-policy": "node scripts/verify-media-policy.mjs && node scripts/verify-media-upload-cache.mjs && node scripts/verify-media-storage-refresh.mjs && node scripts/verify-media-readiness.mjs",
     "test:video-media": "node scripts/verify-official-media-rules.mjs && node scripts/verify-video-input-validation.mjs",
+    "test:settings-media": "node scripts/verify-settings-media-actions.mjs",
     "test:video-media:browser": "node scripts/verify-media-browser.mjs",
     "test:video-media:electron": "node scripts/verify-media-runtime.mjs",
     "test:canvas-navigation": "node scripts/verify-canvas-navigation.mjs",

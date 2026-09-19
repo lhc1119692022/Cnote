@@ -72,6 +72,10 @@ export function GenerationChannelsManager({ embedded = false, openNewRequest = 0
   const [mediaTestMessage, setMediaTestMessage] = useState('')
   const [showProtocolMenu, setShowProtocolMenu] = useState(false)
   const protocolMenuRef = useRef<HTMLDivElement>(null)
+  const savingRef = useRef<Promise<GenerationChannel | undefined> | null>(null)
+  const mediaTestRunningRef = useRef(false)
+  const [isSaving, setIsSaving] = useState(false)
+  const [savedAPIKey, setSavedAPIKey] = useState('')
 
   const selectedProtocol = GENERATION_PROTOCOL_OPTIONS.find((item) => item.value === protocol) || { value: protocol, label: GENERATION_PROTOCOL_LABELS[protocol], description: '', group: 'video' as const }
   const channelPresets = GENERATION_CHANNEL_PRESETS || []
@@ -102,6 +106,7 @@ export function GenerationChannelsManager({ embedded = false, openNewRequest = 0
   }, [showProtocolMenu])
 
   const clearDialogFields = useCallback(() => {
+    setSavedAPIKey('')
     setEditingChannelId(null)
     setPresetId('')
     setChannelName('')
@@ -137,6 +142,7 @@ export function GenerationChannelsManager({ embedded = false, openNewRequest = 0
   }, [openNewRequest, openNewChannelDialog])
 
   const openEditChannelDialog = (channel: GenerationChannel) => {
+    setSavedAPIKey('')
     const nextProtocol = generationProtocolForChannel(channel)
     setEditingChannelId(channel.id)
     setPresetId(channel.presetId || nextProtocol)
@@ -206,7 +212,7 @@ export function GenerationChannelsManager({ embedded = false, openNewRequest = 0
     setCustomModelId('')
   }
 
-  const handleSaveChannel = async () => {
+  const persistChannel = async (closeDialog: boolean) => {
     const normalizedBaseURL = normalizeEndpoint(baseURL)
     const normalizedName = channelName.trim() || '生成渠道'
     if (!normalizedBaseURL) {
@@ -227,10 +233,6 @@ export function GenerationChannelsManager({ embedded = false, openNewRequest = 0
     }
     if (supportsVideo && requiresPublicHttps && mediaTransport !== 'custom') {
       showMessage('当前预设要求公网 HTTPS 参考素材，请使用自定义媒体存储。')
-      return
-    }
-    if (modelIds.length > 0 && supportsVideo && mediaTransport === 'custom' && !hasConfiguredMediaStorage) {
-      showMessage('请先在“本地存储”中配置自定义上传服务')
       return
     }
 
@@ -267,6 +269,7 @@ export function GenerationChannelsManager({ embedded = false, openNewRequest = 0
       savedChannel = useGenerationStore.getState().getChannel(editingChannelId)
     } else {
       savedChannel = addChannel({ ...updates, apiKey: secretValue })
+      setEditingChannelId(savedChannel.id)
     }
     // The desktop network layer intentionally rejects plaintext sensitive
     // headers. Wait for the SafeStorage write to finish before closing the
@@ -275,50 +278,40 @@ export function GenerationChannelsManager({ embedded = false, openNewRequest = 0
       try {
         await syncDesktopSecret(savedChannel.secretName, secretValue)
       } catch {
-        showMessage('API Key 未能保存到桌面安全存储，请重试。')
+        setMediaTestState('error')
+        setMediaTestMessage('API Key 未能保存到桌面安全存储，请重试。')
         return
       }
     }
-    resetChannelDialog()
+    setSavedAPIKey(secretValue)
+    if (closeDialog) resetChannelDialog()
+    return savedChannel
+  }
+
+  const handleSaveChannel = async (closeDialog = true) => {
+    if (savingRef.current) return savingRef.current
+    setIsSaving(true)
+    const pending = persistChannel(closeDialog)
+    savingRef.current = pending
+    try { return await pending } finally { savingRef.current = null; setIsSaving(false) }
   }
 
   const handleTestMediaUpload = async () => {
-    if (!supportsVideo || !transportStatus.canTestUpload) return
-    if (!editingChannelId) {
-      setMediaTestState('error')
-      setMediaTestMessage('请先保存渠道，再验证上传接口。')
-      return
-    }
-    if (apiKey.trim()) {
-      setMediaTestState('error')
-      setMediaTestMessage('请先保存刚修改的密钥，再验证上传接口。')
-      return
-    }
-    const current = channels.find((channel) => channel.id === editingChannelId)
-    if (!current) return
-    const candidate: GenerationChannel = {
-      ...current,
-      baseURL: normalizeEndpoint(baseURL),
-      mediaTransport,
-      protocol,
-      adapters: [{
-        id: protocol,
-        protocol,
-        label: GENERATION_PROTOCOL_LABELS[protocol],
-        supportsImage: protocolSupportsImage(protocol),
-        supportsVideo: protocolSupportsVideo(protocol),
-        mediaTransport,
-      }],
-    }
-    setMediaTestState('testing')
-    setMediaTestMessage('正在验证上传接口…')
+    if (!supportsVideo || !transportStatus.canTestUpload || savingRef.current || mediaTestRunningRef.current) return
+    mediaTestRunningRef.current = true
     try {
-      const result = await testGenerationMediaUpload(candidate, protocol)
+      const savedChannel = await handleSaveChannel(false)
+      if (!savedChannel) return
+      setMediaTestState('testing')
+      setMediaTestMessage('正在验证上传接口…')
+      const result = await testGenerationMediaUpload(savedChannel, protocol)
       setMediaTestState('success')
       setMediaTestMessage(result.message || '上传完成；测试文件需按存储服务的保留策略清理。')
     } catch (error) {
       setMediaTestState('error')
       setMediaTestMessage(error instanceof Error ? error.message : '上传接口验证失败')
+    } finally {
+      mediaTestRunningRef.current = false
     }
   }
 
@@ -350,6 +343,7 @@ export function GenerationChannelsManager({ embedded = false, openNewRequest = 0
                     <div className="flex items-center gap-2">
                       <h2 className="truncate text-[14px] font-semibold text-foreground">{channel.name}</h2>
                       {!configured && <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">未配置</span>}
+                      {generationChannelSupportsVariant(channel, 'video') && !hasCustomMediaStorage && !channel.mediaUploadURL && <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">上传服务未连接</span>}
                     </div>
                     <p className="mt-1.5 truncate text-[12px] text-muted-foreground">{GENERATION_PROTOCOL_LABELS[generationProtocolForChannel(channel)]} · {channel.modelIds?.length || 0} 个模型 · {scopeLabel || '未选择节点'} · {channel.baseURL || '未设置接口地址'}</p>
                   </div>
@@ -364,7 +358,7 @@ export function GenerationChannelsManager({ embedded = false, openNewRequest = 0
         )}
       </main>
 
-      <Dialog open={showChannelDialog} onOpenChange={(open) => !open && resetChannelDialog()}>
+      <Dialog open={showChannelDialog} onOpenChange={(open) => !open && !isSaving && mediaTestState !== 'testing' && resetChannelDialog()}>
         <DialogContent className="max-h-[calc(100dvh-2rem)] overflow-y-auto" style={{ width: 'min(560px, calc(100vw - 2rem))', maxWidth: 'none' }}>
           <DialogHeader><DialogTitle className="text-base">{editingChannelId ? '编辑生成渠道' : '新增生成渠道'}</DialogTitle></DialogHeader>
 
@@ -397,13 +391,13 @@ export function GenerationChannelsManager({ embedded = false, openNewRequest = 0
               <select id="generation-media-transport" aria-label="本地素材传输方式" value="custom" onChange={() => setMediaTransport('custom')} className="h-9 min-w-0 flex-1 rounded-lg border border-border bg-background px-2 text-[12px] text-foreground outline-none focus:border-primary focus:ring-2 focus:ring-ring/20">
                 <option value="custom">自定义媒体存储</option>
               </select>
-              <Button type="button" variant="outline" size="sm" className="shrink-0 gap-1.5" title={transportStatus.canTestUpload ? '仅验证媒体存储，不提交模型生成任务' : transportStatus.message} onClick={() => void handleTestMediaUpload()} disabled={!transportStatus.canTestUpload || mediaTestState === 'testing'}><Check className="h-3.5 w-3.5" />{mediaTestState === 'testing' ? '验证中' : '验证上传'}</Button>
+              <Button type="button" variant="outline" size="sm" className="shrink-0 gap-1.5" title={transportStatus.canTestUpload ? '仅验证媒体存储，不提交模型生成任务' : transportStatus.message} onClick={() => void handleTestMediaUpload()} disabled={isSaving || !transportStatus.canTestUpload || mediaTestState === 'testing'}><Check className="h-3.5 w-3.5" />{mediaTestState === 'testing' ? '验证中' : '验证上传'}</Button>
             </div>
             {!transportStatus.canTestUpload && <p role="status" className="mt-2 text-[11px] text-muted-foreground">{transportStatus.message}</p>}
             {mediaTestMessage && <p role="status" className={`mt-2 min-w-0 break-words text-[11px] ${mediaTestState === 'success' ? 'text-emerald-700' : mediaTestState === 'error' ? 'text-destructive' : 'text-muted-foreground'}`} title={mediaTestMessage}>{mediaTestMessage}</p>}
           </div>}
 
-          <div className="mt-4 text-[13px] text-muted-foreground"><span className="mb-2 flex items-center gap-1.5 font-medium"><KeyRound className="h-3.5 w-3.5" />API Key <span className="font-normal">{hasExistingApiKey ? '（已配置，留空保持不变）' : apiKey.trim() ? '（待保存）' : '（尚未填写）'}</span></span><input type="password" value={apiKey} onChange={(event) => setAPIKey(event.target.value)} placeholder={hasExistingApiKey ? '留空保持现有密钥' : '请输入 API Key'} className="h-10 w-full rounded-lg border border-border bg-background px-3 text-foreground outline-none focus:border-primary focus:ring-2 focus:ring-ring/20" /></div>
+          <div className="mt-4 text-[13px] text-muted-foreground"><span className="mb-2 flex items-center gap-1.5 font-medium"><KeyRound className="h-3.5 w-3.5" />API Key <span className="font-normal">{isSaving ? '（保存中…）' : apiKey.trim() ? savedAPIKey === apiKey.trim() ? '（已保存）' : '（待保存）' : hasExistingApiKey ? '（已配置，留空保持不变）' : '（尚未填写）'}</span></span><input type="password" value={apiKey} onChange={(event) => setAPIKey(event.target.value)} placeholder={hasExistingApiKey ? '留空保持现有密钥' : '请输入 API Key'} className="h-10 w-full rounded-lg border border-border bg-background px-3 text-foreground outline-none focus:border-primary focus:ring-2 focus:ring-ring/20" /></div>
           <div className="mt-5"><div className="flex items-center justify-between gap-3"><div><h3 className="text-[13px] font-medium">渠道模型</h3><p className="mt-1 text-[11px] text-muted-foreground">可从接口拉取模型；无法拉取时仍可手动添加模型 ID。</p></div><Button type="button" variant="secondary" size="sm" className="shrink-0 gap-1.5" disabled={isFetchingModels} onClick={() => void handleFetchModels()}><RefreshCw className={`h-3.5 w-3.5 ${isFetchingModels ? 'animate-spin' : ''}`} />拉取模型</Button></div>
             {(availableModelIds.length > 0 || modelFetchMessage) && (
               <div className={`mt-3 min-h-[52px] rounded-lg border px-3 py-3 text-[11px] ${availableModelIds.length ? 'border-border bg-background' : 'border-dashed border-border text-muted-foreground'}`}>
@@ -415,7 +409,7 @@ export function GenerationChannelsManager({ embedded = false, openNewRequest = 0
             <div className="mt-2 flex gap-2"><input value={customModelId} onChange={(event) => setCustomModelId(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); addCustomModel() } }} placeholder="手动输入模型 ID" className="h-9 min-w-0 flex-1 rounded-lg border border-border bg-background px-3 text-[12px] text-foreground outline-none focus:border-primary focus:ring-2 focus:ring-ring/20" /><Button variant="secondary" size="sm" onClick={addCustomModel}>添加模型</Button></div>
             {modelIds.length === 0 && <p className="mt-2 text-[11px] text-muted-foreground">已选 0 个模型</p>}</div>
 
-          <div className="mt-6 flex justify-end gap-3"><Button variant="secondary" onClick={resetChannelDialog}>取消</Button><Button onClick={handleSaveChannel}>{editingChannelId ? '保存' : '添加生成渠道'}</Button></div>
+          <div className="mt-6 flex justify-end gap-3"><Button variant="secondary" disabled={isSaving || mediaTestState === 'testing'} onClick={resetChannelDialog}>关闭</Button><Button disabled={isSaving || mediaTestState === 'testing'} onClick={() => void handleSaveChannel()}>{editingChannelId ? '保存' : '添加生成渠道'}</Button></div>
         </DialogContent>
       </Dialog>
     </div>

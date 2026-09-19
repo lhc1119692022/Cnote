@@ -117,22 +117,24 @@ export function officialMediaProfile(modelId?: string): OfficialMediaProfile | u
   const id = modelId?.trim().toLowerCase().split('/').pop() || ''
   if (/^wan[-_. ]?3(?:\.0)?(?:$|[-_])/.test(id)) return OFFICIAL_MEDIA_PROFILES['wan-3']
   if (/^minimax[-_ ]h3(?:$|[-_])/.test(id)) return OFFICIAL_MEDIA_PROFILES['minimax-h3']
-  if (/^(?:(?:doubao-)?seedance[-_]|sd[-_]|s-)(?:满血)?2\.5(?:$|[-_])/.test(id)) return OFFICIAL_MEDIA_PROFILES['seedance-2.5']
-  if (/^(?:(?:doubao-)?seedance[-_]|sd[-_]|s-)(?:满血)?2(?:\.0)?(?:$|[-_]|fast|mini|满血)/.test(id)) return OFFICIAL_MEDIA_PROFILES['seedance-2.0']
+  if (/^(?:(?:doubao-)?seedance[-_ ]?|sd[-_ ]?|s[-_])(?:满血)?2[._-]5(?:$|[-_ ]|fast|mini|满血|高转|官转)/.test(id)) return OFFICIAL_MEDIA_PROFILES['seedance-2.5']
+  if (/^(?:(?:doubao-)?seedance[-_ ]?|sd[-_ ]?|s[-_])(?:满血)?2(?:[._-]0)?(?:$|[-_ ]|fast|mini|满血|高转|官转)/.test(id) && !/2[._-][1-9]/.test(id)) return OFFICIAL_MEDIA_PROFILES['seedance-2.0']
   return undefined
 }
 
 export function withOfficialMediaCapabilities(model: GenerationModel): GenerationModel {
   const profile = officialMediaProfile(model.id)
   if (!profile) return model
+  const limits = model.videoRequestContract?.referenceLimits
+  const limitFor = (type: MediaKind) => profile.maxCounts[type] === undefined ? limits?.[type] : Math.min(profile.maxCounts[type], limits?.[type] ?? Infinity)
   return {
     ...model,
-    inputTypes: ['image', 'video', 'audio'],
-    maxImages: profile.maxCounts.image,
-    maxVideos: profile.maxCounts.video,
-    maxAudios: profile.maxCounts.audio,
+    inputTypes: (['image', 'video', 'audio'] as const).filter((type) => limits?.[type] !== 0),
+    maxImages: limitFor('image'),
+    maxVideos: limitFor('video'),
+    maxAudios: limitFor('audio'),
     allowsAudioOnlyReference: true,
-    allowsFirstFrameOnly: true,
+    allowsFirstFrameOnly: !model.videoRequestContract?.requiresFramePair,
     capabilities: [...new Set<GenerationModel['capabilities'][number]>([
       ...model.capabilities, 'text-to-video', 'image-to-video', 'reference-to-video', 'first-last-frame', 'video-reference', 'audio-reference',
     ])],

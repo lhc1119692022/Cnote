@@ -12,7 +12,7 @@ import { resolveMediaTransport, assertGenerationRequestSize, assertMediaLifetime
 import { officialMediaProfile, officialRequestLimitError, withOfficialMediaCapabilities } from './official-media-rules'
 import { validateOfficialMediaReferences } from './media-inspection'
 import { ensureDesktopSecret, syncDesktopSecret } from '@/lib/desktop-secrets'
-import { is808VideoChannel, resolve808WanModel } from './video-catalog'
+import { is808VideoChannel, resolve808WanModel, resolveKacangModel, seedance808RequestMode } from './video-catalog'
 import { parseRequestDiagnostics, type GenerationRequestDiagnostics } from './request-diagnostics'
 
 export interface GenerationRequestContext {
@@ -135,6 +135,13 @@ function validateVideoConfig(model: GenerationModel, config: GenerationVariantCo
   if (!inferredVideoModel && model.allowedDurations?.length && !model.allowedDurations.includes(seconds)) throw new Error(`${model.name} 时长只能为 ${model.allowedDurations.join(' 或 ')} 秒`)
   if (!inferredVideoModel && (model.minDuration && seconds < model.minDuration || model.maxDuration && seconds > model.maxDuration)) throw new Error(`${model.name} 时长必须为 ${model.minDuration}-${model.maxDuration} 秒`)
   const resolution = videoResolutionForModel(config.resolution, model)
+  const contract = model.videoRequestContract
+  const maxDuration = contract?.maxDurationByResolution?.[resolution.toLowerCase()]
+  if (maxDuration !== undefined && seconds > maxDuration) throw new Error(`${model.name} 在 ${resolution} 下最长 ${maxDuration} 秒`)
+  const referenceImages = config.references.filter((reference) => reference.type === 'image' && reference.role !== 'first_frame' && reference.role !== 'last_frame')
+  if (referenceImages.length < (contract?.minReferenceImages || 0)) throw new Error(`${model.name} 至少需要 ${contract?.minReferenceImages} 张参考图片`)
+  if (referenceImages.length && contract?.referenceResolutions && !contract.referenceResolutions.includes(resolution.toLowerCase())) throw new Error(`${model.name} 参考图模式仅支持 ${contract.referenceResolutions.join('、')}，请调整分辨率`)
+  if (contract?.maxPromptLength && Array.from(config.prompt).length > contract.maxPromptLength) throw new Error(`${model.name} 提示词最多 ${contract.maxPromptLength} 个字符`)
   if (!inferredVideoModel && !model.allowCustomResolution && model.resolutions?.length && !model.resolutions.some((item) => normalizeVideoResolution(item).toLowerCase() === normalizeVideoResolution(resolution).toLowerCase())) throw new Error(`${model.name} 不支持 ${resolution}`)
   if (!inferredVideoModel && model.aspectRatios?.length && config.aspectRatio && !model.aspectRatios.includes(config.aspectRatio)) throw new Error(`${model.name} 不支持 ${config.aspectRatio} 画幅`)
   const images = config.references.filter((reference) => reference.type === 'image')
@@ -726,7 +733,7 @@ function ensureProviderReadableReferences(references: GenerationReference[], req
 
 export async function submitGenerationTask(context: GenerationRequestContext, signal?: AbortSignal, onPrepared?: (diagnostics: GenerationRequestDiagnostics) => void): Promise<GenerationTaskResponse> {
   const selectedProtocol = protocolFor(context.channel, context.config.adapterId, context.model.id)
-  const documented = context.variant === 'video' ? resolve808WanModel(context.channel, context.model.id, selectedProtocol) : undefined
+  const documented = context.variant === 'video' ? resolve808WanModel(context.channel, context.model.id, selectedProtocol) || resolveKacangModel(context.channel, context.model.id, selectedProtocol) : undefined
   if (documented) context = { ...context, model: documented }
   if (context.variant === 'video') context = { ...context, model: withOfficialMediaCapabilities(context.model) }
   const { model, variant } = context
@@ -745,6 +752,17 @@ export async function submitGenerationTask(context: GenerationRequestContext, si
   }
   const channel: GenerationChannel = { ...context.channel, protocol: protocolFor(context.channel, initialConfig.adapterId, model.id) }
   const videoContract = variant === 'video' ? generationVideoRequestContractForModel(channel, model, initialConfig.adapterId) : undefined
+  if (variant === 'video') {
+    for (const reference of initialConfig.references) {
+      const frameRole = reference.type === 'image' && (reference.role === 'first_frame' || reference.role === 'last_frame') ? reference.role : undefined
+      const field = frameRole === 'first_frame' ? videoContract?.firstFrameField
+        : frameRole === 'last_frame' ? videoContract?.lastFrameField
+          : reference.type === 'image' ? videoContract?.imageReferencesField
+            : reference.type === 'video' ? videoContract?.videoReferencesField : videoContract?.audioReferencesField
+      const label = frameRole === 'first_frame' ? '首帧' : frameRole === 'last_frame' ? '尾帧' : `参考${{ image: '图片', video: '视频', audio: '音频' }[reference.type]}`
+      if (!field) throw new GenerationStageError('validation', `${label}没有配置请求字段，已停止提交，未上传或丢弃素材`)
+    }
+  }
   await assertDesktopSecretReady(channel, initialConfig.adapterId)
   const baseURL = normalizeBaseURL(channel.baseURL)
   if (!baseURL || baseURL.startsWith('local://')) throw new Error('当前生成渠道没有可用的公网接口地址')
@@ -808,8 +826,8 @@ export async function submitGenerationTask(context: GenerationRequestContext, si
     requestURL = geminiGenerateContentEndpoint(baseURL, model.id)
     requestBody = JSON.stringify(body)
   } else if (variant === 'video' && isVideoGenerationProtocol(protocol)) {
-    const firstFrame = config.references.find((reference) => reference.role === 'first_frame')
-    const lastFrame = config.references.find((reference) => reference.role === 'last_frame')
+    const firstFrame = config.references.find((reference) => reference.type === 'image' && reference.role === 'first_frame')
+    const lastFrame = config.references.find((reference) => reference.type === 'image' && reference.role === 'last_frame')
     const images = config.references.filter((reference) => reference.type === 'image' && !['first_frame', 'last_frame'].includes(reference.role || '')).map(referenceURL)
     const videos = config.references.filter((reference) => reference.type === 'video').map(referenceURL)
     const audios = config.references.filter((reference) => reference.type === 'audio').map(referenceURL)
@@ -823,8 +841,10 @@ export async function submitGenerationTask(context: GenerationRequestContext, si
       if (count && !field) throw new GenerationStageError('validation', label + '没有配置请求字段，已停止提交，未丢弃素材')
     }
     const generateAudioField = generateAudioFieldName(model, videoContract)
+    const requestMode = seedance808RequestMode(channel, model.id, config, selectedProtocol)
     body = {
       model: model.id,
+      ...(requestMode ? { mode: requestMode } : {}),
       [videoContract?.durationField || 'seconds']: config.seconds || model.defaultDuration || 5,
       [videoContract?.resolutionField || 'resolution']: videoResolution || normalizeVideoResolution(config.resolution),
       [videoContract?.aspectRatioField || 'aspect_ratio']: config.aspectRatio || '16:9',

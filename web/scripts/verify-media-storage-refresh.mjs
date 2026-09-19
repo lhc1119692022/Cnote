@@ -39,6 +39,7 @@ const context = vm.createContext({
   activeTab: 'storage', mediaStorage: { baseURL: 'https://storage.test', enabled: true },
   useMediaStorageStore: { getState: () => storage },
   mediaObjectCountRef: { current: 50 }, mediaObjectsRequestRef: { current: 0 },
+  mediaClearingRef: { current: false },
   setMediaObjects: value => { objects = value }, setMediaObjectsCursor: () => {},
   setMediaAutoError: value => { errorMessage = value },
   MEDIA_STORAGE_CHANGED_EVENT: 'changed',

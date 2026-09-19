@@ -4,6 +4,9 @@ import type {
   GenerationModel,
   GenerationVideoRequestContract,
 } from '@/stores/use-generation-store'
+import type { GenerationVariantConfig } from '@/types/flow'
+import { officialMediaProfile } from './official-media-rules'
+import { KACANG_PUBLIC_MODELS } from './kacang-public-catalog'
 
 export const VIDEO_808_DEFAULT_BASE_URL = 'https://api.808relay.com'
 
@@ -22,16 +25,16 @@ const VIDEO_808_CONTRACT: GenerationVideoRequestContract = {
   generateAudioField: 'generate_audio',
 }
 
-const KACANG_CAMEL_CONTRACT: GenerationVideoRequestContract = {
+const KACANG_REFERENCE_CONTRACT: GenerationVideoRequestContract = {
   createPath: '/v1/videos',
   pollPath: '/v1/videos/{id}',
   contentPath: '/v1/videos/{id}/content',
   durationField: 'duration_seconds',
   resolutionField: 'resolution',
   aspectRatioField: 'aspect_ratio',
-  imageReferencesField: 'referenceImages',
-  videoReferencesField: 'referenceVideos',
-  audioReferencesField: 'referenceAudios',
+  imageReferencesField: 'reference_images',
+  videoReferencesField: 'reference_videos',
+  audioReferencesField: 'reference_audios',
   requiresPublicHttps: true,
 }
 
@@ -44,6 +47,7 @@ const KACANG_DOUBAO_CONTRACT: GenerationVideoRequestContract = {
   aspectRatioField: 'aspect_ratio',
   firstFrameField: 'start_frame',
   lastFrameField: 'end_frame',
+  requiresFramePair: true,
   imageReferencesField: 'reference_images',
   videoReferencesField: 'video_references',
   audioReferencesField: 'audio_reference',
@@ -94,10 +98,29 @@ export function is808VideoChannel(channel: Pick<GenerationChannel, 'protocol' | 
   try { return /^(api|va)[.]808relay[.]com$/i.test(new URL(channel.baseURL).hostname) } catch { return false }
 }
 
+export function seedance808RequestMode(channel: Pick<GenerationChannel, 'protocol' | 'baseURL' | 'presetId'>, modelId: string, config: GenerationVariantConfig, protocol = channel.protocol) {
+  if (!is808VideoChannel(channel, protocol) || !officialMediaProfile(modelId)?.id.startsWith('seedance-')) return undefined
+  if (config.capability === 'first-last-frame') {
+    return config.references.some((reference) => reference.type === 'image' && reference.role === 'last_frame')
+      ? 'first_last_frame'
+      : 'image_to_video'
+  }
+  return config.references.length ? 'multi_ref' : 'text_to_video'
+}
+
 export function resolve808WanModel(channel: Pick<GenerationChannel, 'protocol' | 'baseURL' | 'presetId'>, modelId: string, protocol = channel.protocol) {
   return is808VideoChannel(channel, protocol) && /(?:^|[^a-z0-9])wan[-_. ]?3(?![0-9])/i.test(modelId)
     ? { ...WAN_3_MODEL, id: modelId, name: modelId }
     : undefined
+}
+
+export function resolveKacangModel(channel: Pick<GenerationChannel, 'protocol' | 'baseURL' | 'presetId'>, modelId: string, protocol = channel.protocol) {
+  let matches = protocol === 'video-kacang'
+  if (protocol === 'video-api') {
+    try { matches = channel.presetId === 'video-kacang' || new URL(channel.baseURL).hostname === 'newapi.prompt-hubs.com' } catch { matches = channel.presetId === 'video-kacang' }
+  }
+  if (!matches) return undefined
+  return KACANG_PUBLIC_MODELS.find((model) => model.id === modelId) || LEGACY_KACANG_MODELS.find((model) => model.id === modelId)
 }
 
 function create808Model(input: Omit<GenerationModel, 'capabilities'> & { capabilities?: GenerationModel['capabilities'] }): GenerationModel {
@@ -178,7 +201,7 @@ function createKacangModel(
     videoRequestContract?: GenerationVideoRequestContract
   },
 ): GenerationModel {
-  const contract = input.videoRequestContract || KACANG_CAMEL_CONTRACT
+  const contract = input.videoRequestContract || KACANG_REFERENCE_CONTRACT
   const capabilities: GenerationModel['capabilities'] = input.capabilities || [
     ...videoCapabilities,
     ...(input.inputTypes?.includes('video') ? ['video-reference'] as GenerationModel['capabilities'] : []),
@@ -198,7 +221,7 @@ function createKacangModel(
 const KACANG_COMMON_RATIOS = ['21:9', '16:9', '4:3', '1:1', '3:4', '9:16']
 const KACANG_WIDE_RATIOS = ['21:9', '16:9', '3:2', '4:3', '1:1', '3:4', '2:3', '9:16']
 
-export const VIDEO_KACANG_MODELS: GenerationModel[] = [
+const LEGACY_KACANG_MODELS: GenerationModel[] = [
   createKacangModel({
     id: 'minimax_h3',
     name: 'Minimax H3',
@@ -411,6 +434,7 @@ export const VIDEO_KACANG_MODELS: GenerationModel[] = [
 ]
 
 export const VIDEO_MODEL_CATALOG = VIDEO_808_MODELS
+export const VIDEO_KACANG_MODELS = KACANG_PUBLIC_MODELS
 
 export const GENERATION_CHANNEL_PRESETS: GenerationChannelPreset[] = [
   {
@@ -429,9 +453,9 @@ export const GENERATION_CHANNEL_PRESETS: GenerationChannelPreset[] = [
   },
   {
     id: 'video-kacang',
-    version: '2',
+    version: '2026-09-19.008',
     name: 'Kacang 视频',
-    description: 'Kacang 文档中已列出的二十个视频模型；模型参数按文档目录绑定',
+    description: 'Kacang 公开目录中的二十二个视频模型；按渠道契约绑定参数',
     providerId: 'video',
     protocol: 'video-kacang',
     defaultBaseURL: 'https://newapi.prompt-hubs.com/v1',
@@ -439,6 +463,6 @@ export const GENERATION_CHANNEL_PRESETS: GenerationChannelPreset[] = [
     models: VIDEO_KACANG_MODELS,
     supportsImage: false,
     supportsVideo: true,
-    videoRequestContract: KACANG_CAMEL_CONTRACT,
+    videoRequestContract: KACANG_REFERENCE_CONTRACT,
   },
 ]

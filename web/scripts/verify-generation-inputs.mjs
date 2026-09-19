@@ -50,7 +50,7 @@ function declarations(relativePath, names) {
   return source.statements.filter((statement) => ts.isFunctionDeclaration(statement) && names.includes(statement.name?.text)).map((statement) => statement.getText(source)).join('\n')
 }
 
-const { VIDEO_808_MODELS: models, VIDEO_KACANG_MODELS: kacangModels } = load('lib/generation/video-catalog.ts')
+const { VIDEO_808_MODELS: models, VIDEO_KACANG_MODELS: kacangModels, resolveKacangModel } = load('lib/generation/video-catalog.ts')
 const model = models.find((item) => item.id === 'seedance-2.5-pro')
 const channel = { id: 'test-channel', protocol: 'video-api', providerId: 'video', name: 'Mock', baseURL: 'https://provider.test', modelIds: [model.id], enabled: true }
 const getModels = () => [model]
@@ -63,7 +63,7 @@ const generationStore = {
   generationChannelUsesModelInference: () => false,
   generationProtocolForChannel: (value) => value.protocol,
   isVideoGenerationProtocol: (value) => value === 'video-api' || value === 'video-808relay' || value === 'video-kacang',
-  generationVideoRequestContractForModel: (_channel, selectedModel) => selectedModel?.videoRequestContract || ({ createPath: '/v1/videos', pollPath: '/v1/videos/{id}', contentPath: '/v1/videos/{id}/content', durationField: 'seconds', resolutionField: 'resolution', aspectRatioField: 'aspect_ratio', firstFrameField: 'input_reference', lastFrameField: 'image_end', imageReferencesField: 'reference_images', videoReferencesField: 'reference_videos', audioReferencesField: 'reference_audios', generateAudioField: 'generate_audio' }),
+  generationVideoRequestContractForModel: (channel, selectedModel) => resolveKacangModel(channel, selectedModel?.id)?.videoRequestContract || selectedModel?.videoRequestContract || ({ createPath: '/v1/videos', pollPath: '/v1/videos/{id}', contentPath: '/v1/videos/{id}/content', durationField: 'seconds', resolutionField: 'resolution', aspectRatioField: 'aspect_ratio', firstFrameField: 'input_reference', lastFrameField: 'image_end', imageReferencesField: 'reference_images', videoReferencesField: 'reference_videos', audioReferencesField: 'reference_audios', generateAudioField: 'generate_audio' }),
   generationSecretName: () => 'mock-secret',
   generationMediaUploadSecretName: () => 'mock-upload-secret',
 }
@@ -470,6 +470,11 @@ assert.equal(normalizeVideoModeConfig({ ...base, capability: 'video-edit' }).cap
 const convertedFrames = normalizeVideoModeConfig({ ...frames, capability: 'reference-to-video' })
 assert.deepEqual(convertedFrames.references.map((reference) => reference.role), ['reference_image', 'reference_image'])
 assert.deepEqual(convertedFrames.references.map((reference) => reference.id), frames.references.map((reference) => reference.id))
+for (const type of ['audio', 'video']) {
+  const normalized = normalizeVideoModeConfig({ ...base, capability: undefined, references: [{ id: 'stale-role', type, role: 'last_frame' }] })
+  assert.equal(normalized.capability, 'reference-to-video', 'only image frame roles may restore legacy frame mode')
+  assert.equal(normalized.references[0].role, `reference_${type}`)
+}
 
 async function submit(config, transport, extra = {}) {
   requests.length = 0
@@ -591,6 +596,190 @@ const referenceRequest = await submit({ ...base, capability: 'reference-to-video
 assert.equal(referenceRequest.body.input_reference, undefined)
 assert.equal(referenceRequest.body.reference_images.length, 2)
 assert.equal(referenceRequest.body.reference_videos.length, 1)
+const multimodalWithVoice = {
+  ...base,
+  capability: 'reference-to-video',
+  references: [
+    { id: 'actor', type: 'image', role: 'first_frame', source: 'url', url: 'https://cdn.test/actor.png', status: 'ready' },
+    { id: 'voice', type: 'audio', source: 'url', url: 'https://cdn.test/voice.wav', status: 'ready' },
+  ],
+}
+for (const extra of [
+  { protocol: 'video-808relay' },
+  { protocol: 'video-api', baseURL: 'https://api.808relay.com' },
+  { protocol: 'video-api', baseURL: 'https://va.808relay.com' },
+  { protocol: 'video-api', presetId: 'video-808relay' },
+]) {
+  const { body } = await submit(multimodalWithVoice, 'custom', extra)
+  assert.equal(body.mode, 'multi_ref', '808 Seedance must explicitly request multimodal reference parsing')
+  assert.deepEqual(body.reference_images, ['https://cdn.test/actor.png'])
+  assert.deepEqual(body.reference_audios, ['https://cdn.test/voice.wav'])
+  assert.equal(body.input_reference, undefined)
+  assert.equal(body.image_end, undefined)
+}
+assert.equal((await submit({ ...base, references: [] }, 'custom', { protocol: 'video-808relay' })).body.mode, 'text_to_video')
+assert.equal((await submit(frames, 'custom', { protocol: 'video-808relay' })).body.mode, 'first_last_frame')
+assert.equal((await submit({ ...multimodalWithVoice, references: multimodalWithVoice.references.slice(0, 1) }, 'custom', { protocol: 'video-808relay' })).body.mode, 'multi_ref')
+const referenceImage = multimodalWithVoice.references[0]
+const referenceAudio = multimodalWithVoice.references[1]
+const referenceVideo = { id: 'clip', type: 'video', source: 'url', url: 'https://cdn.test/clip.mp4', status: 'ready' }
+for (const references of [
+  [referenceImage],
+  [referenceImage, { ...referenceImage, id: 'second-image', role: 'last_frame', url: 'https://cdn.test/second.png' }],
+  [referenceVideo],
+  [referenceAudio],
+  [referenceImage, referenceVideo],
+  [referenceVideo, referenceAudio],
+  [referenceImage, referenceVideo, referenceAudio],
+]) {
+  const { body } = await submit({ ...base, capability: 'reference-to-video', prompt: '把参考图作为起始画面，随后镜头推进', references }, 'custom', { protocol: 'video-808relay' })
+  assert.equal(body.mode, 'multi_ref', 'reference media types, counts and prompt wording never select a frame mode')
+  assert.equal(body.input_reference, undefined)
+  assert.equal(body.image_end, undefined)
+  for (const [type, field] of [['image', 'reference_images'], ['video', 'reference_videos'], ['audio', 'reference_audios']]) {
+    const urls = references.filter(reference => reference.type === type).map(reference => reference.url)
+    assert.deepEqual(body[field], urls.length ? urls : undefined)
+  }
+}
+const singleFrameRequest = await submit({ ...base, capability: 'first-last-frame', references: [referenceImage] }, 'custom', { protocol: 'video-808relay' })
+assert.equal(singleFrameRequest.body.mode, 'image_to_video', 'only explicit frame mode may route a single image as the starting frame')
+assert.equal(singleFrameRequest.body.input_reference, referenceImage.url)
+assert.equal(singleFrameRequest.body.image_end, undefined)
+assert.equal(singleFrameRequest.body.reference_images, undefined)
+for (const references of [[], [referenceAudio], [referenceImage, referenceAudio], [referenceImage, referenceVideo], [{ ...referenceImage, role: 'last_frame' }]]) {
+  await assert.rejects(() => submit({ ...base, capability: 'first-last-frame', references }, 'custom', { protocol: 'video-808relay' }), /validation:/)
+  assert.equal(requests.length, 0, 'invalid frame inputs fail locally instead of rerouting to multimodal')
+}
+assert.equal((await submit(multimodalWithVoice, 'custom', { protocol: 'video-kacang', baseURL: 'https://api.808relay.com' })).body.mode, undefined)
+assert.equal((await submit(multimodalWithVoice)).body.mode, undefined)
+for (const role of ['first_frame', 'last_frame']) {
+  const { body } = await submit({ ...multimodalWithVoice, references: multimodalWithVoice.references.map(reference => ({ ...reference, role })) })
+  assert.equal(body.input_reference, undefined)
+  assert.equal(body.image_end, undefined)
+  assert.deepEqual(body.reference_audios, ['https://cdn.test/voice.wav'])
+}
+let auditedRequests = 0
+let auditedFrameRoutes = 0
+for (const [catalog, providerProtocol] of [[models, 'video-808relay'], [kacangModels, 'video-kacang']]) {
+  for (const selectedModel of catalog) {
+    const acceptedTypes = videoInputTypes(selectedModel, 'reference-to-video')
+    const availableReferences = [referenceImage, referenceVideo, referenceAudio].filter(reference => acceptedTypes.includes(reference.type))
+    for (const references of [[], ...availableReferences.map(reference => [reference]), availableReferences]) {
+      requests.length = 0
+      const submission = submitGenerationTask({
+        variant: 'video', model: selectedModel,
+        channel: { ...channel, protocol: providerProtocol },
+        config: { ...base, model: selectedModel.id, capability: 'reference-to-video', generateAudio: false,
+          seconds: selectedModel.defaultDuration || selectedModel.allowedDurations?.[0] || selectedModel.minDuration || 5,
+          resolution: selectedModel.resolutions?.[0], aspectRatio: selectedModel.aspectRatios?.[0], references },
+      })
+      if (selectedModel.id === 'gemini-omni-1.1' && references.length === 1 && references[0].type === 'video') {
+        await assert.rejects(submission, /参考视频必须同时提供首帧或参考图片/)
+        assert.equal(requests.length, 0)
+        continue
+      }
+      if (selectedModel.videoRequestContract.minReferenceImages && !references.some(reference => reference.type === 'image')) {
+        await assert.rejects(submission, /至少需要.*参考图片/)
+        assert.equal(requests.length, 0)
+        continue
+      }
+      if (references.some(reference => !selectedModel.videoRequestContract[`${reference.type}ReferencesField`])) {
+        await assert.rejects(submission, /请求字段/)
+        assert.equal(requests.length, 0)
+        continue
+      }
+      await submission
+      const body = JSON.parse(requests.find(request => request.url.endsWith('/v1/videos')).body)
+      const contract = selectedModel.videoRequestContract
+      if (contract.firstFrameField) assert.equal(body[contract.firstFrameField], undefined)
+      if (contract.lastFrameField) assert.equal(body[contract.lastFrameField], undefined)
+      for (const [type, field] of [['image', contract.imageReferencesField], ['video', contract.videoReferencesField], ['audio', contract.audioReferencesField]]) {
+        const urls = references.filter(reference => reference.type === type).map(reference => reference.url)
+        if (field) assert.deepEqual(body[field], urls.length ? urls : undefined)
+      }
+      if (providerProtocol === 'video-kacang') assert.equal(body.mode, undefined)
+      auditedRequests++
+    }
+    if (videoModesForModel(selectedModel).includes('first-last-frame')) {
+      requests.length = 0
+      const frameSubmission = submitGenerationTask({
+        variant: 'video', model: selectedModel, channel: { ...channel, protocol: providerProtocol },
+        config: { ...base, capability: 'first-last-frame', generateAudio: false,
+          seconds: selectedModel.defaultDuration || selectedModel.allowedDurations?.[0] || selectedModel.minDuration || 5,
+          resolution: selectedModel.resolutions?.[0], aspectRatio: selectedModel.aspectRatios?.[0], references: frames.references },
+      })
+      const contract = selectedModel.videoRequestContract
+      if (!contract.firstFrameField || !contract.lastFrameField) {
+        await assert.rejects(frameSubmission, /validation:.*(?:请求字段|至少需要.*参考图片)/)
+        assert.equal(requests.length, 0)
+      } else {
+        await frameSubmission
+        const body = JSON.parse(requests.find(request => request.url.endsWith('/v1/videos')).body)
+        assert.equal(body[contract.firstFrameField], frames.references[0].url)
+        assert.equal(body[contract.lastFrameField], frames.references[1].url)
+        assert.equal(body[contract.imageReferencesField], undefined)
+        assert.equal(body[contract.audioReferencesField], undefined)
+      }
+      auditedFrameRoutes++
+    }
+  }
+}
+requests.length = 0
+await assert.rejects(() => submitGenerationTask({
+  variant: 'video', model: kacangModels.find(item => item.id === 'minimax_h3'), channel: { ...channel, protocol: 'video-kacang' },
+  config: { ...base, resolution: '768', capability: 'first-last-frame', generateAudio: false, references: [{ ...referenceImage, source: 'local', resourceId: 'sha256-frame', url: undefined }] },
+}), /validation:.*首帧.*请求字段/)
+assert.equal(requests.length, 0, 'missing provider frame contract fails before uploading local media')
+console.log(`Cross-channel video contracts: ${models.length + kacangModels.length} catalog models, ${auditedRequests} reference requests and ${auditedFrameRoutes} frame routes passed`)
+async function submitKacang(modelId, overrides = {}, staleModel = {}) {
+  const selectedModel = kacangModels.find(item => item.id === modelId)
+  requests.length = 0
+  await submitGenerationTask({
+    variant: 'video', model: { ...selectedModel, ...staleModel },
+    channel: { ...channel, protocol: 'video-kacang' },
+    config: { ...base, model: modelId, capability: 'reference-to-video', generateAudio: false,
+      seconds: selectedModel.defaultDuration, resolution: selectedModel.resolutions[0],
+      aspectRatio: '16:9', references: [referenceImage], ...overrides },
+  })
+  return JSON.parse(requests.find(request => request.url.endsWith('/v1/videos')).body)
+}
+const grokReference = await submitKacang('grok-imagine-video')
+assert.deepEqual(grokReference.images, [referenceImage.url])
+assert.equal(grokReference.image, undefined, 'a single multimodal image must never become a Grok first frame')
+const grokFrame = await submitKacang('grok-imagine-video', { capability: 'first-last-frame' })
+assert.equal(grokFrame.image, referenceImage.url)
+assert.equal(grokFrame.images, undefined)
+const h3Reference = await submitKacang('minimax_h3', {}, { videoRequestContract: { imageReferencesField: 'input_reference' } })
+assert.deepEqual(h3Reference.reference_images, [referenceImage.url], 'stale H3 mappings are repaired on submission')
+assert.equal(h3Reference.input_reference, undefined)
+for (const [modelId, config, expected] of [
+  ['doubao-seedance-2.0', { capability: 'first-last-frame' }, /首帧和一张尾帧/],
+  ['S-2.0mini-线路三', { references: [referenceVideo] }, /不支持这些素材类型/],
+  ['S-2.0mini-线路三', { resolution: '720p', seconds: 13 }, /最长 12 秒/],
+  ['S-2.0-933-线路六', { references: [] }, /至少需要 1 张参考图片/],
+  ['S-2.0-933-线路六', { seconds: 10 }, /只能为 15 秒/],
+  ['S-2.0-933-线路六', { prompt: '文'.repeat(5001) }, /最多 5000/],
+  ['S-2.5-301010-25 秒-线路三', { seconds: 26 }, /4-25 秒/],
+  ['S-2.5-九图-线路三', { references: Array.from({ length: 10 }, (_, index) => ({ ...referenceImage, id: `ref-${index}` })) }, /最多支持 9/],
+  ['grok-imagine-video-1.5', { resolution: '1080p' }, /参考图模式仅支持/],
+  ['grok-imagine-video', { capability: 'first-last-frame', references: frames.references }, /尾帧.*请求字段/],
+]) {
+  await assert.rejects(() => submitKacang(modelId, config), expected)
+  assert.equal(requests.length, 0, `${modelId} rejects invalid input before uploads or task creation`)
+}
+await submitKacang('S-2.0mini-线路三', { resolution: '720p', seconds: 12 })
+await submitKacang('S-2.0mini-线路三', { resolution: '480p', seconds: 15 })
+await submitKacang('doubao-seedance-2.0', { capability: 'first-last-frame', references: frames.references })
+const h3Mixed = await submitKacang('minimax_h3', { references: [referenceImage, referenceVideo, referenceAudio] })
+assert.deepEqual(h3Mixed.reference_images, [referenceImage.url])
+assert.deepEqual(h3Mixed.reference_videos, [referenceVideo.url])
+assert.deepEqual(h3Mixed.reference_audios, [referenceAudio.url])
+assert.equal(h3Mixed.content, undefined, 'native MiniMax content is not a Kacang wire field')
+for (const unrelatedModel of [models.find((item) => item.id === 'wan-3'), models.find((item) => item.id === 'gemini-omni-1.1')]) {
+  requests.length = 0
+  await submitGenerationTask({ variant: 'video', model: unrelatedModel, channel: { ...channel, protocol: 'video-808relay' }, config: { ...base, model: unrelatedModel.id, references: [] } })
+  assert.equal(JSON.parse(requests[0].body).mode, undefined, 'other 808 models keep their existing contracts')
+}
 const silentRequest = await submit({ ...base, noMusic: true, generateAudio: true })
 assert.equal(silentRequest.body.generate_audio, false)
 assert.equal(silentRequest.body.sound_effects, undefined)
@@ -762,15 +951,16 @@ for (const legacyTransport of [undefined, 'auto', 'public-url', 'presign', 'mult
   assert.equal(protocolSelect(), null)
   assert.doesNotMatch(document.querySelector('[role="dialog"]').textContent, /预签名|multipart|供应商上传/)
   assert.equal(textButton('验证上传').disabled, true)
+  const previousSaveCount = savedChannels.length
+  const previousMessageCount = messages.length
   await click(textButton('保存'))
-  assert.match(messages.at(-1), /本地存储/)
-  assert.equal(savedChannels.length, 0)
-  await click(textButton('取消'))
+  assert.equal(messages.length, previousMessageCount, 'missing storage does not show a save warning')
+  assert.equal(savedChannels.length, previousSaveCount + 1)
+  assert.equal(document.querySelector('[role="dialog"]'), null)
+  assert.match(document.body.textContent, /上传服务未连接/)
 }
 await openChannel(undefined)
 assert.equal(protocolSelect(), null)
-await click(textButton('保存'))
-assert.match(messages.at(-1), /本地存储/)
 await act(async () => mediaStore.setState({ baseURL: 'https://storage.test' }))
 assert.ok(textButton('验证上传'), 'configured custom storage enables only an explicit upload test')
 await click(textButton('保存'))
@@ -791,7 +981,7 @@ assert.equal(savedChannels.at(-1).mediaTransport, 'custom')
 await act(async () => root.render(React.createElement(GenerationChannelsManager, { embedded: true, openNewRequest: 1 })))
 assert.ok(document.querySelector('[role="dialog"]'))
 assert.doesNotMatch(document.querySelector('[role="dialog"]').textContent, /渠道预设/, 'new generation channels do not expose a separate preset menu')
-await click(textButton('取消'))
+await click(textButton('关闭'))
 await act(async () => root.unmount())
 dom.window.close()
 console.log('generation inputs, video modes, audio parameter and production transport contracts: PASS')
