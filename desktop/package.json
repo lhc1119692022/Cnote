@@ -1,6 +1,6 @@
 {
   "name": "cnote-desktop",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "private": true,
   "description": "Cnote runtime (Windows first, macOS next)",
   "author": "lhc1119692022",
@@ -25,7 +25,7 @@
     "dev:shortcut": "node scripts/launch-dev.mjs",
     "sync:project-icon": "node scripts/sync-project-icon.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test:runtime": "npm run build && node scripts/verify-runtime.mjs && node scripts/verify-native-jobs.mjs",
+    "test:runtime": "npm run build && node scripts/verify-runtime.mjs && node scripts/verify-native-jobs.mjs && node scripts/verify-network-port.mjs",
     "test:packaged-renderer": "node scripts/verify-packaged-renderer.mjs"
   },
   "engines": {

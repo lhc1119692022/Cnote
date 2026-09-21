@@ -1,5 +1,6 @@
 import type { GenerationModel } from '@/stores/use-generation-store'
 import type { GenerationReference, GenerationVariantConfig } from '@/types/flow'
+import { identifyVideoModel } from './video-model-identity'
 
 export type OfficialMediaProfileId = 'wan-3' | 'seedance-2.0' | 'seedance-2.5' | 'minimax-h3'
 export type MediaKind = GenerationReference['type']
@@ -114,11 +115,11 @@ export const OFFICIAL_MEDIA_PROFILES: Record<OfficialMediaProfileId, OfficialMed
 }
 
 export function officialMediaProfile(modelId?: string): OfficialMediaProfile | undefined {
-  const id = modelId?.trim().toLowerCase().split('/').pop() || ''
-  if (/^wan[-_. ]?3(?:\.0)?(?:$|[-_])/.test(id)) return OFFICIAL_MEDIA_PROFILES['wan-3']
-  if (/^minimax[-_ ]h3(?:$|[-_])/.test(id)) return OFFICIAL_MEDIA_PROFILES['minimax-h3']
-  if (/^(?:(?:doubao-)?seedance[-_ ]?|sd[-_ ]?|s[-_])(?:满血)?2[._-]5(?:$|[-_ ]|fast|mini|满血|高转|官转)/.test(id)) return OFFICIAL_MEDIA_PROFILES['seedance-2.5']
-  if (/^(?:(?:doubao-)?seedance[-_ ]?|sd[-_ ]?|s[-_])(?:满血)?2(?:[._-]0)?(?:$|[-_ ]|fast|mini|满血|高转|官转)/.test(id) && !/2[._-][1-9]/.test(id)) return OFFICIAL_MEDIA_PROFILES['seedance-2.0']
+  const identity = identifyVideoModel(modelId)
+  if (identity?.family === 'wan' && identity.version === '3.0') return OFFICIAL_MEDIA_PROFILES['wan-3']
+  if (identity?.family === 'minimax-h3' && identity.version === '3.0') return OFFICIAL_MEDIA_PROFILES['minimax-h3']
+  if (identity?.family === 'seedance' && identity.version === '2.5') return OFFICIAL_MEDIA_PROFILES['seedance-2.5']
+  if (identity?.family === 'seedance' && identity.version === '2.0') return OFFICIAL_MEDIA_PROFILES['seedance-2.0']
   return undefined
 }
 

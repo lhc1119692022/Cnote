@@ -29,12 +29,18 @@ function protocolFromSnapshot(value: string | undefined, fallback?: GenerationPr
   return fallback
 }
 
-export function generationRunStatusFromTasks(tasks: readonly Pick<GenerationTask, 'status'>[]): GenerationRunStatus {
+export function isInterruptedGenerationTask(task: Pick<GenerationTask, 'status' | 'remoteTaskId' | 'requestSnapshot' | 'rawStatus' | 'error' | 'failureDetails'>): boolean {
+  if (task.status !== 'failed' || !task.remoteTaskId || !task.requestSnapshot || task.failureDetails?.code || task.failureDetails?.type || /^(failed|error|cancelled)$/i.test(task.rawStatus || '')) return false
+  return ['poll_interrupted', 'poll_timeout'].includes(task.rawStatus || '') || /(?:network:request|桌面网络请求已停止|网络请求超时或被中止|原生网络层中止)/i.test(task.error || '')
+}
+
+export function generationRunStatusFromTasks(tasks: readonly Pick<GenerationTask, 'status' | 'remoteTaskId' | 'requestSnapshot' | 'rawStatus' | 'error' | 'failureDetails'>[]): GenerationRunStatus {
   if (!tasks.length) return 'created'
   if (tasks.some((task) => task.status === 'queued' || task.status === 'running')) return 'running'
   if (tasks.some((task) => task.status === 'validating')) return 'validating'
   if (tasks.every((task) => task.status === 'completed')) return 'completed'
   if (tasks.every((task) => task.status === 'idle')) return 'created'
+  if (tasks.some(isInterruptedGenerationTask)) return 'waiting-for-user'
   if (tasks.some((task) => task.status === 'failed')) return 'failed'
   if (tasks.some((task) => task.status === 'cancelled' || task.status === 'idle')) return 'cancelled'
   return 'running'

@@ -12,7 +12,7 @@ import { resolveMediaTransport, assertGenerationRequestSize, assertMediaLifetime
 import { officialMediaProfile, officialRequestLimitError, withOfficialMediaCapabilities } from './official-media-rules'
 import { validateOfficialMediaReferences } from './media-inspection'
 import { ensureDesktopSecret, syncDesktopSecret } from '@/lib/desktop-secrets'
-import { is808VideoChannel, resolve808WanModel, resolveKacangModel, seedance808RequestMode } from './video-catalog'
+import { is808VideoChannel, resolve808WanModel, resolveKacangModel, videoRequestMode } from './video-catalog'
 import { parseRequestDiagnostics, type GenerationRequestDiagnostics } from './request-diagnostics'
 
 export interface GenerationRequestContext {
@@ -684,7 +684,7 @@ function httpStatusFrom(error: unknown): number | undefined {
 function isRetryablePollingError(error: unknown) {
   const status = httpStatusFrom(error)
   if (status !== undefined) return [408, 425, 429, 500, 502, 503, 504].includes(status)
-  return /(?:fetch failed|network request|network error|timed out|timeout|原生网络层中止)/i.test(String(error instanceof Error ? error.message : error))
+  return /(?:fetch failed|network request|network:request|network error|timed out|timeout|原生网络层中止|桌面网络请求已停止|网络请求超时或被中止)/i.test(String(error instanceof Error ? error.message : error))
 }
 
 function generateAudioFieldName(model: GenerationModel, videoContract?: { generateAudioField?: string }) {
@@ -841,7 +841,7 @@ export async function submitGenerationTask(context: GenerationRequestContext, si
       if (count && !field) throw new GenerationStageError('validation', label + '没有配置请求字段，已停止提交，未丢弃素材')
     }
     const generateAudioField = generateAudioFieldName(model, videoContract)
-    const requestMode = seedance808RequestMode(channel, model.id, config, selectedProtocol)
+    const requestMode = videoRequestMode(channel, model.id, config, selectedProtocol)
     body = {
       model: model.id,
       ...(requestMode ? { mode: requestMode } : {}),
@@ -871,6 +871,7 @@ export async function submitGenerationTask(context: GenerationRequestContext, si
   }
   const durationField = videoContract?.durationField || 'seconds'
   const requestDiagnostics = variant === 'video' && body ? parseRequestDiagnostics({
+    mode: body.mode,
     fields: Object.keys(body),
     unknownRetentionCount: config.references.filter(reference => reference.expiresAt === undefined).length,
     durationField,
@@ -879,7 +880,7 @@ export async function submitGenerationTask(context: GenerationRequestContext, si
     aspectRatio: body[videoContract?.aspectRatioField || 'aspect_ratio'],
     references: config.references.map(reference => {
       const url = referenceURL(reference).toLowerCase()
-      return { type: reference.type, transport: url.startsWith('data:') ? 'inline' : url.startsWith('https:') ? 'https' : url.startsWith('http:') ? 'http' : 'other' }
+      return { type: reference.type, role: reference.role, transport: url.startsWith('data:') ? 'inline' : url.startsWith('https:') ? 'https' : url.startsWith('http:') ? 'http' : 'other' }
     }),
   }) : undefined
   if (requestDiagnostics) onPrepared?.(requestDiagnostics)
@@ -915,7 +916,7 @@ export async function pollGenerationTask(context: GenerationRequestContext, task
     method: 'GET',
     headers: authHeaders(channel, context.config.adapterId),
     signal,
-  }, { secretRefs: authSecretRefs(channel, context.config.adapterId) })
+  }, { secretRefs: authSecretRefs(channel, context.config.adapterId), timeoutMs: 30_000 })
   let parsed: any
   try { parsed = await parseResponse(response) } catch (error) { throw new GenerationStageError('polling', error instanceof Error ? error.message : String(error), error) }
   const status = statusFrom(parsed)
@@ -1092,7 +1093,7 @@ export async function runGenerationTask(
     while (taskId) {
       const elapsedMs = Date.now() - submittedAt
       if (Date.now() >= timeoutAt) {
-        const timeout: GenerationTaskState = { taskId, provider: context.channel.providerId, channelId: context.channel.id, model: context.model.id, status: 'timeout', submittedAt, elapsedMs, timeoutAt }
+        const timeout: GenerationTaskState = { taskId, provider: context.channel.providerId, channelId: context.channel.id, model: context.model.id, status: 'timeout', rawStatus: 'poll_timeout', error: '本地查询已超时，远端任务状态未确认；可继续查询，不要重新生成', submittedAt, elapsedMs, timeoutAt }
         options.onTaskUpdate?.(timeout)
         return timeout
       }
@@ -1101,7 +1102,12 @@ export async function runGenerationTask(
         polled = await pollGenerationTask(context, taskId, options.signal)
         transientPollFailures = 0
       } catch (error) {
-        if (options.signal?.aborted || !isRetryablePollingError(error)) throw error
+        if (options.signal?.aborted) throw error
+        if (!isRetryablePollingError(error)) {
+          const interrupted: GenerationTaskState = { taskId, status: 'unknown', rawStatus: 'poll_interrupted', error: '查询或下载结果中断，远端任务状态未确认；可继续查询。' + safeGenerationError(error instanceof Error ? error.message : error), requestDiagnostics, submittedAt, timeoutAt }
+          options.onTaskUpdate?.(interrupted)
+          return interrupted
+        }
         transientPollFailures += 1
         options.onTaskUpdate?.({
           taskId,

@@ -1,0 +1,5 @@
+{
+  "source": "用户提供：视频模型调用文档(1).md（2026-09-07）、sd2-5-720p-30秒多参考视频API调用文档.md",
+  "fieldSelectedModels": ["seedance-2-pro", "seedance-2-fast", "seedance-2-mini", "seedance-2.5-pro"],
+  "urlArrayModels": ["sd2-5-720p"]
+}

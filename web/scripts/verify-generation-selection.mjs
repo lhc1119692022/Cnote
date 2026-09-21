@@ -10,6 +10,8 @@ const require = createRequire(import.meta.url)
 const sourceRoot = fileURLToPath(new URL('../src/', import.meta.url))
 const mocks = new Map()
 const modules = new Map()
+const public808ModelIds = JSON.parse(readFileSync(new URL('./fixtures/808-video-model-ids.json', import.meta.url), 'utf8'))
+const supplied808Contracts = JSON.parse(readFileSync(new URL('./fixtures/808-provided-contracts.json', import.meta.url), 'utf8'))
 
 const dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'https://cnote.test' })
 for (const key of ['window', 'document', 'localStorage']) {
@@ -81,13 +83,13 @@ const { generationChannelSupportsVariant } = load('stores/use-generation-store.t
 }
 {
   const { useGenerationStore, generationVideoRequestContractForModel } = load('stores/use-generation-store.ts')
-  const { WAN_3_MODEL } = load('lib/generation/video-catalog.ts')
   const stale = { id: 'wan-3.0', capabilities: ['generate-audio'], maxImages: 10, resolutions: ['1080p'], videoRequestContract: { durationField: 'seconds', imageReferencesField: 'reference_images' } }
   const legacy = { id: 'wan-legacy', providerId: 'video', protocol: 'video-808relay', modelIds: ['wan-3.0'], modelCatalog: [stale], videoRequestContract: stale.videoRequestContract }
   useGenerationStore.setState({ channels: [legacy] })
-  assert.equal(useGenerationStore.getState().getModels('wan-legacy')[0].maxImages, undefined, 'official screenshot does not impose the historical channel image count')
-  assert.ok(useGenerationStore.getState().getModels('wan-legacy')[0].resolutions.includes('1080p'))
-  assert.deepEqual(generationVideoRequestContractForModel(legacy, stale), WAN_3_MODEL.videoRequestContract)
+  assert.equal(useGenerationStore.getState().getModels('wan-legacy')[0].maxImages, 2, 'provider document imposes a two-image route limit')
+  assert.deepEqual(useGenerationStore.getState().getModels('wan-legacy')[0].resolutions, ['720p'])
+  assert.equal(generationVideoRequestContractForModel(legacy, stale).durationField, 'duration')
+  assert.equal(generationVideoRequestContractForModel(legacy, stale).imageReferencesField, 'image_urls')
   assert.equal(generationVideoRequestContractForModel({ ...legacy, protocol: 'video-kacang' }, stale).durationField, 'seconds', 'other providers retain their own contracts')
   const { resolve808WanModel } = load('lib/generation/video-catalog.ts')
   assert.equal(resolve808WanModel({ ...legacy, protocol: 'video-kacang', baseURL: 'https://api.808relay.com' }, 'wan-3.0'), undefined)
@@ -123,6 +125,21 @@ const {
 } = load('lib/generation/resume-context.ts')
 
 {
+  const { useGenerationStore, generationVideoRequestContractForModel } = load('stores/use-generation-store.ts')
+  const { videoRequestMode } = load('lib/generation/video-catalog.ts')
+  for (const protocol of ['video-808relay', 'video-api']) {
+    const savedChannel = { id: 'saved-seedance-aliases', providerId: 'video', protocol, baseURL: 'https://api.808relay.com', modelIds: public808ModelIds.seedanceModelIds, modelCatalog: public808ModelIds.seedanceModelIds.map(id => ({ id, name: id, capabilities: ['text-to-video'], inputTypes: [] })) }
+    useGenerationStore.setState({ channels: [savedChannel] })
+    for (const model of useGenerationStore.getState().getModels(savedChannel.id)) {
+      assert.deepEqual(model.inputTypes, ['image', 'video', 'audio'], `${model.id} repairs stale media capabilities`)
+      assert.equal(generationVideoRequestContractForModel(savedChannel, model).imageReferencesField, supplied808Contracts.urlArrayModels.includes(model.id) ? 'image_urls' : 'reference_images')
+      assert.equal(videoRequestMode(savedChannel, model.id, { capability: 'reference-to-video', references: [{ type: 'image', role: 'reference_image' }] }), supplied808Contracts.fieldSelectedModels.includes(model.id) ? undefined : 'reference-to-video')
+    }
+  }
+  useGenerationStore.setState({ channels: [] })
+}
+
+{
   const { generationVideoRequestContractForModel } = load('stores/use-generation-store.ts')
   const mixedChannel = {
     id: 'mixed-contracts', providerId: 'video', protocol: 'video-808relay', presetId: 'video-808relay',
@@ -150,6 +167,20 @@ function channel(extra) {
 }
 
 const imageChannel = channel({ id: 'img', providerId: 'openai', protocol: 'openai-images', modelIds: ['gpt-image-2'], supportsImage: true, supportsVideo: false })
+{
+  const { useGenerationStore, generationVideoRequestContractForModel } = load('stores/use-generation-store.ts')
+  const modelIds = ['新供应商/sd2-5-720p-新线路', '新供应商/H3-高速', '新供应商/doubao_seedance_2_5-高速']
+  const saved = channel({ id: 'renamed-kacang', protocol: 'video-kacang', modelIds })
+  saved.modelCatalog = modelIds.map(id => ({ id, name: id, capabilities: ['text-to-video'], videoRequestContract: { imageReferencesField: 'stale_images' } }))
+  useGenerationStore.setState({ channels: [saved] })
+  for (const resolved of useGenerationStore.getState().getModels(saved.id)) {
+    assert.ok(modelIds.includes(resolved.id))
+    assert.equal(resolved.videoRequestContract.imageReferencesField, 'reference_images')
+    assert.equal(generationVideoRequestContractForModel(saved, resolved).durationField, 'duration_seconds')
+  }
+  assert.equal(useGenerationStore.getState().getModels(saved.id)[2].allowsFirstFrameOnly, false)
+  useGenerationStore.setState({ channels: [] })
+}
 const videoChannel = channel({ id: 'vid', providerId: 'video', protocol: 'video-api', modelIds: ['seedance-2.5-pro'], supportsImage: false, supportsVideo: true })
 const dualChannel = channel({ id: 'dual', providerId: 'custom', protocol: 'openai-images', modelIds: ['gpt-image-2'], supportsImage: true, supportsVideo: true })
 const disabledImage = channel({ id: 'off', providerId: 'openai', protocol: 'openai-images', modelIds: ['gpt-image-2'], enabled: false, supportsImage: true, supportsVideo: false })
@@ -290,6 +321,16 @@ assert.equal(Object.hasOwn(resumeContext.channel, 'apiKey') && resumeContext.cha
 assert.equal(generationRunStatusFromTasks([{ status: 'completed' }, { status: 'running' }]), 'running')
 assert.equal(generationRunStatusFromTasks([{ status: 'completed' }, { status: 'completed' }]), 'completed')
 assert.equal(generationRunStatusFromTasks([{ status: 'completed' }, { status: 'failed' }]), 'failed')
+{
+  const interrupted = { status: 'failed', remoteTaskId: 'existing-task', requestSnapshot: { baseURL: 'https://fixture.invalid' }, error: "Error invoking remote method 'network:request': Error: 桌面网络请求已停止" }
+  assert.equal(generationRunStatusFromTasks([interrupted]), 'waiting-for-user')
+  assert.equal(generationRunStatusFromTasks([{ ...interrupted, error: 'query error', rawStatus: 'poll_interrupted' }]), 'waiting-for-user')
+  assert.equal(generationRunStatusFromTasks([{ ...interrupted, error: 'local timeout', rawStatus: 'poll_timeout' }]), 'waiting-for-user')
+  assert.equal(generationRunStatusFromTasks([{ ...interrupted, remoteTaskId: undefined }]), 'failed')
+  assert.equal(generationRunStatusFromTasks([{ ...interrupted, rawStatus: 'failed' }]), 'failed')
+  assert.equal(generationRunStatusFromTasks([{ ...interrupted, failureDetails: { code: 'download_failed' } }]), 'failed')
+  assert.equal(generationRunStatusFromTasks([interrupted, { status: 'running' }]), 'running')
+}
 assert.equal(isGenerationTaskResumable({ status: 'running', remoteTaskId: 'r1', requestSnapshot: snapshot }), true)
 assert.equal(isGenerationTaskResumable({ status: 'running', requestSnapshot: snapshot }), false)
 assert.equal(generationTaskResumeBlockReason({ status: 'running', requestSnapshot: snapshot }), '缺少远程任务，无法继续查询')

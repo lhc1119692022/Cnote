@@ -1,4 +1,5 @@
 import { net } from 'electron'
+import { Readable } from 'node:stream'
 import type { NetworkPort, NetworkRequest, NetworkResponse, NetworkStreamResponse } from './types'
 
 function normalizeHeaders(headers: Headers) {
@@ -7,6 +8,32 @@ function normalizeHeaders(headers: Headers) {
     result[key] = value
   })
   return result
+}
+
+function fetchNativeResponse(input: NetworkRequest, signal: AbortSignal) {
+  return new Promise<{ status: number; statusText: string; headers: Headers; url: string; body: ReadableStream<Uint8Array> }>((resolve, reject) => {
+    const request = net.request({ url: input.url, method: input.method ?? 'GET', redirect: 'follow' })
+    const stop = () => { reject(new DOMException('The operation was aborted.', 'AbortError')); request.abort() }
+    signal.addEventListener('abort', stop, { once: true })
+    request.on('close', () => signal.removeEventListener('abort', stop))
+    request.on('error', reject)
+    request.on('response', response => {
+      try {
+        const headers = new Headers()
+        for (const [name, values] of Object.entries(response.headers)) {
+          const value = Array.isArray(values) ? values.join(', ') : values
+          headers.set(name, /[^\u0000-\u00ff]/.test(value) ? Buffer.from(value, 'utf8').toString('latin1') : value)
+        }
+        resolve({ status: response.statusCode, statusText: /^[\x20-\x7e]*$/.test(response.statusMessage) ? response.statusMessage : '', headers, url: input.url, body: Readable.toWeb(response as unknown as Readable) as ReadableStream<Uint8Array> })
+      } catch (error) { reject(error); request.abort() }
+    })
+    if (signal.aborted) { stop(); return }
+    try {
+      for (const [name, value] of Object.entries(input.headers || {})) request.setHeader(name, value)
+      if (input.body !== undefined) request.write(input.body instanceof Uint8Array ? Buffer.from(input.body) : input.body)
+      request.end()
+    } catch (error) { reject(error); request.abort() }
+  })
 }
 
 export class NativeNetworkPort implements NetworkPort {
@@ -43,13 +70,7 @@ export class NativeNetworkPort implements NetworkPort {
       // configured proxy and connection settings. Node's undici fetch ignores
       // the system proxy on Windows, which makes otherwise reachable services
       // fail with a generic `fetch failed` error.
-      const response = await net.fetch(input.url, {
-        method: input.method ?? 'GET',
-        headers: input.headers,
-        body: (input.body instanceof Uint8Array ? Buffer.from(input.body) : input.body) as BodyInit | undefined,
-        signal: controller.signal,
-        redirect: 'follow',
-      })
+      const response = await fetchNativeResponse(input, controller.signal)
 
       const reader = response.body?.getReader()
       let received = 0
@@ -60,10 +81,11 @@ export class NativeNetworkPort implements NetworkPort {
         headers: normalizeHeaders(response.headers),
         url: response.url,
         async read() {
-          if (finished) return null
           try {
             if (controller.signal.aborted) throw new Error(input.signal?.aborted ? '桌面网络请求已停止' : '网络请求超时或被中止')
+            if (finished) return null
             const result = reader ? await reader.read() : { done: true, value: undefined }
+            if (controller.signal.aborted) throw new Error(input.signal?.aborted ? '桌面网络请求已停止' : '网络请求超时或被中止')
             if (result.done) { finished = true; cleanup(); return null }
             received += result.value!.byteLength
             if (received > maxResponseBytes) throw new Error('Native network response 超过 256 MiB。')

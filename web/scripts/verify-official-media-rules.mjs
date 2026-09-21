@@ -4,7 +4,13 @@ import vm from 'node:vm'
 import ts from 'typescript'
 
 const source = readFileSync(new URL('../src/lib/generation/official-media-rules.ts', import.meta.url), 'utf8')
-const context = vm.createContext({ exports: {}, TextEncoder, console })
+const identitySource = readFileSync(new URL('../src/lib/generation/video-model-identity.ts', import.meta.url), 'utf8')
+const identityContext = vm.createContext({ exports: {} })
+vm.runInContext(ts.transpile(identitySource, { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 }), identityContext)
+const context = vm.createContext({ exports: {}, TextEncoder, console, require: (name) => {
+  assert.equal(name, './video-model-identity')
+  return identityContext.exports
+} })
 vm.runInContext(ts.transpile(source, { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 }), context)
 const { officialMediaProfile, validateMediaFile, validateMediaCollection, withOfficialMediaCapabilities, officialRequestLimitError } = context.exports
 const reference = (type = 'image', id = 'sample', role = 'reference_image') => ({ id, type, role, source: 'local', order: 0, fileName: `${id}.png` })
@@ -20,10 +26,15 @@ assert.equal(sd20.id, 'seedance-2.0')
 assert.equal(sd25.id, 'seedance-2.5')
 for (const id of ['S-2.5-301010-25 秒-线路三', 'S-2.5-九图-线路三', 'sd2-5', 'SD2.5', 'provider/sd_2_5-fast']) assert.equal(officialMediaProfile(id)?.id, 'seedance-2.5')
 for (const id of ['S-2.0官转933-线路三', 'S-2.0高转933-线路三', 'S-2.0满血933-卡脸', 'S-2.0mini-线路三', 'sd2-0', 'sd2.0']) assert.equal(officialMediaProfile(id)?.id, 'seedance-2.0')
-for (const id of ['sd2-6', 'sd2.50', 'S-2.5custom', 'sd20']) assert.equal(officialMediaProfile(id), undefined)
+for (const id of ['sd20', 'S20', 'seedance-20', 'high-seedance-20', 's2-720', 'doubao2-1080']) assert.equal(officialMediaProfile(id)?.id, 'seedance-2.0')
+for (const id of ['S25', 'SD25', 'doubao2.5', 'sd25-1080']) assert.equal(officialMediaProfile(id)?.id, 'seedance-2.5')
+for (const id of ['sd2-6', 'sd2.50', 'S-2.5custom', 'sd250']) assert.equal(officialMediaProfile(id), undefined)
 assert.equal(h3.id, 'minimax-h3')
 for (const id of ['S-满血2.0-稳定-线路一', 'S-2.0fast满血933-卡脸', 'seedance-2-fast', 'sd-2.0']) assert.equal(officialMediaProfile(id)?.id, 'seedance-2.0')
-for (const id of ['wan-30', 'wan-2.2', 'seedance-20', 'custom-model', 'minimax-h30']) assert.equal(officialMediaProfile(id), undefined)
+for (const id of ['wan-30', 'wan-2.2', 'seedance-30', 'custom-model', 'minimax-h30']) assert.equal(officialMediaProfile(id), undefined)
+const public808ModelIds = JSON.parse(readFileSync(new URL('./fixtures/808-video-model-ids.json', import.meta.url), 'utf8'))
+for (const id of public808ModelIds.seedanceModelIds) assert.equal(officialMediaProfile(id)?.id, /2[.-]5/.test(id) ? 'seedance-2.5' : 'seedance-2.0', `${id} must bind to the correct shared media rules`)
+for (const id of ['high-seedance-1.5', 'high-seedance-2.6', 'high-seedance-30', 'high-seedance-3', 'notseedance-2.0']) assert.equal(officialMediaProfile(id), undefined)
 assert.equal(validateMediaFile(wan, reference(), image).status, 'valid')
 assert.equal(validateMediaFile(wan, reference(), { ...image, bytes: 20_000_001 }).violations[0].code, 'bytes')
 assert.equal(validateMediaFile(sd20, reference(), { ...image, bytes: 30_000_000 }).status, 'invalid')

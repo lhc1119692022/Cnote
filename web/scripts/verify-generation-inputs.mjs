@@ -50,7 +50,9 @@ function declarations(relativePath, names) {
   return source.statements.filter((statement) => ts.isFunctionDeclaration(statement) && names.includes(statement.name?.text)).map((statement) => statement.getText(source)).join('\n')
 }
 
-const { VIDEO_808_MODELS: models, VIDEO_KACANG_MODELS: kacangModels, resolveKacangModel } = load('lib/generation/video-catalog.ts')
+const { VIDEO_808_MODELS: models, VIDEO_KACANG_MODELS: kacangModels, resolveKacangModel, videoRequestMode, resolveVideoModelAdapter } = load('lib/generation/video-catalog.ts')
+const public808ModelIds = JSON.parse(readFileSync(new URL('./fixtures/808-video-model-ids.json', import.meta.url), 'utf8'))
+const supplied808Contracts = JSON.parse(readFileSync(new URL('./fixtures/808-provided-contracts.json', import.meta.url), 'utf8'))
 const model = models.find((item) => item.id === 'seedance-2.5-pro')
 const channel = { id: 'test-channel', protocol: 'video-api', providerId: 'video', name: 'Mock', baseURL: 'https://provider.test', modelIds: [model.id], enabled: true }
 const getModels = () => [model]
@@ -63,7 +65,7 @@ const generationStore = {
   generationChannelUsesModelInference: () => false,
   generationProtocolForChannel: (value) => value.protocol,
   isVideoGenerationProtocol: (value) => value === 'video-api' || value === 'video-808relay' || value === 'video-kacang',
-  generationVideoRequestContractForModel: (channel, selectedModel) => resolveKacangModel(channel, selectedModel?.id)?.videoRequestContract || selectedModel?.videoRequestContract || ({ createPath: '/v1/videos', pollPath: '/v1/videos/{id}', contentPath: '/v1/videos/{id}/content', durationField: 'seconds', resolutionField: 'resolution', aspectRatioField: 'aspect_ratio', firstFrameField: 'input_reference', lastFrameField: 'image_end', imageReferencesField: 'reference_images', videoReferencesField: 'reference_videos', audioReferencesField: 'reference_audios', generateAudioField: 'generate_audio' }),
+  generationVideoRequestContractForModel: (channel, selectedModel) => resolveKacangModel(channel, selectedModel?.id)?.videoRequestContract || resolveVideoModelAdapter(channel, selectedModel?.id)?.requestContract || selectedModel?.videoRequestContract || ({ createPath: '/v1/videos', pollPath: '/v1/videos/{id}', contentPath: '/v1/videos/{id}/content', durationField: 'seconds', resolutionField: 'resolution', aspectRatioField: 'aspect_ratio', firstFrameField: 'input_reference', lastFrameField: 'image_end', imageReferencesField: 'reference_images', videoReferencesField: 'reference_videos', audioReferencesField: 'reference_audios', generateAudioField: 'generate_audio' }),
   generationSecretName: () => 'mock-secret',
   generationMediaUploadSecretName: () => 'mock-upload-secret',
 }
@@ -95,19 +97,33 @@ const storageSettings = { baseURL: '', getUploadEndpoint: () => 'https://storage
 mocks.set('./media-upload-cache', { reuseMediaUpload: async (_scope, _blob, upload) => upload('a'.repeat(64)) })
 mocks.set('@/stores/use-media-storage-store', { notifyMediaStorageChanged: () => {}, MEDIA_STORAGE_DEFAULTS: { fieldName: 'file', responsePath: 'url' }, useMediaStorageStore: { getState: () => storageSettings } })
 const requests = []
+const reportedSeedanceModes = new Set(['auto', 'text-to-video', 'image-to-video', 'reference-to-video', 'start-end-to-video', 'edit-video', 'video-extension'])
 let rejectUpload = false
 let pollFailure
+let resumePollError
 let creationFailure
 let mediaStatus = 200
-mocks.set('@/lib/desktop-fetch', { desktopFetch: async (url, options = {}) => {
+mocks.set('@/lib/desktop-fetch', { desktopFetch: async (url, options = {}, transportOptions = {}) => {
   if (options.method === 'HEAD') return new Response(null, { status: mediaStatus, headers: { 'content-type': 'application/octet-stream', 'content-length': '10' } })
   if (url.endsWith('/prepare')) return Response.json({ url: 'https://storage.test/media/prepared', expiresAt: Date.now() + 14 * 86400000 })
   requests.push({ url, ...options })
+  if (url.endsWith('/v1/videos/task-resume') && options.method === 'GET') {
+    if (resumePollError) throw new Error(resumePollError)
+    assert.equal(transportOptions.timeoutMs, 30000)
+    return Response.json({ id: 'task-resume', status: 'completed', video_url: 'https://cdn.test/finished.mp4' })
+  }
+  if (url === 'https://cdn.test/finished.mp4') return new Response('video', { headers: { 'content-type': 'video/mp4' } })
   if (pollFailure && options.method === 'GET' && url.endsWith('/v1/videos/task-wan-failed')) return Response.json(pollFailure)
   if (rejectUpload && !url.endsWith('/v1/videos')) return new Response('upload failed', { status: 500 })
   if (url.endsWith('/upload')) return Response.json({ url: 'https://cdn.test/uploaded.png' })
   if (creationFailure && options.method === 'POST') return Response.json(creationFailure, { status: 400, headers: { 'x-request-id': 'request-create-123' } })
   assert.ok(url.endsWith('/v1/videos'), 'no unexpected network endpoint')
+  if (options.method === 'POST') {
+    const body = JSON.parse(options.body)
+    if (body.mode !== undefined && !reportedSeedanceModes.has(body.mode)) {
+      return Response.json({ code: 'invalid_request', message: 'mode must be one of auto, text-to-video, image-to-video, reference-to-video, start-end-to-video, edit-video or video-extension', data: null }, { status: 400 })
+    }
+  }
   return Response.json({ id: 'mock-task', status: 'queued' })
 } })
 
@@ -119,6 +135,7 @@ const {
   collectOwnedResultNodeIds,
   generationInputProvenanceIds,
   upsertGenerationResultNodes,
+  removeFailedGenerationPlaceholders,
   collectUpstreamReferences,
 } = load('canvas/contents/request-generation.ts')
 {
@@ -442,6 +459,30 @@ assert.deepEqual(
   collectOwnedResultNodeIds(graphStoreState.currentDocument.nodes[0], graphStoreState.currentDocument.nodes, 'image'),
   ['legacy-owned', createdIds[0]],
 )
+{
+  const { useRuntimeStore } = load('stores/runtime-store.ts')
+  const placeholder = { ...resultNode, id: 'failed-placeholder', assetId: undefined, source: null, content: undefined, payload: { kind: 'image', resources: [] }, generationBatch: { ...resultNode.generationBatch, runId: 'failed-run', resourceKeys: [] } }
+  const detached = { ...placeholder, id: 'detached-placeholder', generatedBy: { ...placeholder.generatedBy, detached: true } }
+  graphStoreState.currentDocument.nodes.push(placeholder, detached)
+  graphStoreState.currentDocument.edges.push({ id: 'failed-edge', source: 'req-1', target: placeholder.id })
+  graphStoreState.currentDocument.nodes[0].resultNodeIds.image.push(placeholder.id)
+  graphStoreState.selection = [placeholder.id, resultNode.id]
+  const failedRun = { id: 'failed-run', requestNodeId: 'req-1', variant: 'image', status: 'failed', tasks: [{ id: 'failed-task', status: 'failed', error: 'upstream failure' }], resultNodeId: placeholder.id }
+  useRuntimeStore.getState().putRun(failedRun)
+  assert.deepEqual(removeFailedGenerationPlaceholders({ ...failedRun, status: 'running' }), [])
+  assert.deepEqual(removeFailedGenerationPlaceholders({ ...failedRun, tasks: [{ status: 'running' }] }), [])
+  assert.deepEqual(removeFailedGenerationPlaceholders({ ...failedRun, requestNodeId: 'other-request' }), [])
+  assert.deepEqual(removeFailedGenerationPlaceholders({ ...failedRun, id: 'run-1' }), [], 'partial successful results are kept')
+  assert.deepEqual(removeFailedGenerationPlaceholders(failedRun), [placeholder.id])
+  assert.ok(graphStoreState.currentDocument.nodes.some(node => node.id === detached.id))
+  assert.ok(graphStoreState.currentDocument.nodes.some(node => node.id === resultNode.id))
+  assert.ok(!graphStoreState.currentDocument.edges.some(edge => edge.target === placeholder.id))
+  assert.ok(!graphStoreState.currentDocument.nodes[0].resultNodeIds.image.includes(placeholder.id))
+  assert.deepEqual(graphStoreState.selection, [resultNode.id])
+  assert.equal(useRuntimeStore.getState().runs['failed-run'].resultNodeId, undefined)
+  assert.equal(useRuntimeStore.getState().runs['failed-run'].tasks[0].error, 'upstream failure', 'request error survives result cleanup')
+  assert.deepEqual(removeFailedGenerationPlaceholders(failedRun), [], 'cleanup is idempotent')
+}
 graphStoreState.currentDocument = null
 graphStoreState.currentDocumentId = null
 
@@ -483,6 +524,24 @@ async function submit(config, transport, extra = {}) {
 }
 const textRequest = await submit({ ...base, capability: 'text-to-video' })
 {
+  const { runGenerationTask } = load('lib/generation/client.ts')
+  const context = { variant: 'video', model, channel, config: base }
+  requests.length = 0
+  resumePollError = 'response cannot be decoded'
+  const interrupted = await runGenerationTask(context, { taskId: 'task-resume', timeoutMs: 60000 })
+  assert.equal(interrupted.status, 'unknown')
+  assert.equal(interrupted.rawStatus, 'poll_interrupted')
+  assert.equal(interrupted.taskId, 'task-resume')
+  resumePollError = undefined
+  const resumed = await runGenerationTask(context, { taskId: interrupted.taskId, timeoutMs: 60000 })
+  assert.equal(resumed.status, 'completed')
+  assert.equal(resumed.resultResourceIds.length, 1)
+  assert.ok(requests.every(request => !request.method || request.method === 'GET'), 'resume must never resubmit a paid generation POST')
+  const timedOut = await runGenerationTask(context, { taskId: 'task-resume', timeoutMs: 1, submittedAt: Date.now() - 100 })
+  assert.equal(timedOut.rawStatus, 'poll_timeout')
+  assert.equal(timedOut.taskId, 'task-resume')
+}
+{
   requests.length = 0
   mediaStatus = 404
   await assert.rejects(() => submitGenerationTask({ variant: 'video', model, channel, config: { ...base, references: [{ id: 'missing', type: 'image', source: 'url', url: 'https://cdn.test/missing.png' }] } }), /preparation:.*missing.*404/)
@@ -520,6 +579,8 @@ const textRequest = await submit({ ...base, capability: 'text-to-video' })
   for (const invalid of [
     { seconds: 31 },
     { seconds: 1.5 },
+    { resolution: '1080p' },
+    { references: [publicImage, { ...publicImage, id: 'second' }, { ...publicImage, id: 'third' }] },
   ]) {
     requests.length = 0
     await assert.rejects(() => runWan(invalid))
@@ -530,7 +591,13 @@ const textRequest = await submit({ ...base, capability: 'text-to-video' })
   assert.equal(JSON.parse(requests[0].body).model, 'wan-3.0-1080p')
   assert.equal(JSON.parse(requests[0].body).resolution, '1080p')
   assert.equal(JSON.parse(requests[0].body).aspect_ratio, '16:9')
-  for (const variant of ['wan-3', 'provider/wan-3.0-fast', 'WAN-3-custom']) {
+  requests.length = 0
+  await runWan({ seconds: 2, references: [publicImage] }, { model: { ...staleModel, id: 'wan-3' } })
+  assert.equal(JSON.parse(requests[0].body).seconds, 2)
+  assert.deepEqual(JSON.parse(requests[0].body).reference_images, [publicImage.url])
+  assert.equal(JSON.parse(requests[0].body).duration, undefined)
+  assert.equal(JSON.parse(requests[0].body).image_urls, undefined)
+  for (const variant of ['provider/wan-3.0-fast', 'WAN-3-custom']) {
     requests.length = 0
     await runWan({ seconds: 1, resolution: 'custom-tier', references: [publicImage, { ...publicImage, id: 'second' }, { ...publicImage, id: 'third' }] }, { model: { ...staleModel, id: variant } })
     const body = JSON.parse(requests[0].body)
@@ -562,7 +629,7 @@ const textRequest = await submit({ ...base, capability: 'text-to-video' })
   assert.equal(diagnosticResult.requestDiagnostics.durationField, 'duration')
   assert.equal(diagnosticResult.requestDiagnostics.duration, 5)
   assert.ok(diagnosticResult.requestDiagnostics.fields.includes('image_urls'))
-  assert.deepEqual(diagnosticResult.requestDiagnostics.references, [{ type: 'image', transport: 'https' }])
+  assert.deepEqual(diagnosticResult.requestDiagnostics.references, [{ type: 'image', transport: 'https', role: 'reference_image' }])
   assert.ok(!JSON.stringify(diagnosticResult.requestDiagnostics).includes('Zml4dHVyZQ'))
   assert.equal(diagnosticResult.requestDiagnostics.prompt, undefined)
   const staleAdapter = [{ id: 'video-808relay', protocol: 'video-808relay', mediaTransport: 'custom' }]
@@ -610,19 +677,90 @@ for (const extra of [
   { protocol: 'video-api', baseURL: 'https://va.808relay.com' },
   { protocol: 'video-api', presetId: 'video-808relay' },
 ]) {
-  const { body } = await submit(multimodalWithVoice, 'custom', extra)
-  assert.equal(body.mode, 'multi_ref', '808 Seedance must explicitly request multimodal reference parsing')
+  const { body, result } = await submit(multimodalWithVoice, 'custom', extra)
+  assert.equal(result.requestDiagnostics.mode, undefined)
+  assert.deepEqual(result.requestDiagnostics.references.map(reference => reference.role), ['reference_image', 'reference_audio'])
+  const { mediaRequestDetails, parseRequestDiagnostics } = load('lib/generation/request-diagnostics.ts')
+  assert.deepEqual(parseRequestDiagnostics(JSON.parse(JSON.stringify(result.requestDiagnostics))), result.requestDiagnostics)
+  assert.match(mediaRequestDetails(result.requestDiagnostics), /未发送 mode/)
+  assert.doesNotMatch(mediaRequestDetails(result.requestDiagnostics), /cdn.test|actor.png|voice.wav|first_frame|input_reference/)
+  assert.equal(body.mode, undefined, 'documented Pro route derives reference mode from media fields')
   assert.deepEqual(body.reference_images, ['https://cdn.test/actor.png'])
   assert.deepEqual(body.reference_audios, ['https://cdn.test/voice.wav'])
   assert.equal(body.input_reference, undefined)
   assert.equal(body.image_end, undefined)
 }
-assert.equal((await submit({ ...base, references: [] }, 'custom', { protocol: 'video-808relay' })).body.mode, 'text_to_video')
-assert.equal((await submit(frames, 'custom', { protocol: 'video-808relay' })).body.mode, 'first_last_frame')
-assert.equal((await submit({ ...multimodalWithVoice, references: multimodalWithVoice.references.slice(0, 1) }, 'custom', { protocol: 'video-808relay' })).body.mode, 'multi_ref')
+assert.equal((await submit({ ...base, references: [] }, 'custom', { protocol: 'video-808relay' })).body.mode, undefined)
+assert.equal((await submit(frames, 'custom', { protocol: 'video-808relay' })).body.mode, undefined)
+assert.equal((await submit({ ...multimodalWithVoice, references: multimodalWithVoice.references.slice(0, 1) }, 'custom', { protocol: 'video-808relay' })).body.mode, undefined)
 const referenceImage = multimodalWithVoice.references[0]
 const referenceAudio = multimodalWithVoice.references[1]
 const referenceVideo = { id: 'clip', type: 'video', source: 'url', url: 'https://cdn.test/clip.mp4', status: 'ready' }
+const seedanceRouteCases = [
+  ...Array.from({ length: 8 }, (_, mask) => {
+    const references = [referenceImage, referenceVideo, referenceAudio].filter((_, index) => mask & (1 << index))
+    return ['reference-to-video', references, references.length ? 'reference-to-video' : 'text-to-video']
+  }),
+  ['reference-to-video', [referenceImage, { ...referenceImage, id: 'second-image', role: 'last_frame' }], 'reference-to-video'],
+  ['first-last-frame', [referenceImage], 'image-to-video'],
+  ['first-last-frame', frames.references, 'start-end-to-video'],
+]
+const seedanceRouteChannels = [
+  { protocol: 'video-808relay' },
+  { protocol: 'video-api', baseURL: 'https://api.808relay.com' },
+  { protocol: 'video-api', baseURL: 'https://va.808relay.com' },
+  { protocol: 'video-api', presetId: 'video-808relay' },
+]
+const seedanceRouteModelIds = [...new Set([...public808ModelIds.seedanceModelIds, 'sd2-5', 'S-2.5', 'provider/SD2_5-fast'])]
+let auditedSeedanceRoutes = 0
+for (const modelId of seedanceRouteModelIds) {
+  for (const routeChannel of seedanceRouteChannels) {
+    for (const [capability, references, expectedMode] of seedanceRouteCases) {
+      requests.length = 0
+      await submitGenerationTask({
+        variant: 'video', model: { ...model, id: modelId },
+        channel: { ...channel, ...routeChannel, modelIds: [modelId] },
+        config: { ...base, model: modelId, capability, references, resolution: '720p', aspectRatio: '9:16' },
+      })
+      const body = JSON.parse(requests.find(request => request.url.endsWith('/v1/videos')).body)
+      assert.equal(body.model, modelId, 'keep the user-selected model alias')
+      assert.equal(body.mode, supplied808Contracts.fieldSelectedModels.includes(modelId) ? undefined : expectedMode, `${modelId} uses its documented route`)
+      const urlFields = supplied808Contracts.urlArrayModels.includes(modelId)
+      assert.equal(body.omni_reference_task_type, undefined, '808 docs do not define official subtask passthrough')
+      for (const field of urlFields ? ['reference_images', 'reference_videos', 'reference_audios'] : ['image_urls', 'video_urls', 'audio_urls']) {
+        assert.equal(body[field], undefined, 'do not submit duplicate media aliases')
+      }
+      if (capability === 'reference-to-video') {
+        assert.equal(body.input_reference, undefined)
+        assert.equal(body.image_end, undefined)
+        assert.deepEqual(body[urlFields ? 'image_urls' : 'reference_images'], references.some(reference => reference.type === 'image') ? references.filter(reference => reference.type === 'image').map(reference => reference.url) : undefined)
+        assert.deepEqual(body[urlFields ? 'audio_urls' : 'reference_audios'], references.some(reference => reference.type === 'audio') ? references.filter(reference => reference.type === 'audio').map(reference => reference.url) : undefined)
+        assert.deepEqual(body[urlFields ? 'video_urls' : 'reference_videos'], references.some(reference => reference.type === 'video') ? references.filter(reference => reference.type === 'video').map(reference => reference.url) : undefined)
+      } else {
+        assert.equal(body.input_reference, references[0].url)
+        assert.equal(body.image_end, references[1]?.url)
+        assert.equal(body.reference_images, undefined)
+      }
+      auditedSeedanceRoutes++
+    }
+  }
+}
+for (const modelId of [...public808ModelIds.nonSeedanceModelIds, ...kacangModels.map(item => item.id), ...seedanceRouteModelIds]) {
+  for (const [capability, references] of seedanceRouteCases) {
+    for (const protocol of ['video-kacang', 'openai-images', 'google-images']) {
+      assert.equal(videoRequestMode({ ...channel, protocol, baseURL: 'https://api.808relay.com' }, modelId, { ...base, capability, references }), undefined, 'explicit other protocols must not inherit 808 modes from the host')
+    }
+    assert.equal(videoRequestMode(channel, modelId, { ...base, capability, references }), undefined, 'generic video channels must not inherit 808 modes')
+  }
+}
+for (const modelId of public808ModelIds.nonSeedanceModelIds) {
+  for (const routeChannel of seedanceRouteChannels) {
+    for (const [capability, references] of seedanceRouteCases) {
+      assert.equal(videoRequestMode({ ...channel, ...routeChannel }, modelId, { ...base, capability, references }), undefined, `${modelId} must not receive Seedance mode values`)
+    }
+  }
+}
+console.log(`Seedance mode contracts: ${public808ModelIds.seedanceModelIds.length} public IDs plus aliases, ${auditedSeedanceRoutes} request routes and cross-protocol isolation passed`)
 for (const references of [
   [referenceImage],
   [referenceImage, { ...referenceImage, id: 'second-image', role: 'last_frame', url: 'https://cdn.test/second.png' }],
@@ -633,7 +771,7 @@ for (const references of [
   [referenceImage, referenceVideo, referenceAudio],
 ]) {
   const { body } = await submit({ ...base, capability: 'reference-to-video', prompt: '把参考图作为起始画面，随后镜头推进', references }, 'custom', { protocol: 'video-808relay' })
-  assert.equal(body.mode, 'multi_ref', 'reference media types, counts and prompt wording never select a frame mode')
+  assert.equal(body.mode, undefined, 'documented Pro route infers reference mode from reference fields')
   assert.equal(body.input_reference, undefined)
   assert.equal(body.image_end, undefined)
   for (const [type, field] of [['image', 'reference_images'], ['video', 'reference_videos'], ['audio', 'reference_audios']]) {
@@ -642,7 +780,7 @@ for (const references of [
   }
 }
 const singleFrameRequest = await submit({ ...base, capability: 'first-last-frame', references: [referenceImage] }, 'custom', { protocol: 'video-808relay' })
-assert.equal(singleFrameRequest.body.mode, 'image_to_video', 'only explicit frame mode may route a single image as the starting frame')
+assert.equal(singleFrameRequest.body.mode, undefined, 'documented Pro route infers frame mode from frame fields')
 assert.equal(singleFrameRequest.body.input_reference, referenceImage.url)
 assert.equal(singleFrameRequest.body.image_end, undefined)
 assert.equal(singleFrameRequest.body.reference_images, undefined)
@@ -775,6 +913,79 @@ assert.deepEqual(h3Mixed.reference_images, [referenceImage.url])
 assert.deepEqual(h3Mixed.reference_videos, [referenceVideo.url])
 assert.deepEqual(h3Mixed.reference_audios, [referenceAudio.url])
 assert.equal(h3Mixed.content, undefined, 'native MiniMax content is not a Kacang wire field')
+async function submitRenamedModel(modelId, routeChannel, overrides = {}) {
+  requests.length = 0
+  await submitGenerationTask({
+    variant: 'video', model: { ...model, id: modelId, videoRequestContract: { ...model.videoRequestContract, imageReferencesField: 'stale_images', firstFrameField: 'stale_first_frame' } },
+    channel: { ...channel, ...routeChannel, modelIds: [modelId] },
+    config: { ...base, model: modelId, capability: 'reference-to-video', resolution: '720p', seconds: 5, aspectRatio: '16:9', generateAudio: false, references: [referenceImage, referenceVideo, referenceAudio], ...overrides },
+  })
+  return JSON.parse(requests.find(request => request.url.endsWith('/v1/videos')).body)
+}
+const renamedSeedanceIds = ['供应商/sd2-5-720p-新名称', '供应商-Seedance v2.0 Pro-新名称', '镜像/S-满血2.0-新线路', '【新名称】ＳＤ２－５－７２０Ｐ', 'S20', 'S25-720', 'SD25-1080', 'doubao2.5', 's2-720', 'sd2-1080']
+const renamedChannelCases = [
+  ...seedanceRouteChannels.map(routeChannel => [routeChannel, '808relay']),
+  [{ protocol: 'video-kacang' }, 'kacang'],
+  [{ protocol: 'video-api', baseURL: 'https://newapi.prompt-hubs.com/v1' }, 'kacang'],
+  [{ protocol: 'video-api', presetId: 'video-kacang' }, 'kacang'],
+]
+let renamedRequests = 0
+for (const modelId of renamedSeedanceIds) {
+  for (const [routeChannel, provider] of renamedChannelCases) {
+    for (const [capability, references, mode] of seedanceRouteCases) {
+      if (provider === 'kacang' && capability === 'first-last-frame') {
+        await assert.rejects(() => submitRenamedModel(modelId, routeChannel, { capability, references }), /请求字段/)
+        assert.equal(requests.length, 0, 'Kacang S aliases cannot borrow 808 frame fields from stale model metadata')
+        continue
+      }
+      const body = await submitRenamedModel(modelId, routeChannel, { capability, references })
+      assert.equal(body.model, modelId)
+      assert.equal(body.mode, provider === '808relay' ? mode : undefined)
+      assert.equal(body[provider === '808relay' ? 'seconds' : 'duration_seconds'], 5)
+      assert.equal(body[provider === '808relay' ? 'duration_seconds' : 'seconds'], undefined)
+      assert.equal(body.stale_images, undefined)
+      assert.equal(body.stale_first_frame, undefined)
+      if (capability === 'reference-to-video') {
+        assert.equal(body.input_reference, undefined)
+        assert.equal(body.start_frame, undefined)
+        for (const [type, field] of [['image', 'reference_images'], ['video', 'reference_videos'], ['audio', 'reference_audios']]) {
+          const urls = references.filter(reference => reference.type === type).map(reference => reference.url)
+          assert.deepEqual(body[field], urls.length ? urls : undefined)
+        }
+      } else {
+        assert.equal(body.input_reference, references[0].url)
+        assert.equal(body.image_end, references[1]?.url)
+      }
+      renamedRequests++
+    }
+  }
+}
+const kacangRoute = { protocol: 'video-kacang' }
+const renamedDoubao = '新供应商/doubao_seedance_2_5-高速'
+const renamedDoubaoFrames = await submitRenamedModel(renamedDoubao, kacangRoute, { capability: 'first-last-frame', references: frames.references })
+assert.equal(renamedDoubaoFrames.model, renamedDoubao)
+assert.equal(renamedDoubaoFrames.start_frame, frames.references[0].url)
+assert.equal(renamedDoubaoFrames.end_frame, frames.references[1].url)
+assert.equal(renamedDoubaoFrames.input_reference, undefined)
+assert.equal(renamedDoubaoFrames.mode, undefined)
+await assert.rejects(() => submitRenamedModel(renamedDoubao, kacangRoute, { capability: 'first-last-frame', references: [referenceImage] }), /首帧和一张尾帧/)
+assert.equal(requests.length, 0)
+const renamedH3 = await submitRenamedModel('新供应商/H3-高速', kacangRoute, { resolution: '768' })
+assert.deepEqual(renamedH3.reference_images, [referenceImage.url])
+assert.deepEqual(renamedH3.reference_videos, [referenceVideo.url])
+assert.deepEqual(renamedH3.reference_audios, [referenceAudio.url])
+assert.equal(renamedH3.mode, undefined)
+const renamedGrok = await submitRenamedModel('新供应商/grok-imagine-video-1.5-高速', kacangRoute, { references: [referenceImage] })
+assert.deepEqual(renamedGrok.images, [referenceImage.url])
+assert.equal(renamedGrok.image, undefined)
+const renamedWan = await submitRenamedModel('新供应商/万相3.0-高速', { protocol: 'video-808relay' })
+assert.deepEqual(renamedWan.image_urls, [referenceImage.url])
+assert.deepEqual(renamedWan.video_urls, [referenceVideo.url])
+assert.deepEqual(renamedWan.audio_urls, [referenceAudio.url])
+assert.equal(renamedWan.mode, undefined)
+await assert.rejects(() => submitRenamedModel('新渠道/S-2.0mini-线路三-镜像', kacangRoute, { references: [referenceImage], resolution: '720p', seconds: 13 }), /最长 12 秒/)
+assert.equal(requests.length, 0, 'decorated known line IDs retain their channel-specific restrictions')
+console.log(`Renamed models: ${renamedRequests} cross-provider requests, family-specific fields and frame isolation passed`)
 for (const unrelatedModel of [models.find((item) => item.id === 'wan-3'), models.find((item) => item.id === 'gemini-omni-1.1')]) {
   requests.length = 0
   await submitGenerationTask({ variant: 'video', model: unrelatedModel, channel: { ...channel, protocol: 'video-808relay' }, config: { ...base, model: unrelatedModel.id, references: [] } })

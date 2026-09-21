@@ -4,6 +4,8 @@ import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createRequire } from 'node:module'
 import ts from 'typescript'
+import { EventEmitter } from 'node:events'
+import { Readable } from 'node:stream'
 
 const require = createRequire(import.meta.url)
 const web = fileURLToPath(new URL('../src/', import.meta.url))
@@ -25,6 +27,26 @@ const electron = { net: { fetch: async (_url, options) => {
   options.signal.addEventListener('abort', () => { try { source.error(new DOMException('Stopped', 'AbortError')) } catch {} }, { once: true })
   return new Response(body, { headers: { 'Content-Type': 'text/event-stream' } })
 } } }
+electron.net.request = options => {
+  const request = new EventEmitter()
+  const controller = new AbortController()
+  const headers = {}
+  let incoming
+  request.setHeader = (name, value) => { headers[name] = value }
+  request.write = () => {}
+  request.abort = () => { controller.abort(); incoming?.destroy(); request.emit('close') }
+  request.end = () => {
+    void electron.net.fetch(options.url, { ...options, headers, signal: controller.signal }).then(response => {
+      incoming = response.body ? Readable.fromWeb(response.body) : Readable.from([])
+      incoming.statusCode = response.status
+      incoming.statusMessage = response.statusText
+      incoming.headers = Object.fromEntries(response.headers)
+      incoming.on('close', () => request.emit('close'))
+      request.emit('response', incoming)
+    }).catch(error => request.emit('error', error))
+  }
+  return request
+}
 function load(filename) {
   if (modules.has(filename)) return modules.get(filename).exports
   const module = { exports: {} }

@@ -7,7 +7,7 @@ import { decryptAPIKey, encryptAPIKey } from '@/lib/secure-storage'
 import { deleteDesktopSecret, syncDesktopSecretInBackground } from '@/lib/desktop-secrets'
 import { normalizeMediaTransport } from '@/lib/generation/media-policy'
 import type { GenerationCapability } from '@/types/flow'
-import { is808VideoChannel, resolve808WanModel, resolveKacangModel, GENERATION_CHANNEL_PRESETS, VIDEO_808_DEFAULT_BASE_URL, VIDEO_MODEL_CATALOG } from '@/lib/generation/video-catalog'
+import { is808VideoChannel, resolve808WanModel, resolveKacangModel, resolveVideoModelAdapter, GENERATION_CHANNEL_PRESETS, VIDEO_808_DEFAULT_BASE_URL, VIDEO_MODEL_CATALOG } from '@/lib/generation/video-catalog'
 export { GENERATION_CHANNEL_PRESETS } from '@/lib/generation/video-catalog'
 
 export type GenerationProviderId = 'openai' | 'google' | 'video' | 'custom'
@@ -77,6 +77,8 @@ export interface GenerationModel {
   defaultQuality?: 'auto' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'
   allowedDurations?: number[]
   defaultDuration?: number
+  /** Audio is directed by the prompt; the provider exposes no boolean switch. */
+  audioGeneration?: 'prompt'
   promptRequired?: boolean
   promptlessWithReferences?: boolean
   allowsAudioOnlyReference?: boolean
@@ -335,6 +337,8 @@ export function generationVideoRequestContractForModel(channel: GenerationChanne
   if (wan) return wan.videoRequestContract
   const kacang = resolveKacangModel(channel, model?.id || '', adapter?.protocol || generationProtocolForChannel(channel))
   if (kacang) return kacang.videoRequestContract
+  const familyAdapter = resolveVideoModelAdapter(channel, model?.id || '', adapter?.protocol || generationProtocolForChannel(channel))
+  if (familyAdapter) return familyAdapter.requestContract
   const preset = generationPresetForId(channel.presetId)
   const contract = model?.videoRequestContract || adapter?.videoRequestContract || channel.videoRequestContract || preset?.videoRequestContract
   if (contract) return contract

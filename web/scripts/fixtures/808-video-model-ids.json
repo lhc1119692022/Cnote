@@ -1,0 +1,43 @@
+{
+  "source": "https://api.808relay.com/api/docs",
+  "contractVersion": 1,
+  "seedanceModelIds": [
+    "high-seedance-2.0",
+    "high-seedance-2.0-480p",
+    "high-seedance-2.0-4k",
+    "high-seedance-2.0-720p",
+    "high-seedance-2.0-fast",
+    "high-seedance-2.0-fast-480p",
+    "high-seedance-2.0-fast-720p",
+    "high-seedance-2.0-hd",
+    "high-seedance-2.0-mini",
+    "high-seedance-2.0-mini-480p",
+    "high-seedance-2.0-mini-720p",
+    "sd2-0",
+    "sd2-5-720p",
+    "seedance-2-fast",
+    "seedance-2-mini",
+    "seedance-2-pro",
+    "seedance-2.5-pro"
+  ],
+  "nonSeedanceModelIds": [
+    "gemini-omni-1.1",
+    "grok-4.6",
+    "grok-imagine-image",
+    "grok-imagine-image-quality",
+    "grok-imagine-video",
+    "grok-imagine-video-1.5",
+    "kling-video-v3",
+    "kling-video-v3-omni",
+    "kling-video-v3-turbo",
+    "omni-flash",
+    "omni-flash-components",
+    "omni-flash-edit",
+    "omni_720P",
+    "veo_3_1_fast_720P",
+    "veo_3_1_lite_720P",
+    "wan-3",
+    "wan-3.0",
+    "wan-3.0-1080p"
+  ]
+}

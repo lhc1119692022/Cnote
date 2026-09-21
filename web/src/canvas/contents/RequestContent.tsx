@@ -1,4 +1,5 @@
 import { GenerationActionButton } from '@/canvas/components/GenerationActionButton'
+import { GenerationDurationInput } from '@/canvas/components/GenerationDurationInput'
 import { addVideoInputFile, useVideoInputFeedback } from '@/canvas/video-input-validation'
 import { officialMediaProfile } from '@/lib/generation/official-media-rules'
 import { usePromptAutosize } from '@/canvas/use-prompt-autosize'
@@ -48,6 +49,7 @@ import {
   stalePromptMentionEntries,
   toLegacyVariantConfig,
   upsertGenerationResultNodes,
+  removeFailedGenerationPlaceholders,
 } from '@/canvas/contents/request-generation'
 import type {
   GenerationConfig,
@@ -63,7 +65,7 @@ import type {
 } from '@/domain'
 import { runGenerationBatch } from '@/lib/generation/batch'
 import { runGenerationTask, type GenerationRequestContext } from '@/lib/generation/client'
-import { mediaRequestSummary } from '@/lib/generation/request-diagnostics'
+import { mediaRequestDetails, mediaRequestSummary } from '@/lib/generation/request-diagnostics'
 import {
   generationRequestContextFromSnapshot,
   generationRunStatusFromTasks,
@@ -594,6 +596,13 @@ export const RequestContent = memo(function RequestContent({ node }: { node: Req
   const documentEdges = useGraphStore((state) => state.currentDocument?.edges)
   const assets = useRuntimeStore((state) => state.assets)
   const runs = useRuntimeStore((state) => state.runs)
+  useEffect(() => {
+    Object.values(runs).filter(run => run.requestNodeId === node.id).forEach(run => {
+      if (run.status === 'failed' && generationRunStatusFromTasks(run.tasks) === 'waiting-for-user') {
+        useRuntimeStore.getState().updateRun(run.id, { status: 'waiting-for-user' })
+      } else removeFailedGenerationPlaceholders(run)
+    })
+  }, [runs, node.id])
 
   const generationVariant = isGenerationVariant(node.variant) ? node.variant : null
   const variantConfig = generationVariant ? node[generationVariant] : null
@@ -616,6 +625,7 @@ export const RequestContent = memo(function RequestContent({ node }: { node: Req
     return runId ? state.runs[runId] : undefined
   })
   const activeTask = run?.tasks[0]
+  const displayedRequestError = requestError || (run?.status === 'failed' ? run.tasks.find(task => task.status === 'failed')?.error || '生成失败，请稍后重试' : null)
 
   const upstreamNodes = useMemo(
     () => collectUpstreamNodes(node.id, documentNodes, documentEdges),
@@ -970,10 +980,13 @@ export const RequestContent = memo(function RequestContent({ node }: { node: Req
       })
     })
     runtime.updateRun(runId, { status: 'failed' })
+    removeFailedGenerationPlaceholders(useRuntimeStore.getState().runs[runId])
   }, [])
 
   const applyFinalGenerationTask = useCallback((runId: string, finalTask: GenerationTaskState) => {
     syncGenerationRunStatus(runId)
+    const finishedRun = useRuntimeStore.getState().runs[runId]
+    if (finishedRun) removeFailedGenerationPlaceholders(finishedRun)
     const mapped = mapTaskStatus(finalTask.status === 'idle' ? 'cancelled' : finalTask.status)
     if (finalTask.status === 'failed' || finalTask.status === 'timeout' || finalTask.status === 'unknown') {
       setRequestError(finalTask.error?.trim() || (finalTask.status === 'timeout' ? '任务已超时' : '生成失败，请稍后重试'))
@@ -1888,38 +1901,26 @@ export const RequestContent = memo(function RequestContent({ node }: { node: Req
               {generationVariant === 'video' && (
                 <>
                   <div className="h-px bg-border" />
-                  {selectedModel?.allowedDurations?.length ? (
-                    <ChoiceRow
-                      label="时长（秒）"
-                      value={String(variantConfig?.seconds || selectedModel.defaultDuration || selectedModel.allowedDurations[0])}
-                      options={selectedModel.allowedDurations.map((seconds) => ({ value: String(seconds), label: String(seconds) }))}
-                      onChange={(value) => updateVariant({ seconds: Number(value) })}
-                      ariaLabel="时长（秒）"
-                    />
-                  ) : (
                     <div className="flex items-center justify-between gap-3 px-2 py-1.5">
                       <span className="text-[10px] text-muted-foreground">时长（秒）</span>
-                      <input
-                        type="number"
+                      <GenerationDurationInput
                         min={selectedModel?.minDuration || 1}
                         max={selectedModel?.maxDuration || 60}
-                        value={variantConfig?.seconds || selectedModel?.defaultDuration || 5}
-                        aria-label="时长（秒）"
-                        className="h-7 w-16 rounded-full border border-border bg-background/75 px-2 text-center text-[10px] text-foreground outline-none focus-visible:ring-1 focus-visible:ring-foreground/30"
-                        onPointerDown={stopNodeGesture}
-                        onChange={(event) => updateVariant({ seconds: Number(event.target.value) })}
+                        allowed={selectedModel?.allowedDurations}
+                        value={variantConfig?.seconds || selectedModel?.defaultDuration || selectedModel?.allowedDurations?.[0] || 5}
+                        onChange={(seconds) => updateVariant({ seconds })}
                       />
                     </div>
-                  )}
-                  {showAudioToggle && (
-                    <label className="flex items-center justify-between gap-3 rounded-lg px-2 py-2 text-[11px] text-foreground hover:bg-muted/70" title="生成视频音轨">
+                  {(showAudioToggle || selectedModel?.audioGeneration === 'prompt') && (
+                    <label className="flex items-center justify-between gap-3 rounded-lg px-2 py-2 text-[11px] text-foreground hover:bg-muted/70" title={selectedModel?.audioGeneration === 'prompt' ? '声音随提示词生成，当前渠道不支持关闭音频' : '生成视频音轨'}>
                       <span className="flex items-center gap-2">
                         <Mic className="h-3.5 w-3.5 text-muted-foreground" />
                         生成音频
                       </span>
                       <input
                         type="checkbox"
-                        checked={Boolean(resolvedLegacy?.generateAudio)}
+                        checked={selectedModel?.audioGeneration === 'prompt' || Boolean(resolvedLegacy?.generateAudio)}
+                        disabled={selectedModel?.audioGeneration === 'prompt'}
                         aria-label="生成音频"
                         onChange={(event) => updateVariant({ generateAudio: event.target.checked })}
                       />
@@ -2006,7 +2007,7 @@ export const RequestContent = memo(function RequestContent({ node }: { node: Req
               </div>
             )}
             {generationVariant === 'video' && activeTask?.requestDiagnostics && (
-              <p role="status" className="mb-2 px-1 text-[11px] leading-5 text-muted-foreground" title="已准备的实际请求素材；客户端检查不保证模型服务能够读取。保留期按已配置的 R2 14 天规则估算，不代表任务永久锁定文件。">
+              <p role="status" className="mb-2 px-1 text-[11px] leading-5 text-muted-foreground" title={mediaRequestDetails(activeTask.requestDiagnostics)}>
                 {mediaRequestSummary(activeTask.requestDiagnostics)}
                 {!!activeTask.requestDiagnostics.unknownRetentionCount && <span> · {activeTask.requestDiagnostics.unknownRetentionCount} 个地址保留期未知</span>}
               </p>
@@ -2016,17 +2017,17 @@ export const RequestContent = memo(function RequestContent({ node }: { node: Req
                 {mediaFeedback?.message || '未配置官方规格，未验证模型素材限制'}
               </div>
             ) : null}
-            {requestError && (
+            {displayedRequestError && (
               <div role="alert" className="mb-2 rounded-xl border border-destructive/25 bg-destructive/5 px-3 py-2 text-xs leading-5 text-destructive">
-                {requestError}
+                {displayedRequestError}
               </div>
             )}
-            {!isRunning && !isWaitingForUser && !requestError && activeTask?.status === 'completed' && (
+            {!isRunning && !isWaitingForUser && !displayedRequestError && activeTask?.status === 'completed' && (
               <div className="rounded-lg bg-emerald-50 px-2.5 py-2 text-[10px] text-emerald-800">
                 任务已完成{completedCount > 0 ? `，已生成 ${completedCount} 个${generationVariant === 'image' ? '图片' : '视频'}结果` : ''}
               </div>
             )}
-            {!isRunning && !isWaitingForUser && !requestError && activeTask?.status !== 'completed' && (
+            {!isRunning && !isWaitingForUser && !displayedRequestError && activeTask?.status !== 'completed' && (
               <p className="px-1 py-4 text-center text-xs text-muted-foreground">
                 {upstreamText ? '已连接上游文本，生成时会一并提交' : '还没有生成结果'}
               </p>

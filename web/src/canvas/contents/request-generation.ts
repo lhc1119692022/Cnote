@@ -1,4 +1,5 @@
 import { batchLayout } from '@/canvas/generation-batch'
+import { syncGroupCounts } from '@/canvas/grouping'
 import { placeNewestResult } from '@/canvas/result-placement'
 /**
  * Request 节点的运行时素材派生与结果落盘。
@@ -20,7 +21,7 @@ import type {
   RequestNodeSpec,
 } from '@/domain'
 import { createGenerationReference, createGenerationVariantConfig, normalizeGenerationReferences } from '@/lib/generation/defaults'
-import { isGenerationTaskResumable } from '@/lib/generation/resume-context'
+import { generationRunStatusFromTasks, isGenerationTaskResumable } from '@/lib/generation/resume-context'
 import { CONTENT_NODE_DEFAULT_SIZE } from '@/lib/flow/node-dimensions'
 import { assetIdForResource, resourceIdForAsset } from '@/storage/asset-store'
 import { useGraphStore } from '@/stores/graph-store'
@@ -518,6 +519,39 @@ export function upsertGenerationResultNodes(options: {
 }
 
 export const RESUME_GENERATION_EVENT = 'cnote:resume-generation'
+
+export function removeFailedGenerationPlaceholders(run: GenerationRun): string[] {
+  if (generationRunStatusFromTasks(run.tasks) === 'waiting-for-user') return []
+  if (run.status !== 'failed' || run.tasks.some(task => ['validating', 'queued', 'running'].includes(task.status))) return []
+  const graph = useGraphStore.getState()
+  const doc = graph.currentDocument
+  if (!doc || !run.requestNodeId) return []
+  const removed = new Set(doc.nodes.filter(node => {
+    if (node.kind !== 'content' || node.generationBatch?.runId !== run.id || node.generatedBy?.requestNodeId !== run.requestNodeId || node.generatedBy?.detached) return false
+    const resources = node.payload?.kind === 'image' || node.payload?.kind === 'video' ? node.payload.resources : undefined
+    return !resources?.length && !node.assetId && !node.source && !node.content
+  }).map(node => node.id))
+  if (!removed.size) return []
+  const nodes = syncGroupCounts(doc.nodes.filter(node => !removed.has(node.id)).map(node => {
+    if (node.kind !== 'request' || node.id !== run.requestNodeId) return node
+    return { ...node, resultNodeIds: {
+      ...node.resultNodeIds,
+      image: ownedResultNodeIds(node.resultNodeIds?.image).filter(id => !removed.has(id)),
+      video: ownedResultNodeIds(node.resultNodeIds?.video).filter(id => !removed.has(id)),
+    } }
+  }))
+  useGraphStore.setState({
+    currentDocument: { ...doc, nodes, edges: doc.edges.filter(edge => !removed.has(edge.source) && !removed.has(edge.target)), updatedAt: Date.now() },
+    selection: (graph.selection || []).filter(id => !removed.has(id)),
+  })
+  if (run.resultNodeId && removed.has(run.resultNodeId)) {
+    const remainingRun = { ...run }
+    delete remainingRun.resultNodeId
+    useRuntimeStore.getState().putRun(remainingRun)
+  }
+  useGraphStore.getState().commitHistory()
+  return [...removed]
+}
 
 export function isGenerationRunResumable(run: GenerationRun): boolean {
   return run.status === 'waiting-for-user' && run.tasks.some((task) => isGenerationTaskResumable(task))
