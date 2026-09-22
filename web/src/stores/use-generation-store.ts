@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import { withOfficialMediaCapabilities } from '@/lib/generation/official-media-rules'
+import { seedanceGenerationRules, withOfficialMediaCapabilities } from '@/lib/generation/official-media-rules'
 import { createJSONStorage, persist } from 'zustand/middleware'
 import { nanoid } from 'nanoid'
 import { localForageStorage } from '@/lib/localforage-storage'
@@ -27,10 +27,12 @@ export interface GenerationVideoRequestContract {
   lastFrameField?: string
   imageReferencesField?: string
   videoReferencesField?: string
+  referenceVideoDurationsField?: string
   audioReferencesField?: string
   generateAudioField?: string
   requiresPublicHttps?: boolean
   referenceLimits?: Partial<Record<'image' | 'video' | 'audio', number>>
+  maxReferenceCount?: number
   minReferenceImages?: number
   requiresFramePair?: boolean
   maxDurationByResolution?: Record<string, number>
@@ -62,6 +64,8 @@ export interface GenerationModel {
   adapterId?: string
   capabilities: GenerationCapability[]
   capabilitySource?: 'catalog' | 'inferred'
+  /** Declaration provenance only; never exempts an alias from its official family constraints. */
+  mediaRulesSource?: 'official' | 'custom'
   inputTypes?: Array<'image' | 'video' | 'audio'>
   maxImages?: number
   maxVideos?: number
@@ -333,6 +337,9 @@ export function modelsForGenerationProtocol(protocol: GenerationProtocolId) {
 
 export function generationVideoRequestContractForModel(channel: GenerationChannel, model?: GenerationModel, adapterId?: string) {
   const adapter = generationAdapterForConfig(channel, adapterId)
+  const scopedContract = channel.modelCatalog?.find((candidate) => candidate.id === model?.id)?.videoRequestContract
+  if (scopedContract) return scopedContract
+  if (model?.mediaRulesSource === 'custom' && model.videoRequestContract && seedanceGenerationRules(model.id)) return model.videoRequestContract
   const wan = resolve808WanModel(channel, model?.id || '', adapter?.protocol || generationProtocolForChannel(channel))
   if (wan) return wan.videoRequestContract
   const kacang = resolveKacangModel(channel, model?.id || '', adapter?.protocol || generationProtocolForChannel(channel))
@@ -617,7 +624,10 @@ export const useGenerationStore = create<GenerationState>()(
         return (channel.modelIds || []).map((id) => {
           const owner = adapters.find((adapter) => (channel.modelCatalog || modelsForGenerationProtocol(adapter.protocol)).some((model) => model.id === id))
           const protocol = owner?.protocol || adapters[0]?.protocol || generationProtocolForChannel(channel)
-          const catalogModel = resolve808WanModel(channel, id, protocol) || resolveKacangModel(channel, id, protocol) || catalogs.find((model) => model.id === id)
+          const catalogModel = channel.modelCatalog?.find((model) => model.id === id)
+            || resolve808WanModel(channel, id, protocol)
+            || resolveKacangModel(channel, id, protocol)
+            || catalogs.find((model) => model.id === id)
           return withOfficialMediaCapabilities(catalogModel
             ? { ...catalogModel, id, adapterId: owner?.id }
             : {

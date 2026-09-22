@@ -11,7 +11,7 @@ import { create } from 'zustand'
 const require = createRequire(import.meta.url)
 const sourceRoot = fileURLToPath(new URL('../src/', import.meta.url))
 const mocks = new Map()
-mocks.set('./media-inspection', { validateOfficialMediaReferences: async () => [] })
+mocks.set('./media-inspection', { validateOfficialMediaReferences: async () => [], loadReferenceForInspection: async () => new Blob(['video'], { type: 'video/mp4' }), inspectMediaBlob: async () => ({ bytes: 5, format: 'mp4', duration: 4 }) })
 mocks.set('@/canvas/video-input-validation', { useVideoInputFeedback: create(() => ({ nodes: {} })), addVideoInputFile: async () => {} })
 const modules = new Map()
 
@@ -51,6 +51,7 @@ function declarations(relativePath, names) {
 }
 
 const { VIDEO_808_MODELS: models, VIDEO_KACANG_MODELS: kacangModels, resolveKacangModel, videoRequestMode, resolveVideoModelAdapter } = load('lib/generation/video-catalog.ts')
+const { officialMediaProfile } = load('lib/generation/official-media-rules.ts')
 const public808ModelIds = JSON.parse(readFileSync(new URL('./fixtures/808-video-model-ids.json', import.meta.url), 'utf8'))
 const supplied808Contracts = JSON.parse(readFileSync(new URL('./fixtures/808-provided-contracts.json', import.meta.url), 'utf8'))
 const model = models.find((item) => item.id === 'seedance-2.5-pro')
@@ -116,6 +117,7 @@ mocks.set('@/lib/desktop-fetch', { desktopFetch: async (url, options = {}, trans
   if (pollFailure && options.method === 'GET' && url.endsWith('/v1/videos/task-wan-failed')) return Response.json(pollFailure)
   if (rejectUpload && !url.endsWith('/v1/videos')) return new Response('upload failed', { status: 500 })
   if (url.endsWith('/upload')) return Response.json({ url: 'https://cdn.test/uploaded.png' })
+  if (url === 'https://cdn.test/clip.mp4') return new Response('video', { headers: { 'content-type': 'video/mp4' } })
   if (creationFailure && options.method === 'POST') return Response.json(creationFailure, { status: 400, headers: { 'x-request-id': 'request-create-123' } })
   assert.ok(url.endsWith('/v1/videos'), 'no unexpected network endpoint')
   if (options.method === 'POST') {
@@ -496,7 +498,7 @@ assert.deepEqual(videoModesForModel({ ...model, capabilitySource: 'inferred' }),
 assert.deepEqual(videoInputTypes({ ...model, capabilitySource: 'inferred' }, 'reference-to-video'), ['image', 'video', 'audio'])
 assert.equal(base.capability, 'reference-to-video')
 assert.equal(videoReferenceError(model, base), undefined, 'multimodal permits prompt-only generation')
-assert.equal(videoReferenceError({ ...model, capabilities: ['reference-to-video'] }, base), undefined, 'official model inputs override stale channel capabilities')
+assert.match(videoReferenceError({ ...model, capabilities: ['reference-to-video'] }, base) || '', /纯文本生成能力/, 'channel capability declarations may further restrict the official baseline')
 const frames = normalizeVideoModeConfig({ ...base, capability: 'first-last-frame', references: merged.references.slice(0, 2) })
 assert.deepEqual(frames.references.map((reference) => reference.role), ['first_frame', 'last_frame'])
 assert.equal(videoReferenceError(model, frames), undefined)
@@ -717,6 +719,15 @@ for (const modelId of seedanceRouteModelIds) {
   for (const routeChannel of seedanceRouteChannels) {
     for (const [capability, references, expectedMode] of seedanceRouteCases) {
       requests.length = 0
+      const audioOnly = references.length > 0 && references.every((reference) => reference.type === 'audio')
+      if (audioOnly && officialMediaProfile(modelId)?.id === 'seedance-2.0') {
+        await assert.rejects(() => submitGenerationTask({
+          variant: 'video', model: { ...model, id: modelId },
+          channel: { ...channel, ...routeChannel, modelIds: [modelId] },
+          config: { ...base, model: modelId, capability, references, resolution: '720p', aspectRatio: '9:16' },
+        }), /参考音频必须同时提供参考图片或参考视频/, `${modelId} (${routeChannel.protocol}) must reject audio-only input`)
+        continue
+      }
       await submitGenerationTask({
         variant: 'video', model: { ...model, id: modelId },
         channel: { ...channel, ...routeChannel, modelIds: [modelId] },
@@ -804,6 +815,9 @@ for (const [catalog, providerProtocol] of [[models, 'video-808relay'], [kacangMo
     const availableReferences = [referenceImage, referenceVideo, referenceAudio].filter(reference => acceptedTypes.includes(reference.type))
     for (const references of [[], ...availableReferences.map(reference => [reference]), availableReferences]) {
       requests.length = 0
+      const routedContract = providerProtocol === 'video-kacang'
+        ? resolveKacangModel(channel, selectedModel.id, providerProtocol)?.videoRequestContract || selectedModel.videoRequestContract
+        : selectedModel.videoRequestContract
       const submission = submitGenerationTask({
         variant: 'video', model: selectedModel,
         channel: { ...channel, protocol: providerProtocol },
@@ -816,19 +830,24 @@ for (const [catalog, providerProtocol] of [[models, 'video-808relay'], [kacangMo
         assert.equal(requests.length, 0)
         continue
       }
-      if (selectedModel.videoRequestContract.minReferenceImages && !references.some(reference => reference.type === 'image')) {
+      if (references.length > 0 && references.every((reference) => reference.type === 'audio') && officialMediaProfile(selectedModel.id)?.id === 'seedance-2.0') {
+        await assert.rejects(submission, /参考音频必须同时提供参考图片或参考视频|至少需要.*参考图片/)
+        assert.equal(requests.length, 0)
+        continue
+      }
+      if (routedContract.minReferenceImages && !references.some(reference => reference.type === 'image')) {
         await assert.rejects(submission, /至少需要.*参考图片/)
         assert.equal(requests.length, 0)
         continue
       }
-      if (references.some(reference => !selectedModel.videoRequestContract[`${reference.type}ReferencesField`])) {
+      if (references.some(reference => !routedContract[`${reference.type}ReferencesField`])) {
         await assert.rejects(submission, /请求字段/)
         assert.equal(requests.length, 0)
         continue
       }
       await submission
       const body = JSON.parse(requests.find(request => request.url.endsWith('/v1/videos')).body)
-      const contract = selectedModel.videoRequestContract
+      const contract = routedContract
       if (contract.firstFrameField) assert.equal(body[contract.firstFrameField], undefined)
       if (contract.lastFrameField) assert.equal(body[contract.lastFrameField], undefined)
       for (const [type, field] of [['image', contract.imageReferencesField], ['video', contract.videoReferencesField], ['audio', contract.audioReferencesField]]) {
@@ -866,11 +885,11 @@ requests.length = 0
 await assert.rejects(() => submitGenerationTask({
   variant: 'video', model: kacangModels.find(item => item.id === 'minimax_h3'), channel: { ...channel, protocol: 'video-kacang' },
   config: { ...base, resolution: '768', capability: 'first-last-frame', generateAudio: false, references: [{ ...referenceImage, source: 'local', resourceId: 'sha256-frame', url: undefined }] },
-}), /validation:.*首帧.*请求字段/)
+}), /validation:.*(?:首帧.*请求字段|尚未配置.*首尾帧能力)/)
 assert.equal(requests.length, 0, 'missing provider frame contract fails before uploading local media')
 console.log(`Cross-channel video contracts: ${models.length + kacangModels.length} catalog models, ${auditedRequests} reference requests and ${auditedFrameRoutes} frame routes passed`)
 async function submitKacang(modelId, overrides = {}, staleModel = {}) {
-  const selectedModel = kacangModels.find(item => item.id === modelId)
+  const selectedModel = kacangModels.find(item => item.id === modelId) || resolveKacangModel({ ...channel, protocol: 'video-kacang' }, modelId)
   requests.length = 0
   await submitGenerationTask({
     variant: 'video', model: { ...selectedModel, ...staleModel },
@@ -897,7 +916,6 @@ for (const [modelId, config, expected] of [
   ['S-2.0-933-线路六', { references: [] }, /至少需要 1 张参考图片/],
   ['S-2.0-933-线路六', { seconds: 10 }, /只能为 15 秒/],
   ['S-2.0-933-线路六', { prompt: '文'.repeat(5001) }, /最多 5000/],
-  ['S-2.5-301010-25 秒-线路三', { seconds: 26 }, /4-25 秒/],
   ['S-2.5-九图-线路三', { references: Array.from({ length: 10 }, (_, index) => ({ ...referenceImage, id: `ref-${index}` })) }, /最多支持 9/],
   ['grok-imagine-video-1.5', { resolution: '1080p' }, /参考图模式仅支持/],
   ['grok-imagine-video', { capability: 'first-last-frame', references: frames.references }, /尾帧.*请求字段/],
@@ -905,12 +923,38 @@ for (const [modelId, config, expected] of [
   await assert.rejects(() => submitKacang(modelId, config), expected)
   assert.equal(requests.length, 0, `${modelId} rejects invalid input before uploads or task creation`)
 }
+const s25_301010Body = await submitKacang('S-2.5-301010-内置过脸', {
+  seconds: 30,
+  resolution: '720p',
+  aspectRatio: '9:16',
+  references: [referenceImage, referenceVideo, referenceAudio],
+})
+assert.equal(s25_301010Body.duration_seconds, 30)
+assert.equal(s25_301010Body.resolution, '720p')
+assert.equal(s25_301010Body.aspect_ratio, '9:16')
+assert.deepEqual(s25_301010Body.reference_videos, [referenceVideo.url])
+assert.deepEqual(s25_301010Body.reference_images, [referenceImage.url])
+assert.deepEqual(s25_301010Body.reference_audios, [referenceAudio.url])
+const s25_301010References = [
+  ...Array.from({ length: 30 }, (_, index) => ({ ...referenceImage, id: `s25-301010-image-${index}` })),
+  ...Array.from({ length: 10 }, (_, index) => ({ ...referenceAudio, id: `s25-301010-audio-${index}` })),
+  { ...referenceVideo, id: 's25-301010-video' },
+]
+await assert.rejects(() => submitKacang('S-2.5-301010-内置过脸', { references: s25_301010References }), /最多支持 40 个参考素材/)
+assert.equal(requests.length, 0, 'S-2.5 301010 rejects more than 40 mixed references before uploads or task creation')
+await assert.rejects(() => submitKacang('S-2.5-301010-25 秒-线路三', { seconds: 26 }), /4-25 秒/)
+const public301010Body = await submitKacang('S-2.5-301010-25 秒-线路三', { seconds: 25, references: [referenceImage, referenceAudio] })
+assert.equal(public301010Body.duration_seconds, 25)
+assert.deepEqual(public301010Body.reference_images, [referenceImage.url])
+assert.deepEqual(public301010Body.reference_audios, [referenceAudio.url])
+assert.equal(public301010Body.reference_videos, undefined, 'the public 301010 catalog entry keeps its original no-video-reference contract')
 await submitKacang('S-2.0mini-线路三', { resolution: '720p', seconds: 12 })
 await submitKacang('S-2.0mini-线路三', { resolution: '480p', seconds: 15 })
 await submitKacang('doubao-seedance-2.0', { capability: 'first-last-frame', references: frames.references })
 const h3Mixed = await submitKacang('minimax_h3', { references: [referenceImage, referenceVideo, referenceAudio] })
 assert.deepEqual(h3Mixed.reference_images, [referenceImage.url])
 assert.deepEqual(h3Mixed.reference_videos, [referenceVideo.url])
+assert.deepEqual(h3Mixed.reference_video_durations, [4], 'MiniMax H3 sends one valid duration for every reference video')
 assert.deepEqual(h3Mixed.reference_audios, [referenceAudio.url])
 assert.equal(h3Mixed.content, undefined, 'native MiniMax content is not a Kacang wire field')
 async function submitRenamedModel(modelId, routeChannel, overrides = {}) {
@@ -933,6 +977,12 @@ let renamedRequests = 0
 for (const modelId of renamedSeedanceIds) {
   for (const [routeChannel, provider] of renamedChannelCases) {
     for (const [capability, references, mode] of seedanceRouteCases) {
+      const audioOnly = references.length > 0 && references.every((reference) => reference.type === 'audio')
+      if (audioOnly && officialMediaProfile(modelId)?.id === 'seedance-2.0') {
+        await assert.rejects(() => submitRenamedModel(modelId, routeChannel, { capability, references }), /参考音频必须同时提供参考图片或参考视频|至少需要.*参考图片/)
+        assert.equal(requests.length, 0, 'renamed Seedance 2.0 aliases cannot bypass the audio-only restriction')
+        continue
+      }
       if (provider === 'kacang' && capability === 'first-last-frame') {
         await assert.rejects(() => submitRenamedModel(modelId, routeChannel, { capability, references }), /请求字段/)
         assert.equal(requests.length, 0, 'Kacang S aliases cannot borrow 808 frame fields from stale model metadata')
@@ -973,6 +1023,7 @@ assert.equal(requests.length, 0)
 const renamedH3 = await submitRenamedModel('新供应商/H3-高速', kacangRoute, { resolution: '768' })
 assert.deepEqual(renamedH3.reference_images, [referenceImage.url])
 assert.deepEqual(renamedH3.reference_videos, [referenceVideo.url])
+assert.deepEqual(renamedH3.reference_video_durations, [4])
 assert.deepEqual(renamedH3.reference_audios, [referenceAudio.url])
 assert.equal(renamedH3.mode, undefined)
 const renamedGrok = await submitRenamedModel('新供应商/grok-imagine-video-1.5-高速', kacangRoute, { references: [referenceImage] })

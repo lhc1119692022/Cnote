@@ -238,7 +238,7 @@ async function serveMedia(request, env, url) {
     return new Response(null, { status: 200, headers });
   }
 
-  return new Response(object.body.pipeThrough(new TransformStream()), {
+  return new Response(object.body, {
     status: 200,
     headers,
   });

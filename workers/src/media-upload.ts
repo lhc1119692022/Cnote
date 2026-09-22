@@ -156,7 +156,7 @@ export default {
       // does not convert this response into Partial Content.
       headers.set('Accept-Ranges', 'none')
       if (request.method === 'HEAD' || !object.body) return new Response(null, { status: 200, headers })
-      return new Response(object.body.pipeThrough(new TransformStream()), { status: 200, headers })
+      return new Response(object.body, { status: 200, headers })
     }
 
     if ((request.method === 'POST' && url.pathname === '/upload') || (request.method === 'DELETE' && key)) {

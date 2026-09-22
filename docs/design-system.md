@@ -37,6 +37,8 @@ The preferred menu is the style shown in the node filter and add-node references
 
 ## Layout And Layering
 
+- Native video-node playback controls appear only while the node is hovered; selection alone does not keep them visible. Leaving the node hides controls without pausing or remounting the player. Fullscreen playback retains native controls independently of canvas hover.
+
 - Canvas background dots use a 60-world-pixel base pitch and a 4-world-pixel diameter. Both scale continuously with canvas zoom, like a tiled image, while remaining CSS gradients rather than image assets. Hide the dots when screen-space pitch is below 20 CSS pixels; show them at or above 20 CSS pixels. Do not introduce stepped density changes or fixed screen-space dot sizes. At 95% zoom the pitch is 57 CSS pixels and the diameter is 3.8 CSS pixels. Keep the existing panning alignment, theme-aware dot color, and opacity.
 
 - Canvas right-button drag cuts connections: use a scissors cursor and red dashed trail, preview crossed edges with red dashes, and remove them together on release in one undo step. Do not show the former canvas paste menu. Escape, focus loss, document/viewport changes, and pointer cancellation discard the preview; locked canvases cannot be cut. Text inputs retain their native editing menu.

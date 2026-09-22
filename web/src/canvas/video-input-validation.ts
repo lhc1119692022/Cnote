@@ -8,7 +8,7 @@ import { useGraphStore } from '@/stores/graph-store'
 import { useRuntimeStore } from '@/stores/runtime-store'
 import { useGenerationStore } from '@/stores/use-generation-store'
 import { loadReferenceForInspection, prepareOfficialMediaInput } from '@/lib/generation/media-inspection'
-import { officialMediaProfile, validateMediaCollection, type MediaMetadata } from '@/lib/generation/official-media-rules'
+import { mediaProfileForModel, officialMediaProfile, validateMediaCollection, type MediaMetadata } from '@/lib/generation/official-media-rules'
 import { normalizeVideoModeConfig } from '@/lib/generation/video-mode'
 import type { GenerationReference } from '@/types/flow'
 import { resolveRequestGenerationInputs, toLegacyVariantConfig } from './contents/request-generation'
@@ -46,6 +46,10 @@ function referencesFor(document: FlowDocument, request: RequestNodeSpec, config 
   return normalizeVideoModeConfig(toLegacyVariantConfig('video', config, resolved.references, resolved.prompt), model).references
 }
 
+function hasOfficialMediaProfile(request: RequestNodeSpec) {
+  return Boolean(officialMediaProfile(request.video.model))
+}
+
 function inputIdentity(document: FlowDocument, request: RequestNodeSpec) {
   return JSON.stringify([
     document.id, request.video.channelId, request.video.model, request.video.capability,
@@ -79,7 +83,8 @@ async function inspectInputs(options: {
   signal: AbortSignal
 }): Promise<{ rejected: Set<string>; errors: string[]; overrides: Record<string, GenerationReferenceOverride>; imported: string[] }> {
   const { request, references, adaptIds, signal } = options
-  const profile = officialMediaProfile(request.video.model)
+  const model = useGenerationStore.getState().getModels(request.video.channelId).find((candidate) => candidate.id === request.video.model)
+  const profile = mediaProfileForModel(request.video.model, model)
   const overrides = { ...request.video.referenceOverrides }
   const rejected = new Set<string>()
   const errors: string[] = []
@@ -132,7 +137,7 @@ async function inspectInputs(options: {
       const processingKey = `${contentKey}:${profile.id}:${profile.revision}:webp:100:${reference.role || ''}`
       const cachedId = canAdapt && copies.get(processingKey)
       const cachedBlob = cachedId ? await loadLocalResourceBlob(resourceIdForAsset(cachedId)) : undefined
-      const result = await prepareOfficialMediaInput({ modelId: profile.id, reference, capability: request.video.capability, adaptImages: canAdapt && !cachedBlob, blob: cachedBlob || originalBlob, signal })
+      const result = await prepareOfficialMediaInput({ modelId: model?.id || request.video.model || profile.id, model, reference, capability: request.video.capability, adaptImages: canAdapt && !cachedBlob, blob: cachedBlob || originalBlob, signal })
       const issues = [...result.violations]
       if (result.metadata) metadata.set(reference.id, result.metadata)
       if (!issues.length) issues.push(...validateMediaCollection(profile, [...accepted, reference], metadata))
@@ -209,7 +214,7 @@ export async function connectVideoInput(sourceId: string, targetId: string, opts
       useGraphStore.setState({ currentDocument: materializeVisibleMediaCopies({ ...current.document, edges: [...current.document.edges, edge] }, current.request, references, result.overrides) })
       imported = []
       useGraphStore.getState().commitHistory()
-      feedback(targetId, { pending: false, message: officialMediaProfile(queuedModel) ? undefined : '未配置官方规格，未验证模型素材限制' })
+      feedback(targetId, { pending: false, message: hasOfficialMediaProfile(target.request) ? undefined : '未配置官方规格，未验证模型素材限制' })
     } catch (error) {
       feedback(targetId, { pending: false, message: error instanceof Error ? error.message : String(error) })
     } finally { await Promise.all(imported.map((id) => assets.releaseAsset(id))) }
@@ -249,7 +254,7 @@ export async function addVideoInputFile(nodeId: string, file: File, type: Genera
       useGraphStore.setState({ currentDocument: materializeVisibleMediaCopies(current.document, { ...current.request, video: config }, references, result.overrides) })
       imported.length = 0
       useGraphStore.getState().commitHistory()
-      feedback(nodeId, { pending: false, message: officialMediaProfile(modelId) ? undefined : '未配置官方规格，未验证模型素材限制' })
+      feedback(nodeId, { pending: false, message: hasOfficialMediaProfile(current.request) ? undefined : '未配置官方规格，未验证模型素材限制' })
     } catch (error) {
       feedback(nodeId, { pending: false, message: error instanceof Error ? error.message : String(error) })
     } finally { await Promise.all(imported.map((id) => assets.releaseAsset(id))) }
@@ -311,7 +316,7 @@ async function revalidateVideoInputs(nodeId: string) {
         feedback(nodeId, { pending: false, message: `已断开或移除不兼容输入：${result.errors.join('\n')}。其他合规连接已保留，请重新连接后再适配。` })
       } else {
         const previous = useVideoInputFeedback.getState().nodes[nodeId]?.message
-        feedback(nodeId, { pending: false, message: officialMediaProfile(target.request.video.model) ? (previous?.startsWith('已断开') ? previous : undefined) : '未配置官方规格，未验证模型素材限制' })
+        feedback(nodeId, { pending: false, message: hasOfficialMediaProfile(target.request) ? (previous?.startsWith('已断开') ? previous : undefined) : '未配置官方规格，未验证模型素材限制' })
       }
     } catch (error) {
       feedback(nodeId, { pending: false, message: error instanceof Error ? error.message : String(error) })

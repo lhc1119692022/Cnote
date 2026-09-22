@@ -308,6 +308,14 @@ function youtubeId(url?: string): string | null {
 }
 
 function VideoBody({ node }: { node: ContentNodeSpec }) {
+  const { hoveredNodeId } = useCanvasInteraction()
+  const playerRef = useRef<HTMLVideoElement>(null)
+  const [fullscreen, setFullscreen] = useState(false)
+  useEffect(() => {
+    const syncFullscreen = () => setFullscreen(Boolean(playerRef.current && document.fullscreenElement === playerRef.current))
+    document.addEventListener('fullscreenchange', syncFullscreen)
+    return () => document.removeEventListener('fullscreenchange', syncFullscreen)
+  }, [])
   const video = node.payload?.kind === 'video' ? node.payload as VideoPayload : undefined
   const { src, loading } = useResolvedMediaSrc(node)
   const hasMediaResources = Boolean(video?.resources?.length)
@@ -350,7 +358,7 @@ function VideoBody({ node }: { node: ContentNodeSpec }) {
   }
   return (
     <div className="min-h-0 flex-1 overflow-hidden bg-black" onPointerDown={stopNodeGesture}>
-      <video src={playbackUrl} className="h-full w-full object-contain" controls playsInline preload="metadata" onLoadedMetadata={event => recordMediaDimensions(node.id, mediaIdentity(node), event.currentTarget.videoWidth, event.currentTarget.videoHeight)} />
+      <video ref={playerRef} src={playbackUrl} className="h-full w-full object-contain" controls={hoveredNodeId === node.id || fullscreen} playsInline preload="metadata" onLoadedMetadata={event => recordMediaDimensions(node.id, mediaIdentity(node), event.currentTarget.videoWidth, event.currentTarget.videoHeight)} />
     </div>
   )
 }

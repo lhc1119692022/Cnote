@@ -1,7 +1,8 @@
 import { desktopFetch } from '@/lib/desktop-fetch'
 import { checksumBlob, loadLocalResourceBlob } from '@/lib/resource-storage'
+import type { GenerationModel } from '@/stores/use-generation-store'
 import type { GenerationReference, GenerationVariantConfig } from '@/types/flow'
-import { mediaRuleFor, officialMediaProfile, validateMediaCollection, validateMediaFile, type MediaMetadata, type MediaViolation } from './official-media-rules'
+import { mediaRuleFor, mediaProfileForModel, validateMediaCollection, validateMediaFile, type MediaMetadata, type MediaViolation } from './official-media-rules'
 import type { MediaWorkerRequest } from './media-inspection.worker'
 
 let processingQueue: Promise<unknown> = Promise.resolve()
@@ -62,6 +63,7 @@ export async function inspectMediaBlob(blob: Blob, type: GenerationReference['ty
 
 export async function prepareOfficialMediaInput(options: {
   modelId: string
+  model?: GenerationModel
   reference: GenerationReference
   capability?: GenerationVariantConfig['capability']
   adaptImages: boolean
@@ -69,7 +71,7 @@ export async function prepareOfficialMediaInput(options: {
   signal?: AbortSignal
 }): Promise<{ blob?: Blob; metadata?: MediaMetadata; violations: MediaViolation[]; adapted: boolean; configured: boolean }> {
   const { reference, signal } = options
-  const profile = officialMediaProfile(options.modelId)
+  const profile = mediaProfileForModel(options.modelId, options.model)
   if (!profile) return { violations: [], adapted: false, configured: false }
   try {
     const blob = options.blob || await loadReferenceForInspection(reference, signal)
@@ -93,13 +95,13 @@ export async function prepareOfficialMediaInput(options: {
   }
 }
 
-export async function validateOfficialMediaReferences(modelId: string, config: GenerationVariantConfig, signal?: AbortSignal): Promise<MediaViolation[]> {
-  const profile = officialMediaProfile(modelId)
+export async function validateOfficialMediaReferences(modelId: string, config: GenerationVariantConfig, signal?: AbortSignal, model?: GenerationModel): Promise<MediaViolation[]> {
+  const profile = mediaProfileForModel(modelId, model)
   if (!profile) return []
   const metadata = new Map<string, MediaMetadata>()
   const violations: MediaViolation[] = []
   for (const reference of config.references) {
-    const result = await prepareOfficialMediaInput({ modelId, reference, capability: config.capability, adaptImages: false, signal })
+    const result = await prepareOfficialMediaInput({ modelId, model, reference, capability: config.capability, adaptImages: false, signal })
     if (result.metadata) metadata.set(reference.id, result.metadata)
     violations.push(...result.violations)
   }

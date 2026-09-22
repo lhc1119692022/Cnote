@@ -1,7 +1,7 @@
 import type { GenerationModel } from '@/stores/use-generation-store'
 import type { GenerationCapability, GenerationReference, GenerationVariantConfig } from '@/types/flow'
 
-import { withOfficialMediaCapabilities } from './official-media-rules'
+import { officialMediaProfile, withOfficialMediaCapabilities } from './official-media-rules'
 
 export const VIDEO_MODE_LABELS = {
   'reference-to-video': '多模态',
@@ -18,7 +18,7 @@ export const VIDEO_MODE_PLACEHOLDERS: Record<VideoMode, string> = {
 export function videoModesForModel(model?: GenerationModel): VideoMode[] {
   if (model) model = withOfficialMediaCapabilities(model)
   if (!model) return []
-  if (model.capabilitySource === 'inferred' && model.capabilities.some((capability) => capability.endsWith('-to-video') || ['video-reference', 'audio-reference', 'video-edit', 'generate-audio'].includes(capability))) {
+  if (model.capabilitySource === 'inferred' && !officialMediaProfile(model.id) && model.capabilities.some((capability) => capability.endsWith('-to-video') || ['video-reference', 'audio-reference', 'video-edit', 'generate-audio'].includes(capability))) {
     return ['reference-to-video', 'first-last-frame']
   }
   const modes: VideoMode[] = []
@@ -35,7 +35,7 @@ export function resolveVideoMode(capability: GenerationCapability | undefined, r
 
 export function videoInputTypes(model: GenerationModel | undefined, mode: VideoMode): GenerationReference['type'][] {
   if (model) model = withOfficialMediaCapabilities(model)
-  if (model?.capabilitySource === 'inferred' && model.capabilities.some((capability) => capability.endsWith('-to-video') || ['video-reference', 'audio-reference', 'video-edit', 'generate-audio'].includes(capability))) {
+  if (model?.capabilitySource === 'inferred' && !officialMediaProfile(model.id) && model.capabilities.some((capability) => capability.endsWith('-to-video') || ['video-reference', 'audio-reference', 'video-edit', 'generate-audio'].includes(capability))) {
     return mode === 'reference-to-video' ? ['image', 'video', 'audio'] : ['image']
   }
   const supported = model?.inputTypes || (model?.capabilities.includes('image-to-video') ? ['image'] : [])
@@ -74,5 +74,7 @@ export function videoReferenceError(model: GenerationModel | undefined, config: 
   for (const [type, limit] of [['image', model?.maxImages], ['video', model?.maxVideos], ['audio', model?.maxAudios]] as const) {
     if (limit !== undefined && config.references.filter((reference) => reference.type === type).length > limit) return `${model?.name} 最多支持 ${limit} 个${{ image: '图片', video: '视频', audio: '音频' }[type]}参考素材`
   }
+  const totalLimit = model?.videoRequestContract?.maxReferenceCount
+  if (totalLimit !== undefined && config.references.length > totalLimit) return `${model?.name} 最多支持 ${totalLimit} 个参考素材（图片、视频和音频合计）`
   return undefined
 }

@@ -1,4 +1,4 @@
-import { generationAdapterForConfig, generationAdapterForModel, generationMediaUploadSecretName, generationProtocolForChannel, generationSecretName, generationVideoRequestContractForModel, isVideoGenerationProtocol, type GenerationChannel, type GenerationModel } from '@/stores/use-generation-store'
+import { generationAdapterForConfig, generationAdapterForModel, generationMediaUploadSecretName, generationProtocolForChannel, generationSecretName, generationVideoRequestContractForModel, isVideoGenerationProtocol, type GenerationChannel, type GenerationModel, type GenerationVideoRequestContract } from '@/stores/use-generation-store'
 import { MEDIA_STORAGE_DEFAULTS, useMediaStorageStore, notifyMediaStorageChanged } from '@/stores/use-media-storage-store'
 import { reuseMediaUpload } from './media-upload-cache'
 import { inspectMediaUrl, MediaReadinessError } from './media-readiness'
@@ -9,8 +9,8 @@ import { normalizeVideoModeConfig, videoReferenceError } from './video-mode'
 import { loadLocalResourceBlob, loadLocalResourceUrl, storeLocalResource } from '@/lib/resource-storage'
 import { desktopFetch } from '@/lib/desktop-fetch'
 import { resolveMediaTransport, assertGenerationRequestSize, assertMediaLifetime, assertAnonymousCompleteFileUrl, signedMediaExpiry } from './media-policy'
-import { officialMediaProfile, officialRequestLimitError, withOfficialMediaCapabilities } from './official-media-rules'
-import { validateOfficialMediaReferences } from './media-inspection'
+import { officialMediaProfile, officialRequestLimitError, seedanceGenerationRules, withOfficialMediaCapabilities } from './official-media-rules'
+import { inspectMediaBlob, loadReferenceForInspection, validateOfficialMediaReferences } from './media-inspection'
 import { ensureDesktopSecret, syncDesktopSecret } from '@/lib/desktop-secrets'
 import { is808VideoChannel, resolve808WanModel, resolveKacangModel, videoRequestMode } from './video-catalog'
 import { parseRequestDiagnostics, type GenerationRequestDiagnostics } from './request-diagnostics'
@@ -130,10 +130,11 @@ function validateVideoConfig(model: GenerationModel, config: GenerationVariantCo
   if (referenceError) throw new Error(referenceError)
   if (config.generateAudio && !model.capabilities.includes('generate-audio')) throw new Error(`${model.name} 未配置生成音频能力`)
   const inferredVideoModel = model.capabilitySource === 'inferred' && model.capabilities.some((capability) => capability.endsWith('-to-video') || ['video-reference', 'audio-reference', 'video-edit', 'generate-audio'].includes(capability))
-  const seconds = config.seconds ?? 5
+  const enforceLimits = !inferredVideoModel || Boolean(officialMediaProfile(model.id))
+  const seconds = config.seconds ?? model.defaultDuration ?? 5
   if (!Number.isInteger(seconds) || seconds <= 0) throw new Error('视频时长必须是正整数秒数')
-  if (!inferredVideoModel && model.allowedDurations?.length && !model.allowedDurations.includes(seconds)) throw new Error(`${model.name} 时长只能为 ${model.allowedDurations.join(' 或 ')} 秒`)
-  if (!inferredVideoModel && (model.minDuration && seconds < model.minDuration || model.maxDuration && seconds > model.maxDuration)) throw new Error(`${model.name} 时长必须为 ${model.minDuration}-${model.maxDuration} 秒`)
+  if (enforceLimits && model.allowedDurations !== undefined && !model.allowedDurations.includes(seconds)) throw new Error(`${model.name} 时长只能为 ${model.allowedDurations.join(' 或 ')} 秒`)
+  if (enforceLimits && (model.minDuration && seconds < model.minDuration || model.maxDuration && seconds > model.maxDuration)) throw new Error(`${model.name} 时长必须为 ${model.minDuration}-${model.maxDuration} 秒`)
   const resolution = videoResolutionForModel(config.resolution, model)
   const contract = model.videoRequestContract
   const maxDuration = contract?.maxDurationByResolution?.[resolution.toLowerCase()]
@@ -142,8 +143,8 @@ function validateVideoConfig(model: GenerationModel, config: GenerationVariantCo
   if (referenceImages.length < (contract?.minReferenceImages || 0)) throw new Error(`${model.name} 至少需要 ${contract?.minReferenceImages} 张参考图片`)
   if (referenceImages.length && contract?.referenceResolutions && !contract.referenceResolutions.includes(resolution.toLowerCase())) throw new Error(`${model.name} 参考图模式仅支持 ${contract.referenceResolutions.join('、')}，请调整分辨率`)
   if (contract?.maxPromptLength && Array.from(config.prompt).length > contract.maxPromptLength) throw new Error(`${model.name} 提示词最多 ${contract.maxPromptLength} 个字符`)
-  if (!inferredVideoModel && !model.allowCustomResolution && model.resolutions?.length && !model.resolutions.some((item) => normalizeVideoResolution(item).toLowerCase() === normalizeVideoResolution(resolution).toLowerCase())) throw new Error(`${model.name} 不支持 ${resolution}`)
-  if (!inferredVideoModel && model.aspectRatios?.length && config.aspectRatio && !model.aspectRatios.includes(config.aspectRatio)) throw new Error(`${model.name} 不支持 ${config.aspectRatio} 画幅`)
+  if (enforceLimits && !model.allowCustomResolution && model.resolutions !== undefined && !model.resolutions.some((item) => normalizeVideoResolution(item).toLowerCase() === normalizeVideoResolution(resolution).toLowerCase())) throw new Error(`${model.name} 不支持 ${resolution}`)
+  if (enforceLimits && model.aspectRatios !== undefined && config.aspectRatio && !model.aspectRatios.includes(config.aspectRatio)) throw new Error(`${model.name} 不支持 ${config.aspectRatio} 画幅`)
   const images = config.references.filter((reference) => reference.type === 'image')
   const videos = config.references.filter((reference) => reference.type === 'video')
   const audios = config.references.filter((reference) => reference.type === 'audio')
@@ -151,6 +152,8 @@ function validateVideoConfig(model: GenerationModel, config: GenerationVariantCo
     const count = config.references.filter((reference) => reference.type === type).length
     if (max !== undefined && count > max) throw new Error(`${model.name} 最多支持 ${max} 个${type}参考素材`)
   }
+  const totalReferenceLimit = contract?.maxReferenceCount
+  if (totalReferenceLimit !== undefined && config.references.length > totalReferenceLimit) throw new Error(`${model.name} 最多支持 ${totalReferenceLimit} 个参考素材（图片、视频和音频合计）`)
   if (model.id === 'gemini-omni-1.1' && audios.length) throw new Error('Gemini Omni 1.1 不支持参考音频')
   const firstFrame = images.filter((reference) => reference.role === 'first_frame')
   const lastFrame = images.filter((reference) => reference.role === 'last_frame')
@@ -445,6 +448,26 @@ async function prepareReferenceConfig(context: GenerationRequestContext, signal?
   return { ...orderedConfig, references: normalizeGenerationReferences(prepared) }
 }
 
+async function prepareReferenceVideoDurations(
+  config: GenerationVariantConfig,
+  contract: Pick<GenerationVideoRequestContract, 'referenceVideoDurationsField'> | undefined,
+  signal?: AbortSignal,
+) {
+  if (!contract?.referenceVideoDurationsField) return config
+  const references = await Promise.all(config.references.map(async (reference) => {
+    if (reference.type !== 'video' || (Number.isFinite(reference.duration) && reference.duration! > 0)) return reference
+    try {
+      const blob = await loadReferenceForInspection(reference, signal)
+      const metadata = await inspectMediaBlob(blob, 'video', signal)
+      if (!Number.isFinite(metadata.duration) || metadata.duration! <= 0) throw new Error('无法读取视频时长')
+      return { ...reference, duration: metadata.duration }
+    } catch (error) {
+      throw new GenerationStageError('preparation', `参考视频“${reference.label || reference.fileName || reference.id}”缺少有效时长：${error instanceof Error ? error.message : String(error)}`, error)
+    }
+  }))
+  return { ...config, references }
+}
+
 async function inlineImagePart(reference: GenerationReference) {
   const { blob } = await referenceBlob(reference)
   const data = new Uint8Array(await blob.arrayBuffer())
@@ -733,9 +756,15 @@ function ensureProviderReadableReferences(references: GenerationReference[], req
 
 export async function submitGenerationTask(context: GenerationRequestContext, signal?: AbortSignal, onPrepared?: (diagnostics: GenerationRequestDiagnostics) => void): Promise<GenerationTaskResponse> {
   const selectedProtocol = protocolFor(context.channel, context.config.adapterId, context.model.id)
-  const documented = context.variant === 'video' ? resolve808WanModel(context.channel, context.model.id, selectedProtocol) || resolveKacangModel(context.channel, context.model.id, selectedProtocol) : undefined
-  if (documented) context = { ...context, model: documented }
+  const scopedModel = context.channel.modelCatalog?.find((candidate) => candidate.id === context.model.id)
+  const declaredSeedance = seedanceGenerationRules(context.model.id) && context.model.capabilitySource !== 'inferred'
+  const documented = context.variant === 'video' && !scopedModel && !declaredSeedance
+    ? resolve808WanModel(context.channel, context.model.id, selectedProtocol) || resolveKacangModel(context.channel, context.model.id, selectedProtocol)
+    : undefined
+  if (scopedModel || documented) context = { ...context, model: scopedModel || documented! }
   if (context.variant === 'video') context = { ...context, model: withOfficialMediaCapabilities(context.model) }
+  const videoContract = context.variant === 'video' ? generationVideoRequestContractForModel(context.channel, context.model, context.config.adapterId) : undefined
+  if (videoContract) context = { ...context, model: withOfficialMediaCapabilities({ ...context.model, videoRequestContract: videoContract }) }
   const { model, variant } = context
   const initialConfig = variant === 'video' ? normalizeVideoModeConfig(context.config, model) : context.config
   if (documented && (!initialConfig.aspectRatio || initialConfig.aspectRatio === 'auto')) initialConfig.aspectRatio = '16:9'
@@ -746,12 +775,11 @@ export async function submitGenerationTask(context: GenerationRequestContext, si
       const profile = officialMediaProfile(model.id)
       const promptError = profile && officialRequestLimitError(profile, initialConfig)
       if (promptError) throw new Error(promptError)
-      const violations = await validateOfficialMediaReferences(model.id, initialConfig, signal)
+      const violations = await validateOfficialMediaReferences(model.id, initialConfig, signal, model)
       if (violations.length) throw new Error(violations.map((item) => item.message).join('\n'))
     } catch (error) { throw new GenerationStageError('validation', error instanceof Error ? error.message : String(error), error) }
   }
   const channel: GenerationChannel = { ...context.channel, protocol: protocolFor(context.channel, initialConfig.adapterId, model.id) }
-  const videoContract = variant === 'video' ? generationVideoRequestContractForModel(channel, model, initialConfig.adapterId) : undefined
   if (variant === 'video') {
     for (const reference of initialConfig.references) {
       const frameRole = reference.type === 'image' && (reference.role === 'first_frame' || reference.role === 'last_frame') ? reference.role : undefined
@@ -770,6 +798,7 @@ export async function submitGenerationTask(context: GenerationRequestContext, si
   try { config = await prepareReferenceConfig({ ...context, config: initialConfig, channel }, signal) } catch (error) {
     throw new GenerationStageError('preparation', error instanceof Error ? error.message : String(error), error)
   }
+  config = await prepareReferenceVideoDurations(config, videoContract, signal)
   const protocol = protocolFor(channel)
   if (variant === 'video') { try { ensureProviderReadableReferences(config.references, videoContract?.requiresPublicHttps, is808VideoChannel(channel, protocol)) } catch (error) { throw new GenerationStageError('validation', error instanceof Error ? error.message : String(error), error) } }
 
@@ -853,6 +882,9 @@ export async function submitGenerationTask(context: GenerationRequestContext, si
       ...(lastFrame && videoContract?.lastFrameField ? { [videoContract.lastFrameField]: referenceURL(lastFrame) } : {}),
       ...(images.length && videoContract?.imageReferencesField ? { [videoContract.imageReferencesField]: images } : {}),
       ...(videos.length && videoContract?.videoReferencesField ? { [videoContract.videoReferencesField]: videos } : {}),
+      ...(videos.length && videoContract?.referenceVideoDurationsField
+        ? { [videoContract.referenceVideoDurationsField]: config.references.filter((reference) => reference.type === 'video').map((reference) => reference.duration) }
+        : {}),
       ...(audios.length && videoContract?.audioReferencesField ? { [videoContract.audioReferencesField]: audios } : {}),
       ...(generateAudioField ? { [generateAudioField]: Boolean(config.generateAudio) } : {}),
     }

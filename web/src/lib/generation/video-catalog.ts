@@ -136,9 +136,12 @@ interface VideoModelAdapter extends VideoModelIdentity {
 }
 
 function documentedKacangModel(modelId: string) {
-  const exact = KACANG_PUBLIC_MODELS.find((model) => model.id === modelId) || LEGACY_KACANG_MODELS.find((model) => model.id === modelId)
-  if (exact) return exact
   const identity = identifyVideoModel(modelId)
+  const exact = KACANG_PUBLIC_MODELS.find((model) => model.id === modelId) || LEGACY_KACANG_MODELS.find((model) => model.id === modelId)
+  const withFamilyContract = (model: GenerationModel) => identity?.family === 'minimax-h3'
+    ? { ...model, videoRequestContract: { ...model.videoRequestContract, referenceVideoDurationsField: 'reference_video_durations' } }
+    : model
+  if (exact) return withFamilyContract(exact)
   if (!identity) return undefined
   const name = normalizeVideoModelName(modelId)
   const documented = [...KACANG_PUBLIC_MODELS, ...LEGACY_KACANG_MODELS].filter((model) => {
@@ -147,7 +150,9 @@ function documentedKacangModel(modelId: string) {
     const feature = normalizeVideoModelName(model.id).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
     return new RegExp(`(?:^|[^a-z0-9])${feature}(?=$|[^a-z0-9.])`).test(name)
   }).sort((left, right) => right.id.length - left.id.length)[0]
-  return documented ? { ...documented, id: modelId } : undefined
+  return documented
+    ? withFamilyContract({ ...documented, id: modelId })
+    : undefined
 }
 
 export function resolveVideoModelAdapter(channel: Pick<GenerationChannel, 'protocol' | 'baseURL' | 'presetId'>, modelId: string, protocol = channel.protocol): VideoModelAdapter | undefined {
@@ -174,7 +179,9 @@ export function resolveVideoModelAdapter(channel: Pick<GenerationChannel, 'proto
       }
       break
     case 'minimax-h3':
-      if (identity.version === '3.0' && provider === 'kacang') return adapter(KACANG_REFERENCE_CONTRACT)
+      if (identity.version === '3.0' && provider === 'kacang') {
+        return adapter({ ...KACANG_REFERENCE_CONTRACT, referenceVideoDurationsField: 'reference_video_durations' })
+      }
       break
     case 'wan':
       if (identity.version === '3.0' && provider === '808relay') return adapter(documented808WanModel(modelId).videoRequestContract!)
@@ -254,6 +261,7 @@ export const VIDEO_808_MODELS: GenerationModel[] = [
     maxAudios: 3,
     minDuration: 4,
     maxDuration: 15,
+    promptRequired: false,
     resolutions: ['480p', '720p', '1080p', '4k'],
     aspectRatios: ['21:9', '16:9', '4:3', '1:1', '3:4', '9:16'],
   }),
@@ -261,6 +269,7 @@ export const VIDEO_808_MODELS: GenerationModel[] = [
     id: 'seedance-2-fast',
     name: 'Seedance 2 Fast',
     allowedDurations: [5, 10],
+    promptRequired: false,
     resolutions: ['480p', '720p'],
     aspectRatios: ['21:9', '16:9', '4:3', '1:1', '3:4', '9:16'],
   }),
@@ -268,6 +277,7 @@ export const VIDEO_808_MODELS: GenerationModel[] = [
     id: 'seedance-2-mini',
     name: 'Seedance 2 Mini',
     allowedDurations: [5, 10],
+    promptRequired: false,
     resolutions: ['480p', '720p'],
     aspectRatios: ['21:9', '16:9', '4:3', '1:1', '3:4', '9:16'],
   }),
@@ -280,6 +290,7 @@ export const VIDEO_808_MODELS: GenerationModel[] = [
     maxAudios: 10,
     minDuration: 4,
     maxDuration: 30,
+    promptRequired: false,
     allowsAudioOnlyReference: true,
     resolutions: ['480p', '720p', '1080p'],
     aspectRatios: ['21:9', '16:9', '4:3', '1:1', '3:4', '9:16'],
@@ -322,6 +333,7 @@ function createKacangModel(
     pollIntervalMs: 10000,
     defaultDuration: 4,
     promptRequired: true,
+    mediaRulesSource: 'custom',
     videoRequestContract: contract,
     ...input,
   }
@@ -437,9 +449,10 @@ const LEGACY_KACANG_MODELS: GenerationModel[] = [
   createKacangModel({
     id: 'S-2.5-301010-内置过脸',
     name: 'S-2.5 301010 内置过脸',
-    inputTypes: ['image', 'audio'],
+    mediaRulesSource: 'custom',
+    inputTypes: ['image', 'video', 'audio'],
     maxImages: 30,
-    maxVideos: 0,
+    maxVideos: 10,
     maxAudios: 10,
     minDuration: 4,
     maxDuration: 30,
@@ -447,8 +460,8 @@ const LEGACY_KACANG_MODELS: GenerationModel[] = [
     aspectRatios: ['16:9', '9:16'],
     videoRequestContract: {
       ...KACANG_REFERENCE_CONTRACT,
-      videoReferencesField: undefined,
-      referenceLimits: { image: 30, video: 0, audio: 10 },
+      referenceLimits: { image: 30, video: 10, audio: 10 },
+      maxReferenceCount: 40,
     },
   }),
   createKacangModel({

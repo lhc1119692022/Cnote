@@ -1,8 +1,8 @@
 import type { GenerationModel } from '@/stores/use-generation-store'
 import type { GenerationReference, GenerationVariantConfig } from '@/types/flow'
-import { identifyVideoModel } from './video-model-identity'
+import { identifyVideoModel, normalizeVideoModelName } from './video-model-identity'
 
-export type OfficialMediaProfileId = 'wan-3' | 'seedance-2.0' | 'seedance-2.5' | 'minimax-h3'
+export type OfficialMediaProfileId = 'wan-3' | 'seedance-1.0' | 'seedance-2.0' | 'seedance-2.5' | 'minimax-h3'
 export type MediaKind = GenerationReference['type']
 
 export interface MediaMetadata {
@@ -74,7 +74,16 @@ const seedanceVideo: MediaFileRule = {
   minDuration: 2, minFps: 24, maxFps: 60, ...codecs,
 }
 
-export const OFFICIAL_MEDIA_PROFILES: Record<OfficialMediaProfileId, OfficialMediaProfile> = {
+function freezeRules<T>(value: T): T {
+  if (value && typeof value === 'object' && !Object.isFrozen(value)) {
+    Object.values(value).forEach(freezeRules)
+    Object.freeze(value)
+  }
+  return value
+}
+
+// This baseline is shared by every recognized alias. Channel declarations never write to it.
+export const OFFICIAL_MEDIA_PROFILES: Readonly<Record<OfficialMediaProfileId, OfficialMediaProfile>> = freezeRules({
   'wan-3': {
     id: 'wan-3', name: 'Wan', revision: '2026-09-19.1', source: '用户提供的官方规范图1；不检查透明通道',
     files: {
@@ -84,23 +93,32 @@ export const OFFICIAL_MEDIA_PROFILES: Record<OfficialMediaProfileId, OfficialMed
     },
     maxCounts: {}, maxTotalDurations: { video: 15, audio: 15 },
   },
+  'seedance-1.0': {
+    id: 'seedance-1.0', name: 'Seedance 1.0', revision: '2026-09-22.1', source: 'docs/seedance-rules.md；用户附件 Ark 创建视频生成任务 API',
+    files: {
+      image: { ...seedanceImage, formats: ['jpeg', 'png', 'webp', 'bmp', 'tiff', 'gif'] },
+      video: { ...seedanceVideo, formats: [] },
+      audio: { formats: [], maxBytes: 0 },
+    },
+    maxCounts: { image: 2, video: 0, audio: 0 }, maxTotalDurations: {}, maxRequestBytes: 64 * MB,
+  },
   'seedance-2.0': {
-    id: 'seedance-2.0', name: 'Seedance 2.0', revision: '2026-09-19.1', source: '用户提供的官方规范图2：Seedance 2.0',
+    id: 'seedance-2.0', name: 'Seedance 2.0', revision: '2026-09-22.1', source: 'docs/seedance-rules.md；用户附件 Ark 创建视频生成任务 API',
     files: {
       image: seedanceImage,
       video: { ...seedanceVideo, maxDuration: 15 },
       audio: { formats: ['wav', 'mp3'], maxBytes: 15 * MB, minDuration: 2, maxDuration: 15 },
     },
-    maxCounts: { video: 3, audio: 3 }, maxTotalDurations: { video: 15, audio: 15 }, maxRequestBytes: 64 * MB,
+    maxCounts: { image: 9, video: 3, audio: 3 }, maxTotalDurations: { video: 15, audio: 15 }, maxRequestBytes: 64 * MB,
   },
   'seedance-2.5': {
-    id: 'seedance-2.5', name: 'Seedance 2.5', revision: '2026-09-19.1', source: '用户提供的官方规范图2：Seedance 2.5',
+    id: 'seedance-2.5', name: 'Seedance 2.5', revision: '2026-09-22.1', source: 'docs/seedance-rules.md；用户附件 Ark 创建视频生成任务 API',
     files: {
       image: seedanceImage,
       video: { ...seedanceVideo, maxDuration: 30 },
       audio: { formats: ['wav', 'mp3'], maxBytes: 15 * MB, minDuration: 2, maxDuration: 30 },
     },
-    maxCounts: { video: 10, audio: 10 }, maxTotalDurations: { video: 30, audio: 30 }, maxRequestBytes: 64 * MB,
+    maxCounts: { image: 30, video: 10, audio: 10 }, maxTotalDurations: { video: 30, audio: 30 }, maxRequestBytes: 64 * MB,
   },
   'minimax-h3': {
     id: 'minimax-h3', name: 'MiniMax H3', revision: '2026-09-19.1', source: '用户提供的官方规范图3；常规参考图片与首尾帧分开检查',
@@ -112,7 +130,7 @@ export const OFFICIAL_MEDIA_PROFILES: Record<OfficialMediaProfileId, OfficialMed
     maxCounts: { image: 9, video: 3, audio: 3 }, maxTotalDurations: { video: 15, audio: 15 },
     maxTotalCount: 12, maxRequestBytes: 64 * MB, maxPromptCharacters: 7000,
   },
-}
+})
 
 export function officialMediaProfile(modelId?: string): OfficialMediaProfile | undefined {
   const identity = identifyVideoModel(modelId)
@@ -120,25 +138,99 @@ export function officialMediaProfile(modelId?: string): OfficialMediaProfile | u
   if (identity?.family === 'minimax-h3' && identity.version === '3.0') return OFFICIAL_MEDIA_PROFILES['minimax-h3']
   if (identity?.family === 'seedance' && identity.version === '2.5') return OFFICIAL_MEDIA_PROFILES['seedance-2.5']
   if (identity?.family === 'seedance' && identity.version === '2.0') return OFFICIAL_MEDIA_PROFILES['seedance-2.0']
+  if (identity?.family === 'seedance' && identity.version === '1.0') return OFFICIAL_MEDIA_PROFILES['seedance-1.0']
   return undefined
+}
+
+export function seedanceGenerationRules(modelId: string) {
+  const identity = identifyVideoModel(modelId)
+  if (identity?.family !== 'seedance' || !['1.0', '2.0', '2.5'].includes(identity.version)) return undefined
+  const name = normalizeVideoModelName(modelId)
+  const tier = name.match(/(?:^|[^a-z0-9])(?:seedance|doubao|sd|s)(?:[-_.\s]|\p{Script=Han}){0,16}v?(?:[12](?:[._-]0)?|[12]0)(?:[-_.\s]*pro)?[-_.\s]*(fast|mini)(?=$|[^a-z])/u)?.[1]
+  const limitedTier = tier === 'fast' || tier === 'mini'
+  return {
+    version: identity.version,
+    minDuration: identity.version === '1.0' ? 2 : 4,
+    maxDuration: identity.version === '2.5' ? 30 : identity.version === '2.0' ? 15 : 12,
+    resolutions: identity.version === '2.0'
+      ? limitedTier ? ['480p', '720p'] : ['480p', '720p', '1080p', '4k']
+      : ['480p', '720p', '1080p'],
+    aspectRatios: ['16:9', '4:3', '1:1', '3:4', '9:16', '21:9', 'adaptive'],
+    allowsAudioOnlyReference: identity.version === '2.5',
+    supportsLastFrame: identity.version !== '1.0' || tier !== 'fast',
+  }
+}
+
+function minimumLimit(...values: Array<number | undefined>) {
+  const declared = values.filter((value): value is number => value !== undefined)
+  return declared.length ? Math.min(...declared) : undefined
 }
 
 export function withOfficialMediaCapabilities(model: GenerationModel): GenerationModel {
   const profile = officialMediaProfile(model.id)
   if (!profile) return model
+  const generation = seedanceGenerationRules(model.id)
   const limits = model.videoRequestContract?.referenceLimits
-  const limitFor = (type: MediaKind) => profile.maxCounts[type] === undefined ? limits?.[type] : Math.min(profile.maxCounts[type], limits?.[type] ?? Infinity)
+  const limitFor = (type: MediaKind) => minimumLimit(
+    profile.maxCounts[type], limits?.[type],
+    { image: model.maxImages, video: model.maxVideos, audio: model.maxAudios }[type],
+    model.inputTypes && !model.inputTypes.includes(type) ? 0 : undefined,
+  )
+  const inputTypes = (model.inputTypes || (['image', 'video', 'audio'] as const).filter((type) =>
+    type === 'image' ? model.capabilities.some((capability) => ['image-to-video', 'reference-to-video', 'first-last-frame'].includes(capability))
+      : model.capabilities.includes(type === 'video' ? 'video-reference' : 'audio-reference'),
+  )).filter((type) => limitFor(type) !== 0)
+  const minDuration = generation ? Math.max(generation.minDuration, model.minDuration ?? -Infinity) : model.minDuration
+  const maxDuration = generation ? Math.min(generation.maxDuration, model.maxDuration ?? Infinity) : model.maxDuration
+  const allowedDurations = generation && model.allowedDurations
+    ? model.allowedDurations.filter((value) => Number.isInteger(value) && value >= minDuration! && value <= maxDuration!)
+    : model.allowedDurations
+  const defaultDuration = generation
+    ? allowedDurations?.[0] === undefined && allowedDurations ? undefined
+      : allowedDurations && !allowedDurations.includes(model.defaultDuration ?? 5) ? allowedDurations[0]
+        : Math.max(minDuration!, Math.min(maxDuration!, model.defaultDuration ?? 5))
+    : model.defaultDuration
+  const contract = model.videoRequestContract
   return {
     ...model,
-    inputTypes: (['image', 'video', 'audio'] as const).filter((type) => limits?.[type] !== 0),
+    inputTypes,
     maxImages: limitFor('image'),
     maxVideos: limitFor('video'),
     maxAudios: limitFor('audio'),
-    allowsAudioOnlyReference: true,
-    allowsFirstFrameOnly: !model.videoRequestContract?.requiresFramePair,
-    capabilities: [...new Set<GenerationModel['capabilities'][number]>([
-      ...model.capabilities, 'text-to-video', 'image-to-video', 'reference-to-video', 'first-last-frame', 'video-reference', 'audio-reference',
-    ])],
+    allowsAudioOnlyReference: (generation?.allowsAudioOnlyReference ?? true) && model.allowsAudioOnlyReference !== false,
+    allowsFirstFrameOnly: model.allowsFirstFrameOnly !== false && !contract?.requiresFramePair,
+    capabilities: model.capabilities.filter((capability) => {
+      if (['image-to-video', 'first-last-frame'].includes(capability) && !inputTypes.includes('image')) return false
+      if (['video-reference', 'video-edit'].includes(capability) && !inputTypes.includes('video')) return false
+      if (capability === 'audio-reference' && !inputTypes.includes('audio')) return false
+      if (profile.id === 'seedance-1.0' && ['reference-to-video', 'generate-audio'].includes(capability)) return false
+      return true
+    }),
+    ...(generation ? {
+      minDuration, maxDuration, allowedDurations, defaultDuration,
+      resolutions: (model.allowCustomResolution ? generation.resolutions : model.resolutions ?? generation.resolutions)
+        .filter((value) => generation.resolutions.includes(value.toLowerCase())),
+      aspectRatios: (model.aspectRatios ?? generation.aspectRatios).filter((value) => generation.aspectRatios.includes(value)),
+      allowCustomResolution: false,
+      promptRequired: model.promptRequired ?? false,
+    } : {}),
+    ...(contract ? { videoRequestContract: {
+      ...contract,
+      referenceLimits: { ...limits, image: limitFor('image'), video: limitFor('video'), audio: limitFor('audio') },
+      maxReferenceCount: minimumLimit(profile.maxTotalCount, contract.maxReferenceCount),
+    } } : {}),
+  }
+}
+
+export function mediaProfileForModel(modelId?: string, model?: GenerationModel): OfficialMediaProfile | undefined {
+  const resolvedModelId = modelId || model?.id
+  const baseline = officialMediaProfile(resolvedModelId)
+  if (!baseline || !model) return baseline
+  const effective = withOfficialMediaCapabilities({ ...model, id: resolvedModelId! })
+  return {
+    ...baseline,
+    maxCounts: { image: effective.maxImages, video: effective.maxVideos, audio: effective.maxAudios },
+    maxTotalCount: minimumLimit(baseline.maxTotalCount, effective.videoRequestContract?.maxReferenceCount),
   }
 }
 
