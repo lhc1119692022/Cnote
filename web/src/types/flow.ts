@@ -300,7 +300,7 @@ export interface AINodeData extends BaseNodeData {
   disabled?: boolean
 }
 
-export type RequestVariant = 'body' | 'image' | 'video'
+export type RequestVariant = 'body' | 'image' | 'video' | 'workflow'
 export type GenerationCapability =
   | 'text-to-image'
   | 'image-to-image'

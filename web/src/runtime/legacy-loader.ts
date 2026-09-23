@@ -50,7 +50,7 @@ const STICKY_BACKGROUNDS = ['solid', 'none'] as const
 const BROWSER_OUTPUT_MODES: readonly BrowserOutputMode[] = ['url', 'text', 'both']
 const AI_WEB_SEARCH: readonly AIWebSearchMode[] = ['auto', 'on', 'off']
 const AI_REASONING: readonly AIReasoningLevel[] = ['low', 'medium', 'high', 'xhigh', 'max']
-const REQUEST_VARIANTS: readonly RequestVariant[] = ['body', 'image', 'video']
+const REQUEST_VARIANTS: readonly RequestVariant[] = ['body', 'image', 'video', 'workflow']
 
 const CONTENT_CATEGORIES: readonly ContentCategory[] = [
   'text',

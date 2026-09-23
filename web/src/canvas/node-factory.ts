@@ -102,6 +102,7 @@ export function createAddableNode(kind: AddableKind, position: Point): NodeSpec 
         variant: 'body',
         image: emptyGenerationConfig('image'),
         video: emptyGenerationConfig('video'),
+        rh: { selections: {}, referenceAssetIds: [] },
       }
     case 'content':
       return { id, kind, position, size, label, category: null, subtype: null, source: null, state: 'empty' }

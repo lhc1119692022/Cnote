@@ -7,6 +7,7 @@
  */
 
 import { parseRequestDiagnostics } from '@/lib/generation/request-diagnostics'
+import { parseRHRunSnapshot } from '@/lib/runninghub/workflow'
 import type {
   AIMessage,
   AISession,
@@ -61,7 +62,7 @@ const RUN_STATUSES = new Set<GenerationRunStatus>([
   'waiting-for-user',
 ])
 const INTERRUPTED_RUN_STATUSES = new Set<GenerationRunStatus>(['validating', 'queued', 'running'])
-const GENERATION_VARIANTS = new Set<string>(['image', 'video'])
+const GENERATION_VARIANTS = new Set<string>(['image', 'video', 'workflow'])
 const RECOVERY_STATES = new Set<GenerationTaskRecoveryState>([
   'pending',
   'submitted',
@@ -520,6 +521,8 @@ function parseTask(value: unknown): GenerationTask | null {
   if (!isRecord(value) || typeof value.id !== 'string') return null
   if (typeof value.status !== 'string' || !TASK_STATUSES.has(value.status as GenerationTaskStatus)) return null
   const task: GenerationTask = { id: value.id, status: value.status as GenerationTaskStatus }
+  const rhSnapshot = parseRHRunSnapshot(value.rhSnapshot)
+  if (rhSnapshot) task.rhSnapshot = rhSnapshot
   const progress = asFiniteNumber(value.progress)
   if (progress !== undefined) task.progress = progress
   if (typeof value.channelId === 'string') task.channelId = value.channelId

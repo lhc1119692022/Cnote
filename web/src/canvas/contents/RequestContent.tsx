@@ -18,6 +18,7 @@ import {
   ChevronDown,
   ChevronUp,
   Image as ImageIcon,
+  Layers3,
   LoaderCircle,
   Mic,
   Pause,
@@ -109,11 +110,12 @@ import {
   type GenerationModel,
 } from '@/stores/use-generation-store'
 import type { GenerationReference, GenerationTaskRequestSnapshot, GenerationTaskState, GenerationVariantConfig } from '@/types/flow'
+import { RHNodePanel } from '@/components/runninghub/RHNodePanel'
 
 const IMAGE_TIMEOUT_MS = 15 * 60 * 1000
 const VIDEO_TIMEOUT_MS = 60 * 60 * 1000
 
-type GenerationVariant = Exclude<RequestVariant, 'body'>
+type GenerationVariant = 'image' | 'video'
 
 interface ModelGroup {
   channel: GenerationChannel
@@ -821,7 +823,7 @@ export const RequestContent = memo(function RequestContent({ node }: { node: Req
   const chooseVariant = useCallback(
     (next: RequestVariant) => {
       if (node.variant !== 'body' || next === 'body' || isRunning) return
-      patchRequest(node.id, { variant: next, label: !node.label || node.label === '请求体' ? (next === 'image' ? '图片生成' : '视频生成') : node.label })
+      patchRequest(node.id, { variant: next, label: !node.label || node.label === '请求体' ? (next === 'image' ? '图片生成' : next === 'video' ? '视频生成' : 'RH 工作流') : node.label })
       useGraphStore.getState().commitHistory()
     },
     [isRunning, node.id, node.label, node.variant],
@@ -917,7 +919,7 @@ export const RequestContent = memo(function RequestContent({ node }: { node: Req
       syncGenerationRunStatus(runId)
       const graph = useGraphStore.getState()
       const run = useRuntimeStore.getState().runs[runId]
-      if (graph.currentDocumentId && effectiveFallback.requestNodeId && effectiveFallback.variant && run && legacy.status === 'completed') {
+      if (graph.currentDocumentId && effectiveFallback.requestNodeId && (effectiveFallback.variant === 'image' || effectiveFallback.variant === 'video') && run && legacy.status === 'completed') {
         upsertGenerationResultNodes({
           documentId: graph.currentDocumentId, requestNodeId: effectiveFallback.requestNodeId, variant: effectiveFallback.variant, runId,
           taskIndex: run.tasks.findIndex(task => task.id === taskId), createIfMissing: false,
@@ -1945,7 +1947,7 @@ export const RequestContent = memo(function RequestContent({ node }: { node: Req
       onPointerDown={stopNodeGesture}
     >
 
-      {!generationVariant ? (
+      {node.variant === 'workflow' ? <RHNodePanel node={node} /> : !generationVariant ? (
         <div className="flex min-h-0 flex-1 items-center justify-center px-12 py-7">
           <div className="w-full">
             <h3 className="mb-4 text-center text-lg font-semibold text-foreground">选择生成类型</h3>
@@ -1965,6 +1967,14 @@ export const RequestContent = memo(function RequestContent({ node }: { node: Req
               >
                 <Video className="h-8 w-8 stroke-[1.8] text-red-500" />
                 <span>视频生成</span>
+              </button>
+              <button
+                type="button"
+                className="col-span-2 flex h-[88px] flex-col items-center justify-center gap-2 rounded-xl border border-border bg-card text-sm font-medium text-foreground transition-colors hover:bg-muted/70 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-foreground/30"
+                onClick={() => chooseVariant('workflow')}
+              >
+                <Layers3 className="h-7 w-7 stroke-[1.8] text-violet-500" />
+                <span>RH 工作流</span>
               </button>
             </div>
           </div>

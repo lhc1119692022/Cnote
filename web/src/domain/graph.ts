@@ -125,7 +125,7 @@ export type ContentSourceRef =
 export interface ContentGenerationProvenance {
   detached?: boolean
   requestNodeId: string
-  variant: 'image' | 'video'
+  variant: 'image' | 'video' | 'workflow'
   runId?: string
   taskId?: string
   channelId?: string
@@ -189,7 +189,7 @@ export interface AINodeSpec extends BaseNodeSpec {
 // Request / generation
 // ---------------------------------------------------------------------------
 
-export type RequestVariant = 'body' | 'image' | 'video'
+export type RequestVariant = 'body' | 'image' | 'video' | 'workflow'
 
 export type GenerationCapability =
   | 'text-to-image'
@@ -259,6 +259,7 @@ export interface RequestNodeSpec extends BaseNodeSpec {
   variant: RequestVariant
   image: GenerationConfig
   video: GenerationConfig
+  rh?: import('@/lib/runninghub/workflow').RHNodeConfig
   /** Latest `GenerationRun` for this node. */
   latestRunId?: string
   /** Content nodes that should receive a completed variant's output. Legacy docs may store a single id. */

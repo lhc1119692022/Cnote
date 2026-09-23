@@ -115,7 +115,7 @@ export type GenerationTaskRecoveryState =
 
 export interface GenerationTaskRecoveryMetadata {
   requestNodeId: string
-  variant: 'image' | 'video'
+  variant: 'image' | 'video' | 'workflow'
   channelId: string
   model: string
   inputVersion: string
@@ -125,6 +125,7 @@ export interface GenerationTaskRecoveryMetadata {
 }
 
 export interface GenerationTask {
+  rhSnapshot?: import('@/lib/runninghub/workflow').RHRunSnapshot
   requestDiagnostics?: import('@/lib/generation/request-diagnostics').GenerationRequestDiagnostics
   id: string
   status: GenerationTaskStatus
@@ -142,7 +143,7 @@ export interface GenerationTask {
   remoteTaskId?: string
   /** Request node and variant are duplicated here for task-level recovery. */
   requestNodeId?: string
-  variant?: 'image' | 'video'
+  variant?: 'image' | 'video' | 'workflow'
   /** Stable identifier for the submit-time input snapshot. */
   inputVersion?: string
   /**
@@ -173,5 +174,5 @@ export interface GenerationRun {
   /** Request node that created this run. */
   requestNodeId?: string
   /** Generation variant submitted for this run. */
-  variant?: 'image' | 'video'
+  variant?: 'image' | 'video' | 'workflow'
 }

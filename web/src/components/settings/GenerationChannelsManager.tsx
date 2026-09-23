@@ -23,14 +23,17 @@ import { mediaTransportStatus, normalizeMediaTransport } from '@/lib/generation/
 import { AIClient } from '@/lib/api/client'
 import { useMediaStorageStore } from '@/stores/use-media-storage-store'
 import { ensureDesktopSecret, syncDesktopSecret } from '@/lib/desktop-secrets'
+import { RunningHubWorkflowsDialog } from '@/components/runninghub/RunningHubWorkflowsDialog'
+import { useRunningHubStore } from '@/stores/use-runninghub-store'
 
 const PROTOCOL_GROUP_LABELS = {
   image: '图像端点',
   video: '视频端点',
   'image-video': '图像与视频端点',
+  workflow: '工作流端点',
 } as const
 
-const protocolSupportsImage = (value: GenerationProtocolId) => !isVideoGenerationProtocol(value)
+const protocolSupportsImage = (value: GenerationProtocolId) => value === 'openai-images' || value === 'google-images'
 const protocolSupportsVideo = (value: GenerationProtocolId) => isVideoGenerationProtocol(value)
 
 interface GenerationChannelsManagerProps {
@@ -67,6 +70,10 @@ export function GenerationChannelsManager({ embedded = false, openNewRequest = 0
   const [modelFetchMessage, setModelFetchMessage] = useState('')
   const [supportsImage, setSupportsImage] = useState(true)
   const [supportsVideo, setSupportsVideo] = useState(false)
+  const [supportsWorkflow, setSupportsWorkflow] = useState(false)
+  const [runningHubVerified, setRunningHubVerified] = useState(false)
+  const [runningHubInstanceType, setRunningHubInstanceType] = useState('1')
+  const [workflowDialogChannelId, setWorkflowDialogChannelId] = useState<string | null>(null)
   const [mediaTransport, setMediaTransport] = useState<GenerationMediaTransport>('custom')
   const [mediaTestState, setMediaTestState] = useState<'idle' | 'testing' | 'success' | 'error'>('idle')
   const [mediaTestMessage, setMediaTestMessage] = useState('')
@@ -76,6 +83,7 @@ export function GenerationChannelsManager({ embedded = false, openNewRequest = 0
   const mediaTestRunningRef = useRef(false)
   const [isSaving, setIsSaving] = useState(false)
   const [savedAPIKey, setSavedAPIKey] = useState('')
+  const runningHubWorkflows = useRunningHubStore((state) => state.workflows)
 
   const selectedProtocol = GENERATION_PROTOCOL_OPTIONS.find((item) => item.value === protocol) || { value: protocol, label: GENERATION_PROTOCOL_LABELS[protocol], description: '', group: 'video' as const }
   const channelPresets = GENERATION_CHANNEL_PRESETS || []
@@ -121,6 +129,9 @@ export function GenerationChannelsManager({ embedded = false, openNewRequest = 0
     setModelFetchMessage('')
     setSupportsImage(true)
     setSupportsVideo(false)
+    setSupportsWorkflow(false)
+    setRunningHubVerified(false)
+    setRunningHubInstanceType('1')
     setMediaTransport('custom')
     setMediaTestState('idle')
     setMediaTestMessage('')
@@ -141,7 +152,7 @@ export function GenerationChannelsManager({ embedded = false, openNewRequest = 0
     if (openNewRequest > 0) openNewChannelDialog()
   }, [openNewRequest, openNewChannelDialog])
 
-  const openEditChannelDialog = (channel: GenerationChannel) => {
+  const openEditChannelDialog = useCallback((channel: GenerationChannel) => {
     setSavedAPIKey('')
     const nextProtocol = generationProtocolForChannel(channel)
     setEditingChannelId(channel.id)
@@ -158,19 +169,22 @@ export function GenerationChannelsManager({ embedded = false, openNewRequest = 0
     setModelFetchMessage('')
     setSupportsImage(generationChannelSupportsVariant(channel, 'image'))
     setSupportsVideo(generationChannelSupportsVariant(channel, 'video'))
+    setSupportsWorkflow(channel.supportsWorkflow === true || nextProtocol === 'runninghub')
+    setRunningHubVerified(nextProtocol !== 'runninghub' || Boolean(getAPIKey(channel.id)))
+    setRunningHubInstanceType(channel.runningHubInstanceType || '1')
     const storedMediaTransport = normalizeMediaTransport(channel.adapters?.find((adapter) => adapter.protocol === nextProtocol)?.mediaTransport ?? channel.mediaTransport)
     setMediaTransport(storedMediaTransport || 'custom')
     setMediaTestState('idle')
     setMediaTestMessage('')
     setShowProtocolMenu(false)
     setShowChannelDialog(true)
-  }
+  }, [getAPIKey])
 
   const selectProtocol = (nextProtocol: GenerationProtocolId) => {
     const matchingPreset = channelPresets.find((preset) => preset.protocol === nextProtocol)
     setPresetId(matchingPreset?.id || '')
     setProtocol(nextProtocol)
-    setBaseURL('')
+    setBaseURL(nextProtocol === 'runninghub' ? 'https://www.runninghub.cn' : '')
     setMediaTransport('custom')
     setModelIds([])
     setModelCatalog(modelsForGenerationProtocol(nextProtocol))
@@ -180,6 +194,9 @@ export function GenerationChannelsManager({ embedded = false, openNewRequest = 0
     setShowProtocolMenu(false)
     setSupportsImage(protocolSupportsImage(nextProtocol))
     setSupportsVideo(protocolSupportsVideo(nextProtocol))
+    setSupportsWorkflow(nextProtocol === 'runninghub')
+    setRunningHubVerified(false)
+    setRunningHubInstanceType('1')
     setMediaTestState('idle')
     setMediaTestMessage('')
   }
@@ -223,8 +240,16 @@ export function GenerationChannelsManager({ embedded = false, openNewRequest = 0
       showMessage('请输入 API Key')
       return
     }
-    if (!supportsImage && !supportsVideo) {
-      showMessage('请至少选择图片节点或视频节点')
+    if (protocol === 'runninghub' && !runningHubVerified) {
+      showMessage('请先验证 RunningHub API Key')
+      return
+    }
+    if (protocol === 'runninghub' && editingChannelId && !runningHubWorkflows.some((workflow) => workflow.channelId === editingChannelId)) {
+      showMessage('请至少添加一个工作流后再保存')
+      return
+    }
+    if (!supportsImage && !supportsVideo && !supportsWorkflow) {
+      showMessage('请至少选择图片节点、视频节点或 RH 工作流')
       return
     }
     if (supportsVideo && !mediaTransport) {
@@ -239,7 +264,7 @@ export function GenerationChannelsManager({ embedded = false, openNewRequest = 0
     const updates = {
       presetId,
       presetVersion: channelPresets.find((preset) => preset.id === presetId)?.version,
-      providerId: protocol === 'openai-images' ? 'openai' as const : protocol === 'google-images' ? 'google' as const : 'video' as const,
+      providerId: protocol === 'openai-images' ? 'openai' as const : protocol === 'google-images' ? 'google' as const : protocol === 'runninghub' ? 'runninghub' as const : 'video' as const,
       protocol,
       name: normalizedName,
       baseURL: normalizedBaseURL,
@@ -249,8 +274,10 @@ export function GenerationChannelsManager({ embedded = false, openNewRequest = 0
         ...(channelPresets.find((preset) => preset.id === presetId)?.models || []).map((model) => [model.id, model] as const),
       ]).values()],
       enabled: true,
-      supportsImage,
-      supportsVideo,
+      supportsImage: protocol === 'runninghub' ? false : supportsImage,
+      supportsVideo: protocol === 'runninghub' ? false : supportsVideo,
+      supportsWorkflow: protocol === 'runninghub',
+      runningHubInstanceType: protocol === 'runninghub' ? runningHubInstanceType : undefined,
       mediaTransport: supportsVideo ? mediaTransport : undefined,
       adapters: [{
         id: protocol,
@@ -315,6 +342,19 @@ export function GenerationChannelsManager({ embedded = false, openNewRequest = 0
     }
   }
 
+  const verifyRunningHubKey = () => {
+    const value = apiKey.trim() || (editingChannelId ? getAPIKey(editingChannelId) : '')
+    if (!value) {
+      setRunningHubVerified(false)
+      showMessage('请先填写 RunningHub API Key')
+      return
+    }
+    setRunningHubVerified(true)
+    setSavedAPIKey(value)
+    setMediaTestMessage('API Key 已通过本地校验；导入工作流时会继续验证平台响应。')
+    setMediaTestState('success')
+  }
+
   const content = (
     <div className={embedded ? 'flex min-w-0 flex-col' : 'flex h-full min-w-0 flex-col overflow-hidden'}>
       {!embedded && (
@@ -336,7 +376,7 @@ export function GenerationChannelsManager({ embedded = false, openNewRequest = 0
           <div className="space-y-3">
             {channels.map((channel) => {
               const configured = Boolean(getAPIKey(channel.id))
-              const scopeLabel = [generationChannelSupportsVariant(channel, 'image') ? '图片' : '', generationChannelSupportsVariant(channel, 'video') ? '视频' : ''].filter(Boolean).join(' / ')
+              const scopeLabel = generationProtocolForChannel(channel) === 'runninghub' ? 'RH 工作流' : [generationChannelSupportsVariant(channel, 'image') ? '图片' : '', generationChannelSupportsVariant(channel, 'video') ? '视频' : ''].filter(Boolean).join(' / ')
               return (
                 <article key={channel.id} onClick={() => openEditChannelDialog(channel)} className="group flex min-h-[82px] cursor-pointer items-center justify-between gap-5 rounded-xl border border-border bg-card px-5 py-4 transition-colors hover:border-primary/60">
                   <div className="min-w-0 flex-1">
@@ -345,7 +385,7 @@ export function GenerationChannelsManager({ embedded = false, openNewRequest = 0
                       {!configured && <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">未配置</span>}
                       {generationChannelSupportsVariant(channel, 'video') && !hasCustomMediaStorage && !channel.mediaUploadURL && <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">上传服务未连接</span>}
                     </div>
-                    <p className="mt-1.5 truncate text-[12px] text-muted-foreground">{GENERATION_PROTOCOL_LABELS[generationProtocolForChannel(channel)]} · {channel.modelIds?.length || 0} 个模型 · {scopeLabel || '未选择节点'} · {channel.baseURL || '未设置接口地址'}</p>
+                    <p className="mt-1.5 truncate text-[12px] text-muted-foreground">{GENERATION_PROTOCOL_LABELS[generationProtocolForChannel(channel)]} · {generationProtocolForChannel(channel) !== 'runninghub' && `${channel.modelIds?.length || 0} 个模型 · `}{scopeLabel || '未选择节点'} · {channel.baseURL || '未设置接口地址'}</p>
                   </div>
                   <div className="flex shrink-0 items-center gap-2">
                     <Button variant="secondary" size="sm" className="gap-1.5" onClick={(event) => { event.stopPropagation(); openEditChannelDialog(channel) }}><Pencil className="h-3.5 w-3.5" />编辑</Button>
@@ -383,7 +423,7 @@ export function GenerationChannelsManager({ embedded = false, openNewRequest = 0
 
           <label className="mt-3 block text-[13px] text-muted-foreground"><span className="mb-2 block font-medium">接口地址</span><input value={baseURL} onChange={(event) => setBaseURL(event.target.value)} placeholder="https://api.example.com/v1" className="h-10 w-full rounded-lg border border-border bg-background px-3 text-foreground outline-none focus:border-primary focus:ring-2 focus:ring-ring/20" /></label>
 
-          <div className="mt-4 flex items-center gap-3 text-[13px] text-muted-foreground"><span className="shrink-0 font-medium text-foreground">渠道支持</span><div className="flex min-w-0 flex-1 gap-2"><button type="button" aria-pressed={supportsImage} onClick={() => setSupportsImage((value) => !value)} className={`flex min-w-0 flex-1 items-center justify-center gap-2 rounded-lg border px-3 py-2.5 text-[12px] transition-colors ${supportsImage ? 'border-primary bg-primary/10 font-medium text-primary' : 'border-border bg-background text-muted-foreground hover:bg-muted'}`}><ImageIcon className="h-4 w-4 shrink-0" />图片生成</button><button type="button" aria-pressed={supportsVideo} onClick={() => setSupportsVideo((value) => !value)} className={`flex min-w-0 flex-1 items-center justify-center gap-2 rounded-lg border px-3 py-2.5 text-[12px] transition-colors ${supportsVideo ? 'border-primary bg-primary/10 font-medium text-primary' : 'border-border bg-background text-muted-foreground hover:bg-muted'}`}><Video className="h-4 w-4 shrink-0" />视频生成</button></div></div>
+          {protocol !== 'runninghub' && <div className="mt-4 flex items-center gap-3 text-[13px] text-muted-foreground"><span className="shrink-0 font-medium text-foreground">渠道支持</span><div className="flex min-w-0 flex-1 gap-2"><button type="button" aria-pressed={supportsImage} onClick={() => setSupportsImage((value) => !value)} className={`flex min-w-0 flex-1 items-center justify-center gap-2 rounded-lg border px-3 py-2.5 text-[12px] transition-colors ${supportsImage ? 'border-primary bg-primary/10 font-medium text-primary' : 'border-border bg-background text-muted-foreground hover:bg-muted'}`}><ImageIcon className="h-4 w-4 shrink-0" />图片生成</button><button type="button" aria-pressed={supportsVideo} onClick={() => setSupportsVideo((value) => !value)} className={`flex min-w-0 flex-1 items-center justify-center gap-2 rounded-lg border px-3 py-2.5 text-[12px] transition-colors ${supportsVideo ? 'border-primary bg-primary/10 font-medium text-primary' : 'border-border bg-background text-muted-foreground hover:bg-muted'}`}><Video className="h-4 w-4 shrink-0" />视频生成</button></div></div>}
 
           {supportsVideo && <div className="mt-4">
             <div className="flex items-center gap-2 sm:gap-3">
@@ -397,8 +437,9 @@ export function GenerationChannelsManager({ embedded = false, openNewRequest = 0
             {mediaTestMessage && <p role="status" className={`mt-2 min-w-0 break-words text-[11px] ${mediaTestState === 'success' ? 'text-emerald-700' : mediaTestState === 'error' ? 'text-destructive' : 'text-muted-foreground'}`} title={mediaTestMessage}>{mediaTestMessage}</p>}
           </div>}
 
-          <div className="mt-4 text-[13px] text-muted-foreground"><span className="mb-2 flex items-center gap-1.5 font-medium"><KeyRound className="h-3.5 w-3.5" />API Key <span className="font-normal">{isSaving ? '（保存中…）' : apiKey.trim() ? savedAPIKey === apiKey.trim() ? '（已保存）' : '（待保存）' : hasExistingApiKey ? '（已配置，留空保持不变）' : '（尚未填写）'}</span></span><input type="password" value={apiKey} onChange={(event) => setAPIKey(event.target.value)} placeholder={hasExistingApiKey ? '留空保持现有密钥' : '请输入 API Key'} className="h-10 w-full rounded-lg border border-border bg-background px-3 text-foreground outline-none focus:border-primary focus:ring-2 focus:ring-ring/20" /></div>
-          <div className="mt-5"><div className="flex items-center justify-between gap-3"><div><h3 className="text-[13px] font-medium">渠道模型</h3><p className="mt-1 text-[11px] text-muted-foreground">可从接口拉取模型；无法拉取时仍可手动添加模型 ID。</p></div><Button type="button" variant="secondary" size="sm" className="shrink-0 gap-1.5" disabled={isFetchingModels} onClick={() => void handleFetchModels()}><RefreshCw className={`h-3.5 w-3.5 ${isFetchingModels ? 'animate-spin' : ''}`} />拉取模型</Button></div>
+          <div className="mt-4 text-[13px] text-muted-foreground"><span className="mb-2 flex items-center gap-1.5 font-medium"><KeyRound className="h-3.5 w-3.5" />API Key <span className="font-normal">{isSaving ? '（保存中…）' : apiKey.trim() ? savedAPIKey === apiKey.trim() ? '（已保存）' : '（待保存）' : hasExistingApiKey ? '（已配置，留空保持不变）' : '（尚未填写）'}</span></span><div className="flex gap-2"><input type="password" value={apiKey} onChange={(event) => { setAPIKey(event.target.value); if (protocol === 'runninghub') setRunningHubVerified(false) }} placeholder={hasExistingApiKey ? '留空保持现有密钥' : '请输入 API Key'} className="h-10 min-w-0 flex-1 rounded-lg border border-border bg-background px-3 text-foreground outline-none focus:border-primary focus:ring-2 focus:ring-ring/20" />{protocol === 'runninghub' && <Button type="button" variant="secondary" className="shrink-0 gap-1.5" onClick={verifyRunningHubKey} disabled={isSaving}><Check className="h-3.5 w-3.5" />验证 Key</Button>}</div></div>
+          {protocol === 'runninghub' && runningHubVerified && editingChannelId && <><div className="mt-4 flex items-center gap-3 text-[13px]"><label className="shrink-0 font-medium text-muted-foreground" htmlFor="runninghub-instance-type">算力档次</label><select id="runninghub-instance-type" className="h-9 min-w-0 flex-1 rounded-lg border border-border bg-background px-2 text-[12px]" value={runningHubInstanceType} onChange={(event) => setRunningHubInstanceType(event.target.value)}><option value="1">标准</option><option value="2">高性能</option><option value="3">旗舰</option></select><Button type="button" variant="secondary" size="sm" className="shrink-0" onClick={() => setWorkflowDialogChannelId(editingChannelId)}>管理工作流</Button></div></>}
+          {protocol !== 'runninghub' && <div className="mt-5"><div className="flex items-center justify-between gap-3"><div><h3 className="text-[13px] font-medium">渠道模型</h3><p className="mt-1 text-[11px] text-muted-foreground">可从接口拉取模型；无法拉取时仍可手动添加模型 ID。</p></div><Button type="button" variant="secondary" size="sm" className="shrink-0 gap-1.5" disabled={isFetchingModels} onClick={() => void handleFetchModels()}><RefreshCw className={`h-3.5 w-3.5 ${isFetchingModels ? 'animate-spin' : ''}`} />拉取模型</Button></div>
             {(availableModelIds.length > 0 || modelFetchMessage) && (
               <div className={`mt-3 min-h-[52px] rounded-lg border px-3 py-3 text-[11px] ${availableModelIds.length ? 'border-border bg-background' : 'border-dashed border-border text-muted-foreground'}`}>
                 {modelFetchMessage && <p className="mb-2 leading-relaxed text-muted-foreground">{modelFetchMessage}</p>}
@@ -407,11 +448,12 @@ export function GenerationChannelsManager({ embedded = false, openNewRequest = 0
             )}
             <div className="mt-3 min-h-[52px] rounded-lg border border-border bg-background px-3 py-3">{modelIds.length > 0 ? <div className="flex flex-wrap gap-2">{modelIds.map((modelId) => <button key={modelId} type="button" onClick={() => setModelIds((current) => current.filter((id) => id !== modelId))} className="flex items-center gap-1.5 rounded-lg border border-primary bg-primary/10 px-2.5 py-1.5 text-[11px] text-foreground" title="移除模型">{modelId}<X className="h-3 w-3" /></button>)}</div> : <p className="text-center text-[11px] text-muted-foreground">尚未添加模型 ID</p>}</div>
             <div className="mt-2 flex gap-2"><input value={customModelId} onChange={(event) => setCustomModelId(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); addCustomModel() } }} placeholder="手动输入模型 ID" className="h-9 min-w-0 flex-1 rounded-lg border border-border bg-background px-3 text-[12px] text-foreground outline-none focus:border-primary focus:ring-2 focus:ring-ring/20" /><Button variant="secondary" size="sm" onClick={addCustomModel}>添加模型</Button></div>
-            {modelIds.length === 0 && <p className="mt-2 text-[11px] text-muted-foreground">已选 0 个模型</p>}</div>
+            {modelIds.length === 0 && <p className="mt-2 text-[11px] text-muted-foreground">已选 0 个模型</p>}</div>}
 
-          <div className="mt-6 flex justify-end gap-3"><Button variant="secondary" disabled={isSaving || mediaTestState === 'testing'} onClick={resetChannelDialog}>关闭</Button><Button disabled={isSaving || mediaTestState === 'testing'} onClick={() => void handleSaveChannel()}>{editingChannelId ? '保存' : '添加生成渠道'}</Button></div>
+          <div className="mt-6 flex justify-end gap-3"><Button variant="secondary" disabled={isSaving || mediaTestState === 'testing'} onClick={resetChannelDialog}>关闭</Button><Button disabled={isSaving || mediaTestState === 'testing' || (protocol === 'runninghub' && (!runningHubVerified || (Boolean(editingChannelId) && !runningHubWorkflows.some((workflow) => workflow.channelId === editingChannelId))))} onClick={() => void handleSaveChannel()}>{editingChannelId ? '保存' : '添加生成渠道'}</Button></div>
         </DialogContent>
       </Dialog>
+      {workflowDialogChannelId && <RunningHubWorkflowsDialog channelId={workflowDialogChannelId} open onOpenChange={(open) => { if (!open) setWorkflowDialogChannelId(null) }} />}
     </div>
   )
 

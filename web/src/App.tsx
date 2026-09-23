@@ -1,7 +1,9 @@
 import { Routes, Route, Navigate } from 'react-router-dom'
 
-import { lazy, Suspense, useEffect } from 'react'
+import { lazy, Suspense, useEffect, useState } from 'react'
 import { hydrateRuntimeStore, persistSessionForExit, startRuntimePersistence } from '@/storage'
+import { RunningHubWorkflowsDialog } from '@/components/runninghub/RunningHubWorkflowsDialog'
+import { useGenerationStore } from '@/stores/use-generation-store'
 
 const Gallery = lazy(() => import('@/pages/Gallery').then(module => ({ default: module.Gallery })))
 const Dashboard = lazy(() => import('@/pages/Dashboard').then((module) => ({ default: module.Dashboard })))
@@ -11,6 +13,21 @@ const SourcesManager = lazy(() => import('@/pages/SourcesManager').then((module)
 const APIKeysManager = lazy(() => import('@/components/settings/APIKeysManager').then((module) => ({ default: module.APIKeysManager })))
 
 hydrateRuntimeStore()
+
+function RunningHubWorkflowDialogBridge() {
+  const channels = useGenerationStore(state => state.channels)
+  const [channelId, setChannelId] = useState<string | null>(null)
+  useEffect(() => {
+    const open = (event: Event) => {
+      const id = (event as CustomEvent<{ channelId?: string }>).detail?.channelId
+      if (id && channels.some(channel => channel.id === id && channel.protocol === 'runninghub')) setChannelId(id)
+    }
+    window.addEventListener('cnote:open-runninghub-settings', open)
+    return () => window.removeEventListener('cnote:open-runninghub-settings', open)
+  }, [channels])
+  if (!channelId) return null
+  return <RunningHubWorkflowsDialog channelId={channelId} open onOpenChange={open => { if (!open) setChannelId(null) }} />
+}
 
 function App() {
   useEffect(() => {
@@ -56,7 +73,9 @@ function App() {
 
   return (
     <Suspense fallback={<div className="flex h-full items-center justify-center text-sm text-muted-foreground">正在加载...</div>}>
-      <Routes>
+      <>
+        <RunningHubWorkflowDialogBridge />
+        <Routes>
         <Route path="/" element={<Navigate to="/dashboard" replace />} />
         <Route path="/dashboard" element={<Dashboard />} />
         <Route path="/flows/:flowId" element={<CanvasEditor />} />
@@ -68,7 +87,8 @@ function App() {
         <Route path="/settings/api-keys" element={<APIKeysManager />} />
         <Route path="/settings/generation-channels" element={<Navigate to="/settings/api-keys?tab=generation" replace />} />
         <Route path="*" element={<Navigate to="/dashboard" replace />} />
-      </Routes>
+        </Routes>
+      </>
     </Suspense>
   )
 }

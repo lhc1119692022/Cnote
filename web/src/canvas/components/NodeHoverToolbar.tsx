@@ -16,6 +16,7 @@ import { useCanvasInteraction } from './CanvasProvider'
 import { useCanvasViewportStore } from '@/stores/canvas-viewport-store'
 import { nodeToolbarScaleStyle } from '@/canvas/toolbar-placement'
 import { useUiStore } from '@/stores/ui-store'
+import { useRunningHubStore } from '@/stores/use-runninghub-store'
 import type { ContentMediaItem, ContentNodeData } from '@/types/flow'
 
 const KIND_META: Record<NodeSpec['kind'], { icon: LucideIcon; iconClass: string; label: string }> = {
@@ -215,6 +216,10 @@ export const NodeHoverToolbar = memo(function NodeHoverToolbar({ node, selected 
   const toolbarRef = useRef<HTMLDivElement>(null)
   const showCopyText = canCopyContentText(node)
   const showDownloadMedia = canDownloadContentMedia(node)
+  const runningHubWorkflows = useRunningHubStore((state) => state.workflows)
+  const rhSelected = node.kind === 'request' && node.variant === 'workflow' && node.rh?.workflowKey ? node.rh.selections[node.rh.workflowKey]?.workflow : undefined
+  const rhLatest = rhSelected ? runningHubWorkflows.find(workflow => workflow.id === rhSelected.id) : undefined
+  const showRunningHubUpdate = Boolean(node.kind === 'request' && node.variant === 'workflow' && rhSelected && rhLatest && rhLatest.revision !== rhSelected.revision)
 
   useLayoutEffect(() => {
     const element = toolbarRef.current
@@ -525,6 +530,7 @@ export const NodeHoverToolbar = memo(function NodeHoverToolbar({ node, selected 
           </div>
         )}
         {node.kind === 'request' && node.variant === 'video' ? <VideoAdaptToggle node={node} disabled={isLocked} /> : null}
+        {node.kind === 'request' && node.variant === 'workflow' ? <><ToolbarButton label="管理 RH 工作流" onClick={() => window.dispatchEvent(new CustomEvent('cnote:open-runninghub-settings', { detail: { channelId: node.rh?.channelId } }))}><Settings2 className="h-4 w-4" /></ToolbarButton>{showRunningHubUpdate && <ToolbarButton label="更新工作流配置" disabled={isLocked} onClick={() => window.dispatchEvent(new CustomEvent('cnote:runninghub-action', { detail: { nodeId: node.id, action: 'update' } }))}><RefreshCw className="h-4 w-4" /></ToolbarButton>}</> : null}
         {node.kind === 'group' ? (
           <ToolbarButton label="解绑" disabled={isLocked} onClick={() => useGraphStore.getState().ungroup(node.id)}>
             <Link2Off className="h-4 w-4" />

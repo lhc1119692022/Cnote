@@ -10,8 +10,8 @@ import type { GenerationCapability } from '@/types/flow'
 import { is808VideoChannel, resolve808WanModel, resolveKacangModel, resolveVideoModelAdapter, GENERATION_CHANNEL_PRESETS, VIDEO_808_DEFAULT_BASE_URL, VIDEO_MODEL_CATALOG } from '@/lib/generation/video-catalog'
 export { GENERATION_CHANNEL_PRESETS } from '@/lib/generation/video-catalog'
 
-export type GenerationProviderId = 'openai' | 'google' | 'video' | 'custom'
-export type GenerationProtocolId = 'openai-images' | 'google-images' | 'video-api' | 'video-808relay' | 'video-kacang'
+export type GenerationProviderId = 'openai' | 'google' | 'video' | 'custom' | 'runninghub'
+export type GenerationProtocolId = 'openai-images' | 'google-images' | 'video-api' | 'video-808relay' | 'video-kacang' | 'runninghub'
 /** How local video references become provider-readable inputs. */
 export type GenerationMediaTransport = import('@/lib/generation/media-policy').MediaTransport
 export type GenerationNodeVariant = 'image' | 'video'
@@ -114,6 +114,9 @@ export interface GenerationChannel {
   enabled: boolean
   supportsImage?: boolean
   supportsVideo?: boolean
+  supportsWorkflow?: boolean
+  /** RunningHub compute tier sent with task creation. */
+  runningHubInstanceType?: string
   modelCatalog?: GenerationModel[]
   videoRequestContract?: GenerationVideoRequestContract
   /** One connection can expose multiple request contracts. */
@@ -149,10 +152,11 @@ export interface GenerationAdapter {
 }
 
 export const GENERATION_PROVIDER_LABELS: Record<GenerationProviderId, string> = {
-  openai: 'OpenAI', google: 'Google', video: '视频 API', custom: '自定义生成渠道',
+  openai: 'OpenAI', google: 'Google', video: '视频 API', custom: '自定义生成渠道', runninghub: 'RunningHub',
 }
 
 export const GENERATION_PROTOCOL_LABELS: Record<GenerationProtocolId, string> = {
+  runninghub: 'RunningHub 工作流',
   'openai-images': 'OpenAI 图像生成 / 编辑',
   'google-images': 'Google Gemini 图像生成 / 编辑',
   'video-api': '视频 API（文档协议）',
@@ -160,9 +164,10 @@ export const GENERATION_PROTOCOL_LABELS: Record<GenerationProtocolId, string> = 
   'video-kacang': 'Kacang 视频',
 }
 
-export type GenerationProtocolGroup = 'image' | 'video'
+export type GenerationProtocolGroup = 'image' | 'video' | 'workflow'
 export interface GenerationProtocolOption { value: GenerationProtocolId; label: string; description: string; group: GenerationProtocolGroup }
 export const GENERATION_PROTOCOL_OPTIONS: GenerationProtocolOption[] = [
+  { value: 'runninghub', label: 'RunningHub', description: 'ComfyUI 工作流', group: 'workflow' },
   { value: 'openai-images', label: 'OpenAI 图像', description: '原生 OpenAI Images 生成与编辑接口', group: 'image' },
   { value: 'google-images', label: 'Google 图像', description: '原生 Gemini generateContent 图像接口', group: 'image' },
   { value: 'video-api', label: '视频 API', description: '视频调用文档定义的异步任务接口', group: 'video' },
@@ -252,9 +257,11 @@ export const GENERATION_MODEL_CATALOG: Record<GenerationProviderId, GenerationMo
   google: IMAGE_MODELS.filter((model) => model.id.includes('gemini') || model.id.includes('banana')),
   video: VIDEO_MODEL_CATALOG,
   custom: [],
+  runninghub: [],
 }
 
 export const GENERATION_PROTOCOL_MODEL_CATALOG: Record<GenerationProtocolId, GenerationModel[]> = {
+  runninghub: [],
   'openai-images': IMAGE_MODELS.filter((model) => model.id.startsWith('gpt-') || model.id === 'dall-e-3'),
   'google-images': IMAGE_MODELS.filter((model) => model.id.includes('gemini') || model.id.includes('banana')),
   'video-api': VIDEO_MODEL_CATALOG,
@@ -262,6 +269,7 @@ export const GENERATION_PROTOCOL_MODEL_CATALOG: Record<GenerationProtocolId, Gen
   'video-kacang': GENERATION_CHANNEL_PRESETS.find((preset) => preset.id === 'video-kacang')?.models || [],
 }
 export function defaultGenerationProtocol(providerId: GenerationProviderId): GenerationProtocolId {
+  if (providerId === 'runninghub') return 'runninghub'
   if (providerId === 'openai') return 'openai-images'
   if (providerId === 'google') return 'google-images'
   if (providerId === 'video') return 'video-api'
@@ -407,6 +415,7 @@ export function inferGenerationModelCapabilities(modelId: string, protocol: Gene
 }
 
 export function generationChannelSupportsVariant(channel: GenerationChannel, variant: GenerationNodeVariant): boolean {
+  if (generationProtocolForChannel(channel) === 'runninghub') return false
   const explicit = variant === 'image' ? channel.supportsImage : channel.supportsVideo
   if (explicit !== undefined) return explicit
   const protocol = generationProtocolForChannel(channel)
@@ -478,6 +487,7 @@ function normalizeChannel(channel: GenerationChannel): GenerationChannel {
   }
   return {
     ...normalized,
+    supportsWorkflow: protocol === 'runninghub',
     supportsImage: channel.supportsImage ?? generationChannelSupportsVariant({ ...normalized, supportsImage: undefined, supportsVideo: undefined }, 'image'),
     supportsVideo: channel.supportsVideo ?? generationChannelSupportsVariant({ ...normalized, supportsImage: undefined, supportsVideo: undefined }, 'video'),
   }
