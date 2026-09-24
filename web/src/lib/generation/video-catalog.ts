@@ -129,6 +129,21 @@ export function is808VideoChannel(channel: Pick<GenerationChannel, 'protocol' | 
   return videoChannelKind(channel, protocol) === '808relay'
 }
 
+export function completeKnownVideoRequestContract(
+  channel: Pick<GenerationChannel, 'protocol' | 'baseURL' | 'presetId'>,
+  modelId: string,
+  contract: Partial<GenerationVideoRequestContract>,
+  protocol = channel.protocol,
+) {
+  // Saved channel contracts keep their precedence. Supplement only a known
+  // route's missing companion field; family-name similarity is not enough.
+  if (contract.referenceVideoDurationsField !== undefined || !contract.videoReferencesField) return contract
+  if (videoChannelKind(channel, protocol) !== 'kacang') return contract
+  const documented = KACANG_PUBLIC_MODELS.find((model) => model.id === modelId)?.videoRequestContract
+  if (!documented?.referenceVideoDurationsField || contract.videoReferencesField !== documented.videoReferencesField) return contract
+  return { ...contract, referenceVideoDurationsField: documented.referenceVideoDurationsField }
+}
+
 interface VideoModelAdapter extends VideoModelIdentity {
   channel: '808relay' | 'kacang'
   modeStrategy: 'explicit-seedance' | 'media-fields'
@@ -564,6 +579,7 @@ export const VIDEO_MODEL_CATALOG = VIDEO_808_MODELS
 export const VIDEO_KACANG_MODELS = KACANG_PUBLIC_MODELS
 
 export const GENERATION_CHANNEL_PRESETS: GenerationChannelPreset[] = [
+  { id: 'runninghub', version: '1', name: 'RunningHub', providerId: 'runninghub', protocol: 'runninghub', defaultBaseURL: 'https://www.runninghub.cn', modelIds: [], models: [], supportsImage: false, supportsVideo: false },
   {
     id: 'video-808relay',
     version: '2',

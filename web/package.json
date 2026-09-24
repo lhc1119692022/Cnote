@@ -15,6 +15,7 @@
     "test:ai-streaming": "node scripts/verify-ai-streaming.mjs",
     "test:ai-upstream": "node scripts/verify-ai-upstream-transport.mjs",
     "test:generation-inputs": "node scripts/verify-generation-inputs.mjs",
+    "test:reference-video-durations": "node scripts/verify-reference-video-durations.mjs",
     "test:video-routing": "node scripts/verify-video-model-routing.mjs",
     "test:schema": "node scripts/verify-schema.mjs",
     "test:prompt-mentions": "node scripts/verify-prompt-mentions.mjs",

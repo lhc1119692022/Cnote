@@ -24,6 +24,8 @@ import { AIClient } from '@/lib/api/client'
 import { useMediaStorageStore } from '@/stores/use-media-storage-store'
 import { ensureDesktopSecret, syncDesktopSecret } from '@/lib/desktop-secrets'
 import { RunningHubWorkflowsDialog } from '@/components/runninghub/RunningHubWorkflowsDialog'
+import { RHMenuSelect } from '@/components/runninghub/RHMenuSelect'
+import { RH_INSTANCE_OPTIONS, rhInstanceType } from '@/lib/runninghub/instance'
 import { useRunningHubStore } from '@/stores/use-runninghub-store'
 
 const PROTOCOL_GROUP_LABELS = {
@@ -72,7 +74,7 @@ export function GenerationChannelsManager({ embedded = false, openNewRequest = 0
   const [supportsVideo, setSupportsVideo] = useState(false)
   const [supportsWorkflow, setSupportsWorkflow] = useState(false)
   const [runningHubVerified, setRunningHubVerified] = useState(false)
-  const [runningHubInstanceType, setRunningHubInstanceType] = useState('1')
+  const [runningHubInstanceType, setRunningHubInstanceType] = useState('default')
   const [workflowDialogChannelId, setWorkflowDialogChannelId] = useState<string | null>(null)
   const [mediaTransport, setMediaTransport] = useState<GenerationMediaTransport>('custom')
   const [mediaTestState, setMediaTestState] = useState<'idle' | 'testing' | 'success' | 'error'>('idle')
@@ -131,7 +133,7 @@ export function GenerationChannelsManager({ embedded = false, openNewRequest = 0
     setSupportsVideo(false)
     setSupportsWorkflow(false)
     setRunningHubVerified(false)
-    setRunningHubInstanceType('1')
+    setRunningHubInstanceType('default')
     setMediaTransport('custom')
     setMediaTestState('idle')
     setMediaTestMessage('')
@@ -171,7 +173,7 @@ export function GenerationChannelsManager({ embedded = false, openNewRequest = 0
     setSupportsVideo(generationChannelSupportsVariant(channel, 'video'))
     setSupportsWorkflow(channel.supportsWorkflow === true || nextProtocol === 'runninghub')
     setRunningHubVerified(nextProtocol !== 'runninghub' || Boolean(getAPIKey(channel.id)))
-    setRunningHubInstanceType(channel.runningHubInstanceType || '1')
+    setRunningHubInstanceType(rhInstanceType(channel.runningHubInstanceType))
     const storedMediaTransport = normalizeMediaTransport(channel.adapters?.find((adapter) => adapter.protocol === nextProtocol)?.mediaTransport ?? channel.mediaTransport)
     setMediaTransport(storedMediaTransport || 'custom')
     setMediaTestState('idle')
@@ -196,7 +198,7 @@ export function GenerationChannelsManager({ embedded = false, openNewRequest = 0
     setSupportsVideo(protocolSupportsVideo(nextProtocol))
     setSupportsWorkflow(nextProtocol === 'runninghub')
     setRunningHubVerified(false)
-    setRunningHubInstanceType('1')
+    setRunningHubInstanceType('default')
     setMediaTestState('idle')
     setMediaTestMessage('')
   }
@@ -374,7 +376,7 @@ export function GenerationChannelsManager({ embedded = false, openNewRequest = 0
           </div>
         ) : (
           <div className="space-y-3">
-            {channels.map((channel) => {
+            {[...channels].sort((a, b) => Number(b.protocol === 'runninghub') - Number(a.protocol === 'runninghub')).map((channel) => {
               const configured = Boolean(getAPIKey(channel.id))
               const scopeLabel = generationProtocolForChannel(channel) === 'runninghub' ? 'RH 工作流' : [generationChannelSupportsVariant(channel, 'image') ? '图片' : '', generationChannelSupportsVariant(channel, 'video') ? '视频' : ''].filter(Boolean).join(' / ')
               return (
@@ -438,7 +440,7 @@ export function GenerationChannelsManager({ embedded = false, openNewRequest = 0
           </div>}
 
           <div className="mt-4 text-[13px] text-muted-foreground"><span className="mb-2 flex items-center gap-1.5 font-medium"><KeyRound className="h-3.5 w-3.5" />API Key <span className="font-normal">{isSaving ? '（保存中…）' : apiKey.trim() ? savedAPIKey === apiKey.trim() ? '（已保存）' : '（待保存）' : hasExistingApiKey ? '（已配置，留空保持不变）' : '（尚未填写）'}</span></span><div className="flex gap-2"><input type="password" value={apiKey} onChange={(event) => { setAPIKey(event.target.value); if (protocol === 'runninghub') setRunningHubVerified(false) }} placeholder={hasExistingApiKey ? '留空保持现有密钥' : '请输入 API Key'} className="h-10 min-w-0 flex-1 rounded-lg border border-border bg-background px-3 text-foreground outline-none focus:border-primary focus:ring-2 focus:ring-ring/20" />{protocol === 'runninghub' && <Button type="button" variant="secondary" className="shrink-0 gap-1.5" onClick={verifyRunningHubKey} disabled={isSaving}><Check className="h-3.5 w-3.5" />验证 Key</Button>}</div></div>
-          {protocol === 'runninghub' && runningHubVerified && editingChannelId && <><div className="mt-4 flex items-center gap-3 text-[13px]"><label className="shrink-0 font-medium text-muted-foreground" htmlFor="runninghub-instance-type">算力档次</label><select id="runninghub-instance-type" className="h-9 min-w-0 flex-1 rounded-lg border border-border bg-background px-2 text-[12px]" value={runningHubInstanceType} onChange={(event) => setRunningHubInstanceType(event.target.value)}><option value="1">标准</option><option value="2">高性能</option><option value="3">旗舰</option></select><Button type="button" variant="secondary" size="sm" className="shrink-0" onClick={() => setWorkflowDialogChannelId(editingChannelId)}>管理工作流</Button></div></>}
+          {protocol === 'runninghub' && runningHubVerified && editingChannelId && <><div className="mt-4 flex items-center gap-3 text-[13px]"><label className="shrink-0 font-medium text-muted-foreground" htmlFor="runninghub-instance-type">算力档次</label><RHMenuSelect label="算力机型" value={runningHubInstanceType} options={RH_INSTANCE_OPTIONS} onChange={setRunningHubInstanceType} width="flex-1" /><Button type="button" variant="secondary" size="sm" className="shrink-0" onClick={() => setWorkflowDialogChannelId(editingChannelId)}>管理工作流</Button></div></>}
           {protocol !== 'runninghub' && <div className="mt-5"><div className="flex items-center justify-between gap-3"><div><h3 className="text-[13px] font-medium">渠道模型</h3><p className="mt-1 text-[11px] text-muted-foreground">可从接口拉取模型；无法拉取时仍可手动添加模型 ID。</p></div><Button type="button" variant="secondary" size="sm" className="shrink-0 gap-1.5" disabled={isFetchingModels} onClick={() => void handleFetchModels()}><RefreshCw className={`h-3.5 w-3.5 ${isFetchingModels ? 'animate-spin' : ''}`} />拉取模型</Button></div>
             {(availableModelIds.length > 0 || modelFetchMessage) && (
               <div className={`mt-3 min-h-[52px] rounded-lg border px-3 py-3 text-[11px] ${availableModelIds.length ? 'border-border bg-background' : 'border-dashed border-border text-muted-foreground'}`}>

@@ -7,7 +7,7 @@ import { decryptAPIKey, encryptAPIKey } from '@/lib/secure-storage'
 import { deleteDesktopSecret, syncDesktopSecretInBackground } from '@/lib/desktop-secrets'
 import { normalizeMediaTransport } from '@/lib/generation/media-policy'
 import type { GenerationCapability } from '@/types/flow'
-import { is808VideoChannel, resolve808WanModel, resolveKacangModel, resolveVideoModelAdapter, GENERATION_CHANNEL_PRESETS, VIDEO_808_DEFAULT_BASE_URL, VIDEO_MODEL_CATALOG } from '@/lib/generation/video-catalog'
+import { completeKnownVideoRequestContract, is808VideoChannel, resolve808WanModel, resolveKacangModel, resolveVideoModelAdapter, GENERATION_CHANNEL_PRESETS, VIDEO_808_DEFAULT_BASE_URL, VIDEO_MODEL_CATALOG } from '@/lib/generation/video-catalog'
 export { GENERATION_CHANNEL_PRESETS } from '@/lib/generation/video-catalog'
 
 export type GenerationProviderId = 'openai' | 'google' | 'video' | 'custom' | 'runninghub'
@@ -346,7 +346,7 @@ export function modelsForGenerationProtocol(protocol: GenerationProtocolId) {
 export function generationVideoRequestContractForModel(channel: GenerationChannel, model?: GenerationModel, adapterId?: string) {
   const adapter = generationAdapterForConfig(channel, adapterId)
   const scopedContract = channel.modelCatalog?.find((candidate) => candidate.id === model?.id)?.videoRequestContract
-  if (scopedContract) return scopedContract
+  if (scopedContract) return completeKnownVideoRequestContract(channel, model?.id || '', scopedContract, adapter?.protocol || generationProtocolForChannel(channel))
   if (model?.mediaRulesSource === 'custom' && model.videoRequestContract && seedanceGenerationRules(model.id)) return model.videoRequestContract
   const wan = resolve808WanModel(channel, model?.id || '', adapter?.protocol || generationProtocolForChannel(channel))
   if (wan) return wan.videoRequestContract
@@ -500,7 +500,13 @@ export const useGenerationStore = create<GenerationState>()(
       generationDefaultsVersion: 0,
       initializeDefaultChannels: () => {
         const state = get()
-        if (state.generationDefaultsVersion >= 2) return
+        if (state.generationDefaultsVersion >= 3) return
+        if (state.generationDefaultsVersion >= 1) {
+          const rh = state.channels.find(channel => generationProtocolForChannel(channel) === 'runninghub')
+          const channels = rh ? state.channels.map(channel => channel.id === rh.id ? { ...channel, presetId: channel.presetId || 'runninghub' } : channel) : [...state.channels, normalizeChannel({ id: 'official-runninghub', presetId: 'runninghub', providerId: 'runninghub', protocol: 'runninghub', name: 'RunningHub', baseURL: 'https://www.runninghub.cn', modelIds: [], enabled: true, supportsImage: false, supportsVideo: false })]
+          set({ channels: channels.sort((a, b) => Number(b.protocol === 'runninghub') - Number(a.protocol === 'runninghub')), generationDefaultsVersion: 3 })
+          return
+        }
         const channels = state.channels.map((channel) => {
           const preset = generationPresetForId(channel.presetId)
           const isUntouchedDefault = preset && channel.id === `official-${preset.id}`
@@ -510,7 +516,7 @@ export const useGenerationStore = create<GenerationState>()(
           return isUntouchedDefault ? { ...channel, modelIds: [] } : channel
         })
         if (state.generationDefaultsVersion >= 1) {
-          set({ channels, generationDefaultsVersion: 2 })
+          set({ channels, generationDefaultsVersion: 3 })
           return
         }
         const additions = GENERATION_CHANNEL_PRESETS
@@ -546,7 +552,7 @@ export const useGenerationStore = create<GenerationState>()(
             }] : undefined,
           }))
         additions.forEach((channel) => saveDesktopSecret(channel.secretName || generationSecretName(channel.id), undefined))
-        set({ channels: [...channels, ...additions], generationDefaultsVersion: 2 })
+        set({ channels: [...channels, ...additions], generationDefaultsVersion: 3 })
       },
       addChannel: (input = {}) => {
         const providerId = input.providerId || 'custom'

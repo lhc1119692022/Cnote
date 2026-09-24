@@ -16,9 +16,11 @@ function load(relative, dependencies = {}) {
 const workflow = load('lib/runninghub/workflow.ts')
 const clientModule = load('lib/runninghub/client.ts', {
   './workflow': workflow,
+  './instance': load('lib/runninghub/instance.ts'),
   '@/lib/desktop-fetch': { desktopFetch: () => { throw new Error('Real network access is forbidden in this test') } },
   '@/lib/generation/safe-error': load('lib/generation/safe-error.ts'),
 })
+const inputs = load('lib/runninghub/inputs.ts')
 const raw = {
   '4': { class_type: 'LoadImage', _meta: { title: '原图' }, inputs: { image: 'example.png' } },
   '27': { class_type: 'RH_TopazLabs_ImageUpscale', inputs: { scale: '4', face_enhancement: true, seed: 1234, image: ['4', 0], api_key: 'never-save', settings: { token: 'never-save' } } },
@@ -82,6 +84,7 @@ assert.equal(calls.length, 7)
 assert.equal(calls[1].url, 'https://www.runninghub.cn/openapi/v2/media/upload/binary')
 assert.equal(calls[1].options.headers['Content-Type'], undefined)
 assert.deepEqual(JSON.parse(calls[2].options.body).nodeInfoList, overrides)
+assert.equal(JSON.parse(calls[2].options.body).instanceType, 'default')
 assert.equal(calls[3].url, 'https://www.runninghub.cn/openapi/v2/query')
 assert.throws(() => clientModule.runningHubClient({ baseURL: 'https://www.runninghub.cn', enabled: true }, ''), /API Key/)
 let failedCalls = 0
@@ -94,6 +97,23 @@ assert.equal(failedCalls, 1)
 const mismatch = clientModule.runningHubClient({ baseURL: 'https://www.runninghub.cn', enabled: true }, 'test-key', async () => new Response(JSON.stringify({ taskId: 'different', status: 'SUCCESS' })))
 await assert.rejects(mismatch.query('requested'), /不匹配/)
 
+for (const [tier, expected] of [['default', 'default'], ['plus', 'plus'], ['ultra', 'ultra'], ['1', 'default'], ['2', 'plus'], ['3', 'ultra']]) {
+  let body
+  const tierClient = clientModule.runningHubClient({ baseURL: 'https://www.runninghub.cn', enabled: true }, 'test-key', async (_url, options) => { body = JSON.parse(options.body); return new Response(JSON.stringify({ code: 0, data: { taskId: '123' } })) })
+  await tierClient.create('123', [], undefined, tier)
+  assert.equal(body.instanceType, expected)
+}
+const mixed = { ...selection, workflow: { ...configured, fields: [
+  { ...configured.fields[0], key: 'video', inputType: 'video' },
+  { ...configured.fields[0], key: 'image', inputType: 'image' },
+  { ...configured.fields[0], key: 'video2', inputType: 'video' },
+] }, bindings: {} }
+const refs = [{ id: 'v1', type: 'video' }, { id: 'i1', type: 'image' }, { id: 'v2', type: 'video' }]
+assert.deepEqual(inputs.resolveRHInputs(mixed, refs).bindings, { video: 'v1', image: 'i1', video2: 'v2' })
+assert.equal(inputs.resolveRHInputs(mixed, refs.slice(0, 2)).missing.length, 1)
+assert.equal(inputs.resolveRHInputs(mixed, [...refs, { id: 'v3', type: 'video' }]).extra.length, 1)
+assert.equal(inputs.workflowChanged(configured, structuredClone(configured)), false)
+assert.equal(inputs.workflowChanged(configured, { ...configured, name: 'changed' }), true)
 for (const file of process.argv.slice(2)) {
   const parsed = workflow.analyzeWorkflow(readFileSync(file, 'utf8'))
   assert.ok(parsed.fields.length > 0)
@@ -103,7 +123,14 @@ for (const file of process.argv.slice(2)) {
     assert.ok(parsed.fields.some(field => field.key === '209:value'))
     assert.ok(!parsed.fields.some(field => field.key === '143:denoise'))
   }
-  if (file.includes('DepthCrafter')) assert.equal(parsed.fields.find(field => field.key === '21:video').inputType, 'video')
+  if (file.includes('DepthCrafter')) {
+    const media = parsed.fields.filter(field => field.enabled && ['image', 'video', 'audio'].includes(field.inputType))
+    assert.equal(media.length, 1)
+    assert.equal(media[0].inputType, 'video')
+    const sample = { workflow: { ...configured, ...parsed }, values: {}, bindings: {} }
+    assert.equal(inputs.resolveRHInputs(sample, [{ id: 'v1', type: 'video' }]).missing.length, 0)
+    assert.equal(inputs.resolveRHInputs(sample, [{ id: 'v1', type: 'video' }, { id: 'v2', type: 'video' }]).extra.length, 1)
+  }
   if (file.includes('SeedVR2')) assert.equal(Object.keys(parsed.structure).length, 25)
   if (file.includes('Topaz')) assert.equal(typeof parsed.fields.find(field => field.key === '27:scale').value, 'string')
 }

@@ -1,3 +1,4 @@
+import { resolveRHInputs } from './inputs'
 import type { ContentNodeSpec, GenerationRun, GenerationTask, RequestNodeSpec } from '@/domain'
 import type { GenerationReference } from '@/types/flow'
 import { useGraphStore } from '@/stores/graph-store'
@@ -22,7 +23,7 @@ export function runningHubReferences(node: RequestNodeSpec): GenerationReference
   const runtime = useRuntimeStore.getState()
   if (!document) return []
   return mergeGenerationReferences(
-    localReferencesFromAssetIds('video', node.rh?.referenceAssetIds, runtime.assets),
+    localReferencesFromAssetIds('video', node.rh?.referenceAssetIds.filter(id => Object.values(node.rh?.selections[node.rh?.workflowKey || '']?.bindings || {}).includes(id)), runtime.assets),
     collectUpstreamReferences('video', collectUpstreamNodes(node.id, document.nodes, document.edges), document.nodes, runtime.assets, runtime.runs),
     undefined,
   )
@@ -94,7 +95,7 @@ export async function executeRunningHub(nodeId: string, resumeRunId?: string): P
   if (!document || !node || node.kind !== 'request' || node.variant !== 'workflow' || node.disabled) throw new Error('RH 节点不可运行')
   const existing = resumeRunId ? currentRun(resumeRunId) : undefined
   if (existing && (existing.requestNodeId !== nodeId || existing.tasks[0]?.rhSnapshot?.documentId !== document.id)) throw new Error('任务不属于当前节点')
-  const selection = existing?.tasks[0]?.rhSnapshot?.selection || (node.rh?.workflowKey ? node.rh.selections[node.rh.workflowKey] : undefined)
+  let selection = existing?.tasks[0]?.rhSnapshot?.selection || (node.rh?.workflowKey ? node.rh.selections[node.rh.workflowKey] : undefined)
   if (!selection) throw new Error('请选择工作流')
   const channelId = existing?.tasks[0]?.rhSnapshot?.channelId || node.rh?.channelId
   const channel = useGenerationStore.getState().channels.find(item => item.id === channelId)
@@ -103,6 +104,12 @@ export async function executeRunningHub(nodeId: string, resumeRunId?: string): P
   if (existing && !existing.tasks[0].remoteTaskId) throw new Error('没有远端任务 ID，无法恢复；请先在 RunningHub 核实任务是否已创建，避免重复计费')
   if (existing && existing.tasks[0].rhSnapshot?.phase === 'completed') { materialize(existing); return }
   const references = runningHubReferences(node)
+  if (!existing) {
+    const inputs = resolveRHInputs(selection, references)
+    if (inputs.extra.length) throw new Error('素材数量超过工作流输入数量，请断开多余连线')
+    if (inputs.missing.length) throw new Error(`缺少素材：${inputs.missing.map(field => field.label).join('、')}`)
+    selection = { ...selection, bindings: inputs.bindings }
+  }
   const runId = existing?.id || crypto.randomUUID()
   const controller = new AbortController()
   const signal = controller.signal

@@ -1,3 +1,4 @@
+import { workflowChanged } from '@/lib/runninghub/inputs'
 import { useRef, useState, type ReactNode } from 'react'
 import { ArrowDown, ArrowUp, Copy, Pencil, Plus, RefreshCw, Trash2, Upload } from 'lucide-react'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
@@ -11,7 +12,7 @@ import { RHFieldInput, rhInputClass } from './RHFieldInput'
 
 export function RunningHubWorkflowsDialog({ channelId, open, onOpenChange }: { channelId: string; open: boolean; onOpenChange: (open: boolean) => void }) {
   // Mount afresh on open so an unsaved draft never appears to have been saved.
-  return <Dialog open={open} onOpenChange={onOpenChange}>{open && <WorkflowEditor channelId={channelId} />}</Dialog>
+  return <Dialog open={open} onOpenChange={onOpenChange}>{open && <WorkflowEditor channelId={channelId} onClose={() => onOpenChange(false)} />}</Dialog>
 }
 
 export function RunningHubWorkflowsPanel({ channelId }: { channelId: string }) {
@@ -24,7 +25,7 @@ function WorkflowSurface({ inline, children }: { inline: boolean; children: Reac
     : <DialogContent className="max-w-3xl">{children}</DialogContent>
 }
 
-function WorkflowEditor({ channelId, inline = false }: { channelId: string; inline?: boolean }) {
+function WorkflowEditor({ channelId, inline = false, onClose }: { channelId: string; inline?: boolean; onClose?: () => void }) {
   const channel = useGenerationStore(state => state.channels.find(item => item.id === channelId))
   const workflows = useRunningHubStore(state => state.workflows)
   const [draft, setDraft] = useState<RHWorkflow | null>(null)
@@ -79,7 +80,7 @@ function WorkflowEditor({ channelId, inline = false }: { channelId: string; inli
       if (!draft.name.trim()) throw new Error('请填写工作流名称')
       validateFields(draft.fields)
       const previous = workflows.find(item => item.id === draft.id)
-      useRunningHubStore.getState().save({ ...draft, name: draft.name.trim(), revision: previous ? Math.max(previous.revision + 1, draft.revision) : 1 })
+      if (!previous || workflowChanged(previous, { ...draft, name: draft.name.trim() })) useRunningHubStore.getState().save({ ...draft, name: draft.name.trim(), revision: previous ? Math.max(previous.revision + 1, draft.revision) : 1 })
       setDraft(null); setChanges([]); setError(''); setLink('')
     } catch (cause) { setError(cause instanceof Error ? cause.message : '保存失败') }
   }
@@ -112,6 +113,7 @@ function WorkflowEditor({ channelId, inline = false }: { channelId: string; inli
           <Button variant="ghost" size="icon-sm" title="移除本地工作流" aria-label={`移除 ${workflow.name}`} onClick={async () => { if (await askConfirmation(`移除“${workflow.name}”？画布中的已有配置仍会保留。`)) useRunningHubStore.getState().remove(workflow.id) }}><Trash2 className="h-4 w-4" /></Button>
         </div>)}
       </div>
+      {onClose && <div className="mt-4 flex justify-end gap-2"><Button variant="secondary" onClick={onClose}>取消</Button><Button onClick={onClose}>保存</Button></div>}
     </> : <>
       <label className="block text-xs text-muted-foreground">工作流名称<input className={`${rhInputClass} mt-1`} value={draft.name} onChange={event => setDraft({ ...draft, name: event.target.value })} /></label>
       {changes.length > 0 && <div role="status" className="my-2 max-h-24 overflow-y-auto text-xs text-muted-foreground">{changes.map((change, index) => <p key={index}>{change}</p>)}</div>}

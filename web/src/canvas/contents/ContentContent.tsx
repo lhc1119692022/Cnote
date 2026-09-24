@@ -811,6 +811,13 @@ function BatchProgress({ run, resultCount }: { run?: GenerationRun; resultCount:
 
 export const ContentContent = memo(function ContentContent({ node }: ContentContentProps) {
   const { hoveredNodeId, selection, containerRef, screenToWorld, hitTestNode } = useCanvasInteraction()
+  const media = node.payload?.kind === 'image' || node.payload?.kind === 'video' ? node.payload : undefined
+  const resources = media?.resources || []
+  const resourceKeys = media
+    ? node.generationBatch?.resourceKeys.length === resources.length
+      ? node.generationBatch.resourceKeys
+      : resources.map((item, index) => `${item.resource.resourceId || item.resource.url}:${index}`)
+    : undefined
   const resourceDrag = useMediaResourceDrag(node.id, index => selectMediaResource(node.id, index), (index, point, target) => {
     const canvas = containerRef?.current
     if (!canvas || !target || !canvas.contains(target) || target.closest('[data-canvas-chrome], [data-content-node], [data-node-id], [data-media-preview], button, input, textarea, select, [contenteditable]')) return
@@ -819,13 +826,11 @@ export const ContentContent = memo(function ContentContent({ node }: ContentCont
     const world = screenToWorld({ x: point.x - rect.left, y: point.y - rect.top })
     if (hitTestNode(world)) return
     copyMediaResource(node.id, index, world)
-  }, node.payload && (node.payload.kind === 'image' || node.payload.kind === 'video') ? node.payload.resources?.map(item => item.resource.resourceId || item.resource.url) : undefined)
+  }, resourceKeys)
   const isLocked = useGraphStore(state => state.isLocked)
   const batch = node.generationBatch
   const batchRun = useRuntimeStore(state => batch ? state.runs[batch.runId] : undefined)
   const editorVisible = hoveredNodeId === node.id || selection.includes(node.id)
-  const media = node.payload?.kind === 'image' || node.payload?.kind === 'video' ? node.payload : undefined
-  const resources = media?.resources || []
   const activeIndex = Number.isInteger(media?.activeResourceIndex) ? Math.max(0, Math.min(resources.length - 1, media!.activeResourceIndex!)) : 0
   const expanded = Boolean(batch?.expanded)
   const grid = batch ? batchLayout(node) : undefined
@@ -868,7 +873,7 @@ export const ContentContent = memo(function ContentContent({ node }: ContentCont
             const label = item.label || `${node.category === 'image' ? '图片' : '视频'} ${index + 1}`
             return (
               <button
-key={batch?.resourceKeys[index] || item.resource.resourceId || item.resource.url}
+key={resourceKeys?.[index] || item.resource.resourceId || item.resource.url}
                 type="button"
                 draggable={false}
                 style={{ touchAction: 'none' }}

@@ -1,10 +1,13 @@
-name: Package Cnote for macOS
+name: Release Cnote macOS portable
 
 on:
+  push:
+    tags:
+      - 'v*'
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   package:
@@ -40,9 +43,46 @@ jobs:
       - name: Build portable macOS ZIP
         working-directory: desktop
         run: npm run ${{ matrix.script }}
-      - name: Upload portable ZIP
+      - name: Check version
+        shell: bash
+        run: |
+          version="$(node -p "require('./desktop/package.json').version")"
+          if [ "$GITHUB_EVENT_NAME" = "push" ] && [ "$GITHUB_REF_NAME" != "v$version" ]; then
+            echo "Tag and desktop version differ"
+            exit 1
+          fi
+      - name: Create or wait for GitHub Release
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          for attempt in {1..30}; do
+            if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then exit 0; fi
+            if gh release create "$GITHUB_REF_NAME" --title "Cnote $(node -p "require('./desktop/package.json').version")" --notes-file docs/portable-release.md >/dev/null 2>&1; then exit 0; fi
+            sleep 10
+          done
+          echo "GitHub Release was not available"
+          exit 1
+      - name: Upload portable ZIP and checksum
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          version="$(node -p "require('./desktop/package.json').version")"
+          zip="$(find desktop/release -maxdepth 1 -type f -name '*.zip' -print -quit)"
+          test -n "$zip"
+          checksum="desktop/release/Cnote-$version-mac-${{ matrix.arch }}-SHA256SUMS.txt"
+          sha256sum "$zip" | sed "s#desktop/release/##" > "$checksum"
+          gh release upload "$GITHUB_REF_NAME" "$zip" "$checksum" --clobber
+      - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
         with:
           name: cnote-macos-${{ matrix.arch }}
-          path: desktop/release/*.zip
+          path: |
+            desktop/release/*.zip
+            desktop/release/*SHA256SUMS.txt
           if-no-files-found: error

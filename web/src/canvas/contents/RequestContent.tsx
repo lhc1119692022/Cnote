@@ -1533,14 +1533,19 @@ export const RequestContent = memo(function RequestContent({ node }: { node: Req
     if (reference.upstreamNodeId) {
       const stored = readRequestSpec(node.id)
       if (!stored || stored.variant !== variant) return
+      const referenceOverrides = { ...stored[variant].referenceOverrides }
+      delete referenceOverrides[reference.id]
       updateVariant({
         prompt: nextPrompt,
         promptMentions,
-        referenceOverrides: {
-          ...stored[variant].referenceOverrides,
-          [reference.id]: { ...stored[variant].referenceOverrides?.[reference.id], excluded: true, compatibleCopy: undefined },
-        },
+        referenceOverrides,
       })
+      const currentDocument = useGraphStore.getState().currentDocument
+      if (currentDocument) useGraphStore.setState({ currentDocument: {
+        ...currentDocument,
+        edges: currentDocument.edges.filter(edge => edge.source !== reference.upstreamNodeId || edge.target !== node.id),
+        updatedAt: Date.now(),
+      } })
       useGraphStore.getState().commitHistory()
       return
     }

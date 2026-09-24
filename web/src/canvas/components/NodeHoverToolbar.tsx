@@ -1,3 +1,4 @@
+import { workflowChanged } from '@/lib/runninghub/inputs'
 import { STICKY_PALETTE, STICKY_COLOR_ORDER } from '@/canvas/sticky-palette'
 import { cancelVideoInputValidation, useVideoInputFeedback } from '@/canvas/video-input-validation'
 import { memo, useEffect, useLayoutEffect, useRef, useState, type ChangeEvent, type KeyboardEvent, type PointerEvent, type ReactNode } from 'react'
@@ -219,7 +220,7 @@ export const NodeHoverToolbar = memo(function NodeHoverToolbar({ node, selected 
   const runningHubWorkflows = useRunningHubStore((state) => state.workflows)
   const rhSelected = node.kind === 'request' && node.variant === 'workflow' && node.rh?.workflowKey ? node.rh.selections[node.rh.workflowKey]?.workflow : undefined
   const rhLatest = rhSelected ? runningHubWorkflows.find(workflow => workflow.id === rhSelected.id) : undefined
-  const showRunningHubUpdate = Boolean(node.kind === 'request' && node.variant === 'workflow' && rhSelected && rhLatest && rhLatest.revision !== rhSelected.revision)
+  const showRunningHubUpdate = Boolean(node.kind === 'request' && node.variant === 'workflow' && rhSelected && rhLatest && workflowChanged(rhLatest, rhSelected))
 
   useLayoutEffect(() => {
     const element = toolbarRef.current

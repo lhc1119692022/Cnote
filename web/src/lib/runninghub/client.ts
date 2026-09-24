@@ -1,3 +1,4 @@
+import { rhInstanceType } from './instance'
 import { desktopFetch } from '@/lib/desktop-fetch'
 import { safeGenerationError } from '@/lib/generation/safe-error'
 import type { GenerationChannel } from '@/stores/use-generation-store'
@@ -58,7 +59,7 @@ export function runningHubClient(channel: Pick<GenerationChannel, 'baseURL' | 'e
       return { fileName: identifier(value.fileName, '文件名'), url: typeof value.download_url === 'string' ? value.download_url : undefined }
     },
     async create(workflowId: string, nodeInfoList: Array<{ nodeId: string; fieldName: string; fieldValue: RHValue }>, signal?: AbortSignal, instanceType?: string): Promise<string> {
-      const value = object((await call('/task/openapi/create', { apiKey, workflowId, nodeInfoList, ...(instanceType ? { instanceType } : {}) }, signal)).data)
+      const value = object((await call('/task/openapi/create', { apiKey, workflowId, nodeInfoList, instanceType: rhInstanceType(instanceType) }, signal)).data)
       return identifier(value.taskId, '任务 ID')
     },
     async query(taskId: string, signal?: AbortSignal): Promise<RHRemoteTask> {
