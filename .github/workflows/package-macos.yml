@@ -76,7 +76,7 @@ jobs:
           zip="$(find desktop/release -maxdepth 1 -type f -name '*.zip' -print -quit)"
           test -n "$zip"
           checksum="desktop/release/Cnote-$version-mac-${{ matrix.arch }}-SHA256SUMS.txt"
-          sha256sum "$zip" | sed "s#desktop/release/##" > "$checksum"
+          shasum -a 256 "$zip" | sed "s#desktop/release/##" > "$checksum"
           gh release upload "$GITHUB_REF_NAME" "$zip" "$checksum" --clobber
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
