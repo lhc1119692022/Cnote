@@ -68,7 +68,8 @@ jobs:
         shell: pwsh
         run: |
           $version = (Get-Content desktop/package.json | ConvertFrom-Json).version
-          if (gh release view "$env:GITHUB_REF_NAME" *> $null) {
+          $null = gh release view "$env:GITHUB_REF_NAME" 2>$null
+          if ($LASTEXITCODE -eq 0) {
             gh release upload "$env:GITHUB_REF_NAME" "desktop/release/Cnote-$version-win-portable-x64.zip" "desktop/release/Cnote-$version-SHA256SUMS.txt" --clobber
           } else {
             gh release create "$env:GITHUB_REF_NAME" "desktop/release/Cnote-$version-win-portable-x64.zip" "desktop/release/Cnote-$version-SHA256SUMS.txt" --verify-tag --title "Cnote $version · Windows 免安装版" --notes-file docs/portable-release.md
