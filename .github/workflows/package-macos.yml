@@ -43,6 +43,13 @@ jobs:
       - name: Build portable macOS ZIP
         working-directory: desktop
         run: npm run ${{ matrix.script }}
+      - name: Verify ad-hoc signature
+        shell: bash
+        run: |
+          app="$(find desktop/release -type d -name 'Cnote.app' -print -quit)"
+          test -n "$app"
+          codesign --verify --deep --strict "$app"
+          codesign --display --verbose=2 "$app" 2>&1 | tee desktop/release/codesign-${{ matrix.arch }}.txt
       - name: Check version
         shell: bash
         run: |

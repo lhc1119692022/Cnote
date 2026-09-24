@@ -5,11 +5,11 @@
 - Windows x64：`Cnote-<版本>-win-portable-x64.zip`，解压后启动 Cnote 可执行文件。
 - macOS Intel：`Cnote-<版本>-mac-x64.zip`，解压后打开 Cnote 应用。
 - macOS Apple 芯片：`Cnote-<版本>-mac-arm64.zip`，解压后打开 Cnote 应用。
-- Windows 与 macOS 版本均无需安装；macOS 未进行 Apple 开发者签名，首次打开时可能需要在系统安全设置中允许。
+- Windows 与 macOS 版本均无需安装；macOS 使用 ad-hoc 签名但未经过 Apple 公证，首次打开时若提示无法验证开发者，请在 Finder 中右键点击 Cnote.app，选择“打开”，再确认打开。
 - 默认在可执行文件旁的 `CnoteData` 文件夹保存用户数据；自行更改存储目录后，以设置中的位置为准。
 - 升级前退出程序，保留 `CnoteData` 和 `cnote-storage-location.json`，只替换程序文件。不要把新程序解压到另一个目录后误以为旧数据丢失。
 - 打包不包含开发者的密钥、画布、浏览器登录信息或生成结果。首次使用需要自行配置渠道。
-- 程序未进行代码签名，Windows 可能提示未知发布者，macOS 可能提示无法验证开发者。只使用本仓库发布的附件，并核对同一发布中的 SHA256 校验文件。
+- Windows 程序未进行代码签名，可能提示未知发布者；macOS 包使用 ad-hoc 签名但未经过 Apple 公证，可能提示无法验证开发者。只使用本仓库发布的附件，并核对同一发布中的 SHA256 校验文件。
 - 免安装启动器可能使用系统临时目录解包程序；不能承诺运行过程完全不占用系统盘。
 - 不要向仓库提交或向他人发送 `CnoteData`、密钥文件、浏览器数据或配置导出。`.gitignore` 仅防止误添加，不能保护历史中已经提交的文件，也不能识别任意名称的自定义数据目录。
 
